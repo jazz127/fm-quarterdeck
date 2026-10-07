@@ -10,6 +10,7 @@ import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { readConversationTranscript } from "./transcript.js";
+import { compactLanes } from "./lane-payload.js";
 import { readSupervisionOutcomes } from "./supervision.js";
 import { createQuotaReader } from "./quota.js";
 import { createConfiguredCostReader } from "./costs.js";
@@ -653,7 +654,7 @@ export function claudeConfigDir(env) {
   return env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path.join(os.homedir(), ".claude");
 }
 
-export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null } = {}) {
+export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
   const readFile = reader.text;
   if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
@@ -663,7 +664,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
       includeHistory ? readCaptainNotes(resolvedHome, reader) : [],
-      includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir }) : { messages: [], coverage: {} },
+      includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir, windowBytes }) : { messages: [], coverage: {} },
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
       includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
     ]);
@@ -1200,11 +1201,15 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       if (request.method === "GET" && url.pathname === "/api/lanes") {
         const ids = (name) => url.searchParams.getAll(name).filter((id) => id.length <= 250).slice(0, 60);
         const page = (name) => Math.min(20, Math.max(0, Number.parseInt(url.searchParams.get(name) || "0", 10) || 0));
-        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env) });
+        // Additive opt-in only: old callers retain the full bounded source window.
+        const requestedBytes = Number(url.searchParams.get("windowBytes"));
+        const windowBytes = url.searchParams.has("windowBytes") && Number.isSafeInteger(requestedBytes)
+          ? Math.min(8 * 1024 * 1024, Math.max(1024 * 1024, requestedBytes)) : null;
+        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env), windowBytes });
         await sendJson(request, response, 200, {
           generatedAt: new Date().toISOString(),
           source: firstmate.source,
-          lanes: firstmate.lanes,
+          ...(url.searchParams.get("format") === "refs.v1" ? compactLanes(firstmate.lanes) : { lanes: firstmate.lanes }),
           transcript: firstmate.transcript,
         });
         return;

@@ -880,6 +880,9 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 }
 .conversation-body { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(180px, 215px) minmax(0, 1fr) minmax(175px, 205px); }
 .conversation-feed { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.transcript-window-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 12px; color: var(--muted); font-size: var(--text-small); border-bottom: 1px solid var(--line); }
+.transcript-window-status[hidden] { display: none; }
+.transcript-window-status button { color: var(--accent); font: inherit; cursor: pointer; }
 #conversations-view.active { display: flex; }
 .conversation-body > .lane-filter { min-width: 0; min-height: 0; margin: 0; padding: 8px 6px 6px; overflow-y: auto; border: 0; border-right: 1px solid var(--line); border-radius: 0; box-shadow: none; }
 .conversation-body #lane-filter-rows { max-height: none; overflow: visible; display: flex; flex-direction: column; gap: 2px; padding: 2px; }

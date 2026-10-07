@@ -26,7 +26,7 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     }
     if (lineBytes && ++records > maxRecords) throw new HistoryLimitError();
   }
-  async function read(filename, { firstOnly = false, window = false } = {}) {
+  async function read(filename, { firstOnly = false, window = false, maxBytes = maxFileBytes } = {}) {
     if (++files > maxFiles) throw new HistoryLimitError();
     const file = await open(filename, "r");
     try {
@@ -34,7 +34,7 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
       if (!info.isFile()) throw new HistoryLimitError();
       let position = 0, limit = maxFileBytes;
       if (window) {
-        limit = windowBudget();
+        limit = Math.min(windowBudget(), maxBytes);
         if (info.size > limit) {
           // Too little budget left for even one whole record: leave the source unread.
           if (limit < Math.min(maxLineBytes, maxFileBytes)) return null;
@@ -94,8 +94,8 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     lines: async function* (filename) { yield* split(await read(filename)); },
     // Newest whole records of a transcript within the remaining window budget.
     // Null when this request's remaining budget cannot hold a useful window.
-    recent: async (filename) => {
-      const window = await read(filename, { window: true });
+    recent: async (filename, maxBytes = maxFileBytes) => {
+      const window = await read(filename, { window: true, maxBytes });
       return window && { lines: splitWithOffsets(window.text, window.omittedBytes), omittedBytes: window.omittedBytes, totalBytes: window.totalBytes };
     },
     windowBudget,

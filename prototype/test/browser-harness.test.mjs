@@ -4,10 +4,15 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { cleanupBrowserProfile, waitForBrowserPort } from "../scripts/browser-harness.mjs";
+import { browserCpuRate, cleanupBrowserProfile, waitForBrowserPort } from "../scripts/browser-harness.mjs";
 
 const runningBrowser = () => ({ exitCode: null, signalCode: null });
 const missingPort = () => { const error = Error("Not ready"); error.code = "ENOENT"; throw error; };
+
+test("browser CPU throttling accepts only a finite bounded rate", () => {
+  for (const rate of ["1", "1.5", "6", "20"]) assert.equal(browserCpuRate(rate), Number(rate));
+  for (const rate of ["", "0", "21", "Infinity", "not-a-rate"]) assert.throws(() => browserCpuRate(rate), /FM_BROWSER_CPU_RATE/);
+});
 
 test("cold browser readiness beyond ten seconds uses a separate bounded launch budget", async () => {
   let elapsed = 0, polls = 0;

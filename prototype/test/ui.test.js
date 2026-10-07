@@ -364,6 +364,33 @@ function seed(ui, lanes) {
   ui.run(`lanes = ${JSON.stringify(lanes)};`);
 }
 
+test("first load is explicit, errors survive filter rerenders, and refs hydrate without losing occurrences", () => {
+  const app = ui();
+  app.run("renderFeed()");
+  assert.match(app.node("#messages").innerHTML, /Loading Fleet Chats/);
+  assert.equal(app.node("#messages").getAttribute("aria-busy"), "true");
+  assert.doesNotMatch(app.node("#transcript-page").textContent, /0.*of 0/);
+  app.run("renderLanesError('Synthetic unavailable'); renderFeed()");
+  assert.match(app.node("#messages").innerHTML, /Synthetic unavailable/);
+  assert.equal(app.node("#messages").getAttribute("aria-busy"), "false");
+  const message = record();
+  app.run(`renderLanes(${JSON.stringify({format: "refs.v1", messages: [message], lanes: [{...lane("general", []), messages: [0, 0]}], transcript: {sessions: [], warnings: [], expandable: true, note: "Synthetic coverage"}})})`);
+  assert.equal(app.run("lanes[0].messages.length"), 2);
+  assert.equal(app.run("messagesForSelection().length"), 2, "identical events within one lane survive");
+  assert.match(app.node("#messages").innerHTML, /Readable response/);
+  assert.equal(app.node("#messages").getAttribute("aria-busy"), "false");
+  assert.equal(app.node("#transcript-window-status").hidden, false);
+  app.run("selectedSessionId = 'task'; selectedTranscriptSession = 'disk'; transcriptQuery = 'keep me'; laneStatusFilter = 'idle'");
+  app.node("#transcript-load-more").dispatchEvent({type: "click"});
+  const params = new URLSearchParams(app.run("lanesQuery()").slice(1));
+  assert.equal(params.get("windowBytes"), String(2 * 1024 * 1024));
+  assert.equal(params.get("format"), "refs.v1");
+  assert.equal(params.get("session"), "task");
+  assert.equal(params.get("disk"), "disk");
+  assert.equal(app.run("transcriptQuery"), "keep me");
+  assert.equal(app.run("laneStatusFilter"), "idle");
+});
+
 test("send-time chat snapshot keeps checked lanes and only viewport-visible old history", () => {
   const app = ui();
   seed(app, [lane("general", [record({ recordId: "old", text: "private old body", occurredAt: "2026-01-01T00:00:00.000Z" }),
@@ -506,7 +533,7 @@ test("older session request supersedes an in-flight refresh without erasing sele
 test("slow large lane response cannot block Overview or Quota, and refreshes do not overlap", async () => {
   const calls = { dashboard: [], lanes: [], quota: [], preferences: [] };
   const app = ui({ fetchImpl(url) {
-    const name = url.split("/").at(-1);
+    const name = new URL(url, "http://localhost").pathname.split("/").at(-1);
     return new Promise((resolve, reject) => calls[name].push({
       resolve: (value) => resolve({ ok: true, json: async () => value }), reject,
     }));
@@ -1207,7 +1234,7 @@ test("screen reader live regions prevent flood and announce status concisely", a
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 
   // Verify aria-live is removed from #messages
-  assert.match(html, /<div id="messages" class="messages" aria-label="Conversation feed, oldest to newest">/);
+  assert.match(html, /<div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true">/);
   assert.doesNotMatch(html, /id="messages"[^>]*aria-live/);
 
   // Verify dedicated announcer exists

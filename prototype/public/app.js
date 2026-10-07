@@ -53,6 +53,8 @@ let feedLaneOverrideId = null;
 let allLanesSelected = true;
 let laneStatusFilter = "all";
 let hasLoadedLanes = false;
+let lanesLoadError = "";
+let transcriptWindowBytes = 1024 * 1024;
 let hasRenderedFeed = false;
 let refreshTimer = null;
 let preferenceEntries = [];
@@ -394,7 +396,23 @@ function renderSessionHistory(visibleLanes) {
     </button>`).join("")}` : '<p class="empty compact">No crew tasks recorded for these fleets.</p>';
 }
 
+function renderLanesLoading() {
+  $("#conversation-title").textContent = "Loading Fleet Chats…";
+  $("#conversation-status").textContent = "loading";
+  $("#conversation-subtext").textContent = "Reading recent records · older history remains available on demand";
+  $("#transcript-page").textContent = "Loading recent records…";
+  $("#transcript-page").dataset.short = "Loading…";
+  $("#transcript-older").disabled = true;
+  $("#transcript-newer").disabled = true;
+  $("#messages").setAttribute("aria-busy", "true");
+  $("#messages").innerHTML = '<div class="notice" role="status">Loading Fleet Chats… Reading recent messages. Older history is available on demand.</div>';
+}
+
 function renderFeed() {
+  if (!hasLoadedLanes && !lanes.length) {
+    if (!lanesLoadError) renderLanesLoading();
+    return;
+  }
   const visibleLanes = selectedLanes();
   const selection = laneSelection();
   const showingAllLive = selection.all && laneStatusFilter === "all" && !feedLaneOverrideId;
@@ -557,7 +575,13 @@ function renderFeed() {
 }
 
 function renderLanes(data) {
-  lanes = data.lanes || [];
+  // Rehydrate before filtering. References can repeat within a lane; do not
+  // deduplicate occurrences here, and never mutate the shared wire objects.
+  lanes = data.format === "refs.v1"
+    ? data.lanes.map((lane) => ({ ...lane, messages: lane.messages.map((index) => data.messages[index]) }))
+    : data.lanes || [];
+  lanesLoadError = "";
+  $("#messages").setAttribute("aria-busy", "false");
   try {
     if (localStorage.getItem(MESSAGE_TYPES_KEY) === null && localStorage.getItem(MESSAGE_TYPES_LEGACY_KEY) === null) {
       if (lanes.some((lane) => lane.messages.some((message) => message.kind === "thinking"))) selectedMessageTypes.add("thinking");
@@ -567,6 +591,10 @@ function renderLanes(data) {
   } catch { /* Preferences are optional. */ }
   transcriptCoverage = data.transcript || { sessions: [], warnings: [], note: "Transcript coverage unavailable." };
   const sources = transcriptCoverage.sessions;
+  const windowButton = $("#transcript-load-more");
+  $("#transcript-window-status").hidden = !transcriptCoverage.expandable;
+  windowButton.disabled = false;
+  windowButton.textContent = `Load more records (${Math.min(8, transcriptWindowBytes / (1024 * 1024) * 2)} MiB/source)`;
   if (!sources.some((session) => session.id === selectedTranscriptSession)) selectedTranscriptSession = "";
   const summaryText = sources.length ? `Loaded ${sources.filter((session) => session.loaded).length} of ${sources.length} disk sessions · older history on demand` : "No disk transcript found · source details / gaps";
   $("#disk-load-older").hidden = !sources.some((session) => !session.loaded) || diskOlderPages >= 20;
@@ -596,6 +624,9 @@ function renderLanes(data) {
 
 function renderLanesError(message) {
   lanes = [];
+  lanesLoadError = message;
+  $("#messages").setAttribute("aria-busy", "false");
+  $("#transcript-window-status").hidden = true;
   $("#transcript-summary").textContent = "Transcript unavailable";
   const infoTrigger = $("#transcript-details summary");
   if (infoTrigger) {
@@ -1431,6 +1462,8 @@ function renderFreshness() {
 
 function lanesQuery() {
   const params = new URL("http://localhost/api/lanes").searchParams;
+  params.set("windowBytes", transcriptWindowBytes);
+  params.set("format", "refs.v1");
   if (taskOlderPages) params.set("older", taskOlderPages);
   if (diskOlderPages) params.set("diskOlder", diskOlderPages);
   for (const id of [...new Set([selectedSessionId, ...retainedSessions].filter(Boolean))].slice(0, 60)) params.append("session", id);
@@ -1456,6 +1489,10 @@ async function refreshEndpoint(key) {
   if (item.refreshing) return;
   item.refreshing = true;
   item.started = Date.now();
+  if (key === "lanes" && !hasLoadedLanes) {
+    lanesLoadError = "";
+    renderLanesLoading();
+  }
   renderFreshness();
   try {
     const laneQuery = key === "lanes" ? lanesQuery() : "";
@@ -1495,6 +1532,10 @@ async function refreshEndpoint(key) {
   } finally {
     item.duration = Date.now() - item.started;
     item.refreshing = false;
+    if (key === "lanes") {
+      $("#transcript-load-more").disabled = false;
+      if (item.error) $("#transcript-load-more").textContent = "Retry loading more records";
+    }
     renderFreshness();
     if (key === "lanes" && pendingLanesRefresh) {
       pendingLanesRefresh = false;
@@ -1972,6 +2013,13 @@ $("#disk-load-older").addEventListener("click", () => {
   diskOlderPages = Math.min(20, diskOlderPages + 1);
   requestLanes();
 });
+$("#transcript-load-more").addEventListener("click", () => {
+  transcriptWindowBytes = Math.min(8 * 1024 * 1024, (transcriptCoverage.windowBytes || transcriptWindowBytes) * 2);
+  $("#transcript-load-more").disabled = true;
+  $("#transcript-load-more").textContent = "Loading more records…";
+  requestLanes();
+});
+
 $("#transcript-older").addEventListener("click", () => {
   lastPageAnchor = "";
   transcriptPage = Math.max(0, transcriptPage - 1);

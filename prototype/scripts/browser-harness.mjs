@@ -43,7 +43,15 @@ export async function waitForBrowserPort(chrome, profile, {
   throw Error(`Chromium startup timed out after ${timeoutMs}ms${diagnostics() ? `: ${diagnostics()}` : ""}`);
 }
 
+// Opt-in CPU throttling for reproducing slow CI initialization/paint races.
+export function browserCpuRate(value = process.env.FM_BROWSER_CPU_RATE) {
+  const rate = Number(value ?? 1);
+  if (!Number.isFinite(rate) || rate < 1 || rate > 20) throw Error("FM_BROWSER_CPU_RATE must be a number from 1 to 20");
+  return rate;
+}
+
 export async function openBrowser() {
+  const cpuRate = browserCpuRate();
   const profile = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-browser-"));
   const chrome = spawn(process.env.CHROMIUM || "chromium", ["--headless=new", "--no-sandbox", "--disable-gpu",
     "--disable-dev-shm-usage", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
@@ -118,6 +126,7 @@ export async function openBrowser() {
     await command("Page.enable");
     await command("Runtime.enable");
     await command("Network.enable");
+    if (cpuRate !== 1) await command("Emulation.setCPUThrottlingRate", { rate: cpuRate });
     return { command, evaluate, until, close, onEvent: (fn) => listeners.add(fn) };
   } catch (error) { await close(); throw error; }
 }

@@ -45,7 +45,7 @@ function deduplicateMirroredTurns(messages) {
 // session headers whose cwd matches this home. Claude Code discovery is limited
 // to this home's encoded project directory under claudeConfigDir. Never scan
 // other session homes.
-export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null } = {}) {
+export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
   const readFile = reader.text;
   const root = await realpath(home);
   const files = new Map();
@@ -143,7 +143,7 @@ export async function readConversationTranscript(home, publicMessage, { selected
   const loadOrder = inventory.filter(({ source }) => visible.has(source)).sort((a, b) => rank(a) - rank(b));
   for (const { file, source } of loadOrder) {
     const session = { id: source, source, messageCount: 0, skippedRecords: 0, startedAt: null, updatedAt: null, omittedBytes: 0 };
-    const window = await reader.recent(file);
+    const window = await reader.recent(file, windowBytes ?? undefined);
     if (!window) {
       Object.assign(sessions.find((entry) => entry.source === source), { loaded: false });
       warnings.push(`${source} was not loaded: this request's read budget went to other sources; select it on its own.`);
@@ -156,7 +156,7 @@ export async function readConversationTranscript(home, publicMessage, { selected
     const claude = source.startsWith("claude-main-session/");
     // Line numbers are unknown once a window starts mid-file, so windowed and
     // Claude records are identified by stable byte offset instead.
-    const byOffset = claude || window.omittedBytes > 0;
+    const byOffset = windowBytes !== null || claude || window.omittedBytes > 0;
     const toolNames = new Map();
     let lineIndex = 0;
     for await (const { line, offset } of window.lines) {
@@ -214,5 +214,7 @@ export async function readConversationTranscript(home, publicMessage, { selected
   }
   const claudeNote = claudePrimary ? `Claude Code primary session included${claudePrimary.inferred ? " (inferred as the newest non-wake session; state/.lock-session names none)" : ""}. ` : "";
   const mainNote = claudeNote + (mainPiSessions ? "Main Pi transcripts included; matching branch mirrors are deduplicated." : claudePrimary ? "Main Pi transcript not sourced." : "Main Pi transcript not sourced: only available in-home sessions and partial main mirrors are shown. Configure the home’s state/.branch-mirror-cursor or mirror main JSONL into state/main-session/.");
-  return { messages: deduplicateMirroredTurns(messages), coverage: { sessions, warnings, note: `${mainNote} Only the active and recent disk sessions are loaded by default, each up to its newest 8 MiB of whole records; older sessions remain available on demand; filters apply (General excludes complete, valid project-lane blocks). Thinking is native transcript content, never generated for this UI. Pure operational envelopes are hidden. Images are labeled, not rendered; pane lines never persisted cannot be recovered.` } };
+  return { messages: deduplicateMirroredTurns(messages), coverage: { sessions, warnings,
+    ...(windowBytes !== null ? { windowBytes, expandable: windowBytes < 8 * 1024 * 1024 && sessions.some((session) => session.omittedBytes > 0) } : {}),
+    note: `${mainNote} Only the active and recent disk sessions are loaded by default, each up to its newest ${windowBytes === null ? "8 MiB" : mebibytes(windowBytes)} of whole records; ${windowBytes !== null && windowBytes < 8 * 1024 * 1024 ? "Load more records to widen these sources up to 8 MiB; search and filters cover loaded records only. " : ""}older sessions remain available on demand; filters apply (General excludes complete, valid project-lane blocks). Thinking is native transcript content, never generated for this UI. Pure operational envelopes are hidden. Images are labeled, not rendered; pane lines never persisted cannot be recovered.` } };
 }

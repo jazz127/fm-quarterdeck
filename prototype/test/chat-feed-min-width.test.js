@@ -28,20 +28,47 @@ const chromiumAvailable = (() => { try { execFileSync(process.env.CHROMIUM || "c
 const lane = (id) => ({ id, name: id, status: "active", closed: false, messages: [{ recordId: `fixture:${id}`, author: "Firstmate", role: "firstmate", kind: "conversation", text: id, source: "fixture", time: "12:00", occurredAt: "2030-01-01T12:00:00Z" }], sessions: [], items: [], crew: 0, mission: "Fixture" });
 
 test("chat feed keeps its minimum width with the Message kinds panel and task rail open", { skip: !chromiumAvailable && "Chromium unavailable" }, async (t) => {
-  const app = createServer({ FM_DEPLOYMENT_TIER: "uat" }, { lanesReader: async () => ({ source: "fixture", lanes: [lane("general"), lane("working")], transcript: { sessions: [], warnings: [], note: "Fixture coverage" } }) });
+  const fixture = { source: "fixture", lanes: [lane("general"), lane("working")], transcript: { sessions: [], warnings: [], note: "Fixture coverage" } };
+  let finishRead;
+  // Hold the API independently of application startup so both loading and
+  // loaded layout are checked, not just whichever phase wins the CI race.
+  const app = createServer({ FM_DEPLOYMENT_TIER: "uat" }, { lanesReader: () => new Promise((resolve) => { finishRead = resolve; }) });
   await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.address().port}`;
-  t.after(() => app.close());
+  t.after(() => { finishRead?.(fixture); app.close(); });
   if (!(await fetch(base)).ok) return t.skip("Quarterdeck serves only from a clean committed checkout");
   const browser = await openBrowser();
   t.after(() => browser.close());
+  // Deterministically reproduce the old readiness bug: static loading children
+  // exist while the default Overview is still active and app.js is pending.
+  let appRequest;
+  browser.onEvent((event) => { if (event.method === "Fetch.requestPaused") appRequest = event.params.requestId; });
+  await browser.command("Fetch.enable", { patterns: [{ urlPattern: "*/app.js" }] });
   for (const [width, height] of [[1700, 1300], [1366, 768], [1440, 900], [1920, 1080], [1280, 800], [1201, 800], [1024, 768], [390, 844]]) {
     await browser.command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 720 });
-    await browser.command("Page.navigate", { url: `${base}/#lanes` });
-    await browser.until(`innerWidth === ${width} && document.querySelector('#messages')?.children.length > 0`);
-    await browser.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
-    const feed = await browser.evaluate(`document.querySelector('#messages').getBoundingClientRect().width`);
-    assert.ok(feed >= (width > 1200 ? MIN_FEED_WIDTH : 360), `feed ${feed}px at ${width}px viewport`);
+    const previousOrigin = await browser.evaluate("performance.timeOrigin");
+    finishRead = undefined;
+    await browser.command("Page.navigate", { url: `${base}/?viewport=${width}#lanes` });
+    if (width === 1700) {
+      await browser.until(`performance.timeOrigin !== ${previousOrigin} && document.querySelector('#messages')?.children.length > 0`);
+      const beforeRoute = await browser.evaluate(`({ view: document.querySelector('#lanes').dataset.view, active: document.querySelector('#conversations-view').classList.contains('active') })`);
+      assert.deepEqual(beforeRoute, { view: "overview", active: false }, "placeholder children do not mean the Fleet Chats route is ready");
+      await browser.command("Fetch.continueRequest", { requestId: appRequest });
+      await browser.command("Fetch.disable");
+    }
+    await browser.until(`performance.timeOrigin !== ${previousOrigin} && innerWidth === ${width} && document.querySelector('#lanes')?.dataset.view === 'conversations' && document.querySelector('#conversations-view.active') && document.querySelector('#messages[aria-busy=true] [role=status]')`);
+    // The loading DOM can precede the server receiving its request as well.
+    for (let attempt = 0; !finishRead && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(typeof finishRead, "function", "the controlled lane read started");
+    for (const phase of ["loading", "loaded"]) {
+      if (phase === "loaded") {
+        finishRead(fixture);
+        await browser.until(`document.querySelector('#messages[aria-busy=false] article.message')`);
+      }
+      await browser.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      const feed = await browser.evaluate(`document.querySelector('#messages').getBoundingClientRect().width`);
+      assert.ok(feed >= (width > 1200 ? MIN_FEED_WIDTH : 360), `feed ${feed}px at ${width}px viewport while ${phase}`);
+    }
   }
 });
 
@@ -72,7 +99,7 @@ test("chat feed keeps its minimum width after navigating to Fleet Chats at any d
         await browser.evaluate(`document.querySelector('.primary-tab[data-view="${view}"]').click()`);
         await browser.until(`document.querySelector('#lanes').dataset.view === "${view}"`);
       }
-      await browser.until(`document.querySelector('#messages')?.children.length > 0`);
+      await browser.until(`document.querySelector('#conversations-view.active') && document.querySelector('#messages[aria-busy=false] article.message')`);
       await browser.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
       const layout = await browser.evaluate(`(() => {
         const box = (selector) => document.querySelector(selector).getBoundingClientRect().toJSON();

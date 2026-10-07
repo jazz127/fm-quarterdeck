@@ -134,8 +134,9 @@
             </div>
           </section>
           <div class="conversation-feed">
+          <div id="transcript-window-status" class="transcript-window-status" hidden><span>Recent source windows · Search covers loaded records.</span><button id="transcript-load-more" type="button">Load more records</button></div>
           <div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-          <div id="messages" class="messages" aria-label="Conversation feed, oldest to newest"></div>
+          <div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true"><div class="notice" role="status">Loading Fleet Chats… Reading recent messages. Older history is available on demand.</div></div>
           <button id="jump-to-latest" class="jump-to-latest hidden" type="button" aria-label="Jump to latest message">↓ Jump to latest</button>
           </div>
           <aside id="conversation-kind-panel" class="conversation-kind-panel" aria-label="Message kind filters"><div class="kind-panel-heading"><span>Message kinds</span><button id="kind-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="kind-filter-menu" aria-expanded="true" aria-label="Collapse Message kinds panel" title="Collapse Message kinds panel">›</button></div></aside>
