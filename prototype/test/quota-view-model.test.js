@@ -55,8 +55,8 @@ test("authoritative scope bounds create two families, never labels or ambiguous 
   assert.equal(groups({ ...provider, scopes: [] }).length, 1, "display labels do not create families");
   assert.deepEqual(Array.from(windowLabels({ scope: "gemini", windows: [
     { label: "Gemini 5-hour" }, { label: "Gemini weekly" }, { label: "Extra period" }
-  ] })), ["5h", "weekly", "Extra period"]);
-  assert.deepEqual(Array.from(windowLabels({ scope: null, windows: [{ label: "Gemini 5-hour" }, { label: "Gemini weekly" }] })), ["Gemini 5-hour", "Gemini weekly"], "unproven group keeps full labels");
+  ] })), ["5h", "7d", "Extra period"]);
+  assert.deepEqual(Array.from(windowLabels({ scope: null, windows: [{ label: "Gemini 5-hour" }, { label: "Gemini weekly" }] })), ["Gemini 5-hour", "Gemini 7d"], "unproven group keeps family labels but abbreviates week");
   assert.deepEqual(Array.from(windowLabels({ scope: "gemini", windows: [{ label: "Gemini 5-hour" }, { label: "Other 5-hour" }] })), ["Gemini 5-hour", "Other 5-hour"], "duplicate shorthand must not obscure distinct windows");
   assert.equal(groups({ ...provider, windows: [windows[0]] })[0].windows.length, 1);
   assert.equal(groups({ ...provider, scopes: [{ scope: "a", boundedBy: ["gemini_5h"] }, { scope: "b", boundedBy: ["gemini_5h"] }] })[0].scope, null);
@@ -82,6 +82,64 @@ test("remaining-window notch is evidence-bound to captured interval, including e
   assert.equal(marker({ ...w, startsAt: "2030-01-02T00:00:00Z" }, w.startsAt), null);
   assert.equal(marker({ ...w, durationSeconds: -1 }, w.startsAt), null);
   assert.equal(marker(w, "not a timestamp"), null);
+});
+
+test("AGY classified intervals produce label-provenance markers without inventing pace", () => {
+  const capturedAt = "2030-01-01T02:30:00Z";
+  const raw = { provider: "agy", state: { status: "fresh", stale: false, refreshedAt: capturedAt },
+    quotaSemantics: { status: "known", effectiveAvailability: [] }, windows: [
+      { id: "gemini_5h", label: "Gemini 5-hour", kind: "session", resetsAt: "2030-01-01T05:00:00Z", percentRemaining: 68, pace: { status: "unknown" } },
+      { id: "gemini_weekly", label: "Gemini weekly", kind: "weekly", resetsAt: "2030-01-08T00:00:00Z" },
+      { id: "model:gemini", label: "Gemini", kind: "model", resetsAt: "2030-01-01T05:00:00Z" },
+      { id: "unknown", label: "Quota", kind: "unknown", resetsAt: "2030-01-01T05:00:00Z" },
+      { id: "other", label: "Other session", kind: "session", resetsAt: "2030-01-01T05:00:00Z" }
+    ] };
+  const [provider] = sanitizeQuota({ schemaVersion: 5, providers: [raw] });
+  assert.equal(provider.windows[0].durationSeconds, 18000);
+  assert.equal(provider.windows[1].durationSeconds, 604800);
+  assert.equal(provider.windows[0].durationBasis, "provider_label");
+  assert.equal(marker(provider.windows[0], capturedAt), 50);
+  assert.ok(marker(provider.windows[1], capturedAt) > 98);
+  for (const window of provider.windows.slice(2)) assert.equal(marker(window, capturedAt), null);
+  assert.equal(marker(provider.windows[0], "2030-01-01T05:00:01Z"), null);
+  assert.equal(marker(provider.windows[0], "2029-12-31T23:00:00Z"), null);
+  assert.equal(marker(provider.windows[0], null), null);
+  const stale = project({ providers: [provider], stale: true }, { now: Date.parse(capturedAt) }).sidebar[0].windows[0];
+  assert.equal(marker(stale, capturedAt), 50);
+  assert.equal(stale.pace.status, "unknown");
+  raw.windows[0].windowSeconds = 3600;
+  const [numeric] = sanitizeQuota({ schemaVersion: 5, providers: [raw] });
+  assert.equal(numeric.windows[0].durationSeconds, 3600, "numeric source duration wins");
+  assert.equal(numeric.windows[0].durationBasis, undefined);
+  raw.provider = "codex";
+  delete raw.windows[0].windowSeconds;
+  const [other] = sanitizeQuota({ schemaVersion: 5, providers: [raw] });
+  assert.equal(other.windows[0].durationSeconds, null, "fallback is AGY-only");
+});
+
+test("Claude model windows share one visual card without changing source bounds", () => {
+  const provider = { provider: "claude", status: "fresh", windows: [
+    { id: "five_hour", label: "session", percentRemaining: 55 },
+    { id: "seven_day", label: "week", percentRemaining: 70 },
+    { id: "seven_day_fable", label: "fable week", percentRemaining: 85 }
+  ], scopes: [
+    { scope: "all_models", boundedBy: ["five_hour", "seven_day"], percentRemaining: 55 },
+    { scope: "fable", boundedBy: ["seven_day_fable"], percentRemaining: 85 }
+  ] };
+  const families = groups(provider);
+  assert.equal(families.length, 1);
+  assert.deepEqual(Array.from(windowLabels(families[0])), ["session", "7d", "fable 7d"]);
+  const projected = project({ providers: [provider] });
+  assert.equal(projected.sidebar.length, 1);
+  assert.equal(projected.sidebar[0].windows.length, 3);
+  assert.deepEqual(projected.detail[0].scopes[1].boundedBy, ["seven_day_fable"]);
+  assert.equal(projected.detail[0].scopes[1].percentRemaining, 85);
+});
+
+test("week abbreviation is display-only and preserves distinct labels", () => {
+  assert.deepEqual(Array.from(windowLabels({ scope: "all_models", windows: [{ label: "Gemini weekly" }, { label: "Other week" }] })), ["Gemini 7d", "Other 7d"]);
+  assert.equal(window.quotaViewModel.windowLabel("Weekly quota"), "7d quota");
+  assert.equal(window.quotaViewModel.windowLabel("5h"), "5h");
 });
 
 test("Grok source provider combines independent weekly windows into one card with distinct compact labels", () => {

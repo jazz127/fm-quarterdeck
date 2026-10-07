@@ -45,6 +45,13 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   browser = await openBrowser();
   const { command, evaluate, until } = browser;
+  const reload = async () => {
+    // Page.reload acknowledges the command before replacing the document.
+    // Otherwise a readiness predicate can match the previous page's state.
+    await evaluate("window.syntheticReloadPending = true");
+    await command("Page.reload");
+    await until("!window.syntheticReloadPending && document.readyState === 'complete'");
+  };
   const navigation = await command("Page.navigate", { url: base });
   assert.equal(navigation.errorText, undefined, `Fixture navigation failed: ${JSON.stringify(navigation)}`);
   await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#projects')?.children.length > 0");
@@ -154,6 +161,9 @@ try {
       await evaluate("document.querySelector('#review-panel-toggle').click(); document.querySelector('#review-annotation-tab').click(); document.querySelector('#review-select-location').click()");
       await until("document.querySelector('#review-panel').hasAttribute('data-picking')");
     }
+    // Opening annotation/panel schedules composer autofocus. Let that finish
+    // before moving focus to search, rather than racing it across CDP calls.
+    if (state !== "idle") await until("document.activeElement.id === 'review-message'");
     await evaluate("window.syntheticSearchEscapes = []; document.querySelector('#review-message').value = 'Synthetic search-focus draft'; document.querySelector('#review-message').dispatchEvent(new Event('input', { bubbles: true }))");
     const reviewState = `({ annotationHidden: document.querySelector('#review-annotation').hidden,
       picking: document.querySelector('#review-panel').hasAttribute('data-picking'),
@@ -189,19 +199,25 @@ try {
     const sent = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, receiptId: 'local:' + id, state: 'accepted', entries: [entry] }; });
     sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false }));
   })()`);
-  await command("Page.reload");
+  await reload();
   await until("document.querySelector('#review-message')?.value === 'Unsent draft'");
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
   assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
   await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
-  await command("Page.reload");
-  await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");
   let loseNext = true, newConfig = false, eventError;
+  // Board rendering is not review readiness: loadConfig() is an independent
+  // fetch. Hold its response to force the ordering that used to flake in CI.
+  let holdConfig = true;
+  const configPaused = Promise.withResolvers();
   browser.onEvent((event) => {
     if (event.method !== "Fetch.requestPaused") return;
     const { requestId, request } = event.params;
     let action;
-    if (request.method === "POST" && loseNext) {
+    if (request.method === "GET" && holdConfig) {
+      holdConfig = false;
+      configPaused.resolve(requestId);
+      return;
+    } else if (request.method === "POST" && loseNext) {
       loseNext = false;
       action = command("Fetch.failRequest", { requestId, errorReason: "Failed" });
     } else if (request.method === "GET" && newConfig) {
@@ -211,13 +227,24 @@ try {
     action.catch((error) => { eventError = error; });
   });
   await command("Fetch.enable", { patterns: [{ urlPattern: "*/api/review", requestStage: "Response" }] });
-  await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit(); document.querySelector('#review-send').click()");
-  await until("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches.length === 1");
+  await reload();
+  await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");
+  const configRequestId = await configPaused.promise;
+  await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit()");
+  assert.equal(await evaluate("document.querySelector('#review-send').disabled"), true, "rendered board cannot send before review configuration arrives");
+  await evaluate("document.querySelector('#review-send').click()");
+  assert.equal(deliveries, 0, "an early click is ignored, not a simulated lost delivery");
+  assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue.length"), 1, "early click preserves the queued note");
+  await command("Fetch.continueRequest", { requestId: configRequestId });
+  await until("document.querySelector('#review-context')?.textContent.includes('Version') && !document.querySelector('#review-send').disabled");
+  await evaluate("document.querySelector('#review-send').click()");
+  await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 1 && !s.inFlight; })()");
+  assert.equal(loseNext, false, "the POST response was intercepted and lost");
   const original = await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]");
   assert.equal(deliveries, 1, "receipt persisted before losing its response");
   newConfig = true;
-  await command("Page.reload");
-  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb')");
+  await reload();
+  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
   assert.deepEqual(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]"), original);
   await evaluate("document.querySelector('#review-send').click()");
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 0 && !s.inFlight && s.sent.length === 1; })()");
@@ -229,8 +256,8 @@ try {
   const delayed = { schema: "fm-agentos-review.v1", batchId: delayedId, sessionId: "", version: "a".repeat(40), route: "#overview", end: false,
     entries: [{ kind: "message", text: "Synthetic delayed publication", region: null, route: "#overview", version: "a".repeat(40) }] };
   await evaluate(`sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: ${JSON.stringify(delayedId)}, payload: ${JSON.stringify(delayed)} }] }))`);
-  await command("Page.reload");
-  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb')");
+  await reload();
+  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
   await evaluate("document.querySelector('#review-send').click()");
   await until("Boolean(JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]?.rejected)");
   await deliverLocalReview({ ...delayed, provenance: { commit: delayed.version, branch: "uat" } }, receipts);

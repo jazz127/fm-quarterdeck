@@ -1359,11 +1359,18 @@ test("tiny quota strip reuses page reading and retains source pace/runway in acc
   assert.match(css, /\.quota-divider \{[^}]+width: 100%; height: 16px; cursor: ns-resize;/);
   assert.match(css, /\.review-divider \{[^}]+width: 16px; cursor: ew-resize;/);
   assert.match(css, /@media \(max-width: 720\.01px\) \{ \.panel-divider \{ display: none; \} \}/);
-  assert.match(css, /\.sidebar-quota \{[^}]+flex: 0 0 auto; height: var\(--quota-height, 220px\)/);
+  assert.match(css, /\.sidebar-quota \{[^}]+flex: 0 1 auto; height: var\(--quota-height, auto\)/);
   assert.doesNotMatch(css, /\.quota-strip \{[^}]+resize: vertical;/);
   assert.ok(html.indexOf('<section id="sidebar-quota"') < html.indexOf('<footer class="source-status"'));
   assert.match(css, /\.sidebar-quota \{ display: none; \}/);
   assert.match(css, /\.primary-nav \{[^}]+grid-template-rows: 48px 48px/);
+  // Native header button covers non-control space; narrow panes hide the reading time.
+  assert.match(css, /\.sidebar-quota-head \{ position: relative; display: flex;/);
+  assert.match(css, /@container sidebar-quota \(max-width: 219\.98px\) \{ \.sidebar-quota-freshness \{ display: none; \} \}/);
+  assert.match(html, /id="sidebar-quota-toggle"[^>]+aria-expanded="true"[^>]+><span>Quota<\/span>/);
+  assert.doesNotMatch(html, /class="sidebar-quota-link"/);
+  assert.match(html, /<div id="sidebar-quota-sort" class="sidebar-quota-sort" role="group" aria-label="Sort quota limits">/);
+  assert.match(html, /data-sort="left" aria-pressed="true"[^>]*>Left<span class="sidebar-quota-sort-direction" aria-hidden="true">↓<\/span><\/button><button type="button" class="sidebar-quota-sort-option" data-sort="runway" aria-pressed="false" aria-label="Runway"[^>]*>Run<span class="sidebar-quota-sort-long">way<\/span>/);
 
   const app = ui();
   const statuses = ["ahead", "on_pace", "behind", "mixed", "through_reset", "projected_exhaustion", "exhausted_now", "unknown"];
@@ -1414,12 +1421,23 @@ test("grouped quota cards keep two compact rows, truthful remaining and timing u
     assert.match(html, /Reset-window position unknown/);
     assert.doesNotMatch(html, /time \?/);
     assert.match(html, /provider-monogram/);
-    assert.match(html, /provider-name/);
+    assert.match(html, /<b class="provider-name">AGY/);
+    assert.doesNotMatch(html, /<span class="provider-name">/);
     assert.equal((html.match(/class="quota-family-notch"/g) || []).length, 1);
     assert.ok(html.includes("2030-01-08"));
   }
   assert.equal((strip.match(/class="quota-family-row/g) || []).length, 3, "extra unknown window remains in its own unproven group");
   assert.equal((page.split("</summary>")[0].match(/class="quota-family-row/g) || []).length, 3);
+});
+
+test("quota freshness stays accessible with compact single-line text", () => {
+  const app = ui();
+  app.run(`renderQuota(${JSON.stringify({ providers: [{ provider: "agy", stale: true, status: "stale", refreshedAt: "2030-01-01T00:00:00Z", windows: [{ id: "w", label: "week", kind: "weekly", percentRemaining: 50 }], scopes: [] }] })})`);
+  for (const html of [app.node("#quota-strip").innerHTML, app.node("#quota-providers").innerHTML]) {
+    assert.match(html, /class="quota-staleness" title="stale · 0s" aria-label="stale · 0s"/);
+    assert.match(html, /class="quota-age">stale 0s/);
+    assert.match(html, /AGY/);
+  }
 });
 
 test("compact desktop and phone quota previews keep both horizons, reset ticker, and honest marker", () => {
@@ -1432,7 +1450,8 @@ test("compact desktop and phone quota previews keep both horizons, reset ticker,
   for (const id of ["#quota-strip", "#mobile-quota-sheet-content"]) {
     const preview = app.node(id).innerHTML;
     assert.match(preview, />5h/);
-    assert.match(preview, />weekly/);
+    assert.match(preview, />7d/);
+    assert.match(preview, /title="Gemini weekly"/);
     assert.match(preview, /24%/);
     assert.match(preview, /70%/);
     assert.match(preview, / · <span class="quota-reset-full">[0-9]+[dhm]/);
@@ -2108,7 +2127,7 @@ test("quota cards distinguish reused and stale readings and suppress stale proje
   const reusedAt = new Date(Date.now() - 42000).toISOString();
   app.run(`renderQuota(${JSON.stringify({ maxAgeMs: 300000, readAt: reusedAt, providers: [{ ...baseProvider, reused: true, refreshedAt: reusedAt }] })})`);
   let cards = app.node("#quota-providers").innerHTML;
-  assert.match(cards, /class="quota-reused">reused 42s/);
+  assert.match(cards, /class="quota-reused" title="reused 42s" aria-label="reused 42s"><span class="quota-age">reused 42s/);
 
   const staleAt = new Date(Date.now() - 1000).toISOString();
   app.run(`renderQuota(${JSON.stringify({ maxAgeMs: 300000, readAt: staleAt, providers: [{ ...baseProvider, status: "stale", stale: true, refreshedAt: staleAt }] })})`);
@@ -2255,8 +2274,8 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     const assertInteraction = () => {
       assert.equal(cards.querySelector('details[data-provider="codex"]'), card, interaction);
       assert.equal(card.querySelector("summary"), summary, interaction);
-      assert.equal(strip.querySelector("a"), link, interaction);
-      assert.equal(mobile.querySelector(".mobile-quota-sheet-row"), row, interaction);
+      assert.ok([...strip.querySelectorAll("a")].includes(link), interaction);
+      assert.ok([...mobile.querySelectorAll(".mobile-quota-sheet-row")].includes(row), interaction);
       if (interaction.endsWith("focus")) assert.equal(app.run("document.activeElement"), focused, interaction);
       else {
         assert.equal(selection.anchorNode, selectedText, interaction);
@@ -2278,7 +2297,7 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     assertInteraction();
     app.run("quotaNow += 15000; quotaTick()");
     assert.equal(card.classList.contains("quota-card-stale"), true);
-    assert.match(card.textContent, /stale · 5m/);
+    assert.match(card.textContent, /stale 5m/);
     assert.match(card.textContent, /Effective availability unknown/);
     assert.match(card.textContent, /Runway: Unknown/);
     assert.doesNotMatch(card.textContent, /Pace: Ahead|Projected exhaustion|percentage points reserve/);
@@ -2344,7 +2363,7 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
     for (let index = 0; index < 4; index++) {
       assert.equal(staleLinks[index], links[index]);
       assert.equal(staleRows[index], rows[index]);
-      assert.match(staleRows[index].textContent, /stale · 5m/);
+      assert.match(staleRows[index].textContent, /stale 5m/);
     }
     for (const surface of [strip, mobile]) assert.doesNotMatch(surface.textContent, /unmeasured|Hidden source|grok/);
     if (interaction === "sidebar-focus") assert.equal(app.run("document.activeElement"), links[0]);
