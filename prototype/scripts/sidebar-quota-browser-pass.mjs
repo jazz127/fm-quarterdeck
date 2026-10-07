@@ -51,11 +51,11 @@ try {
  await click('left');assert.equal((await sortState()).stored,'highest');
  await sort('lowest');assert.deepEqual(await order(),['codex','claude','agy','grok','muse','cursor']);
  await sort('runway');assert.deepEqual(await order(),['codex','claude','agy','grok','cursor','muse']);
- assert.equal(await browser.evaluate(`document.querySelectorAll('.quota-sort-basis').length`),6);
+ assert.equal(await browser.evaluate(`document.querySelectorAll('#quota-strip .quota-sort-basis').length`),6);
  assert.match(await browser.evaluate(`document.querySelector('#quota-strip').textContent`),/Runway: unknown/);
  await click('runway');assert.equal((await sortState()).stored,'runway-lowest');assert.deepEqual(await order(),['grok','agy','claude','codex','cursor','muse']);
  assert.equal(await browser.evaluate(`document.querySelector('[data-sort="runway"]').textContent`),'Runway↑');
- await browser.command('Page.reload');await browser.until(`document.querySelectorAll('.quota-sort-basis').length === 6`);
+ await browser.command('Page.reload');await browser.until(`document.querySelectorAll('#quota-strip .quota-sort-basis').length === 6`);
  assert.equal((await sortState()).stored,'runway-lowest');
  await click('az');assert.deepEqual(await order(),['agy','claude','codex','cursor','grok','muse']);
  await click('az');assert.deepEqual(await order(),['muse','grok','cursor','codex','claude','agy']);

@@ -204,9 +204,11 @@
 
         <section id="quota-view" class="product-view feature-view" aria-label="Subscription quota">
           <header class="feature-head"><div><p class="eyebrow">QUOTA</p><h1>Subscription limits</h1><p>Read-only quota evidence from quota-axi. Missing limits remain unknown.</p></div><span class="source-badge">quota-axi</span></header>
-          <div class="quota-controls"><label><input id="quota-hide-inactive" type="checkbox"> Hide inactive subscriptions</label><button id="quota-order" type="button" aria-label="Sort by lowest remaining first" aria-pressed="false">Highest remaining first ↓</button><button id="quota-expand-all" type="button">Expand all</button><button id="quota-collapse-all" type="button">Collapse all</button></div>
-          <p id="quota-state" class="notice" role="status" aria-live="polite">Loading quota…</p>
-          <div id="quota-providers" class="quota-grid"></div>
+          <p id="quota-state" class="quota-freshline" role="status" aria-live="polite">Loading quota…</p>
+          <div class="quota-controls"><span id="quota-sort-label">Sort</span><div class="quota-sort" role="group" aria-labelledby="quota-sort-label"><button id="quota-sort-left" type="button" data-quota-sort="left" aria-pressed="true" title="Select again to reverse direction">Left <span class="quota-sort-direction" aria-hidden="true">↓</span></button><button id="quota-sort-runway" type="button" data-quota-sort="runway" aria-pressed="false" title="Select again to reverse direction">Runway <span class="quota-sort-direction" aria-hidden="true">↓</span></button><button id="quota-sort-az" type="button" data-quota-sort="az" aria-pressed="false" title="Select again to reverse direction">AZ <span class="quota-sort-direction" aria-hidden="true">↑</span></button></div><label><input id="quota-hide-inactive" type="checkbox"> Hide not set up</label><button id="quota-details-toggle" type="button" aria-pressed="false">Show all details</button></div>
+          <div id="quota-summary"></div>
+          <p id="quota-legend" class="quota-legend" aria-hidden="true" hidden><span><i></i> remaining</span><span><i class="quota-legend-track"></i> used</span><span><i class="quota-legend-notch"></i> time left in window</span><span><i class="quota-legend-reserve"></i> reserve (under pace)</span><span><i class="quota-legend-deficit"></i> over pace</span></p>
+          <div id="quota-providers" class="quota-grid" aria-busy="true"><div class="quota-skeleton" data-quota-key="loading-1"><span></span><span></span><span></span></div><div class="quota-skeleton" data-quota-key="loading-2"><span></span><span></span><span></span></div></div>
         </section>
 
         <section id="preferences-view" class="product-view feature-view" aria-label="Firstmate preferences">

@@ -959,7 +959,7 @@ let lastRenderedQuotaJson = "";
 let quotaReading = null;
 let quotaAgeTimer = null;
 let quotaHideInactive = false;
-let quotaLowestFirst = false;
+let quotaAllDetails = false;
 let sidebarQuotaSort = "highest";
 try {
   const saved = localStorage.getItem("fm-agentos-sidebar-quota-sort.v1");
@@ -992,22 +992,39 @@ const renderSidebarSort = () => {
   }
 };
 renderSidebarSort();
-sidebarSortControl?.addEventListener("click", (event) => {
-  const option = event.target.closest("[data-sort]");
-  if (!option) return;
-  if (option.dataset.sort === "az") {
-    if (["az", "za"].includes(sidebarQuotaSort)) sidebarAlphaSort = sidebarAlphaSort === "az" ? "za" : "az";
-    sidebarQuotaSort = sidebarAlphaSort;
-  } else if (option.dataset.sort === "runway") {
-    if (sidebarQuotaSort.startsWith("runway")) sidebarRunwaySort = sidebarRunwaySort === "runway" ? "runway-lowest" : "runway";
-    sidebarQuotaSort = sidebarRunwaySort;
-  } else {
-    if (["highest", "lowest"].includes(sidebarQuotaSort)) sidebarLeftSort = sidebarLeftSort === "highest" ? "lowest" : "highest";
-    sidebarQuotaSort = sidebarLeftSort;
-  }
+function setQuotaSort(mode) {
+  if (!["highest", "lowest", "runway", "runway-lowest", "az", "za"].includes(mode)) return;
+  sidebarQuotaSort = mode;
+  if (["az", "za"].includes(mode)) sidebarAlphaSort = mode;
+  else if (mode.startsWith("runway")) sidebarRunwaySort = mode;
+  else sidebarLeftSort = mode;
   renderSidebarSort();
+  renderPageQuotaSort();
   try { localStorage.setItem("fm-agentos-sidebar-quota-sort.v1", sidebarQuotaSort); } catch { /* In-memory preference works. */ }
   if (quotaReading) renderQuota(quotaReading);
+}
+function selectQuotaSortKey(key) {
+  if (key === "az") setQuotaSort(["az", "za"].includes(sidebarQuotaSort) ? sidebarAlphaSort === "az" ? "za" : "az" : sidebarAlphaSort);
+  else if (key === "runway") setQuotaSort(sidebarQuotaSort.startsWith("runway") ? sidebarRunwaySort === "runway" ? "runway-lowest" : "runway" : sidebarRunwaySort);
+  else if (key === "left") setQuotaSort(["highest", "lowest"].includes(sidebarQuotaSort) ? sidebarLeftSort === "highest" ? "lowest" : "highest" : sidebarLeftSort);
+}
+function renderPageQuotaSort() {
+  for (const [key, active, direction, label] of [
+    ["left", ["highest", "lowest"].includes(sidebarQuotaSort), sidebarLeftSort === "lowest" ? "↑" : "↓", `Remaining capacity, ${sidebarLeftSort} first`],
+    ["runway", sidebarQuotaSort.startsWith("runway"), sidebarRunwaySort === "runway-lowest" ? "↑" : "↓", `Runway, ${sidebarRunwaySort === "runway" ? "best" : "lowest"} first`],
+    ["az", ["az", "za"].includes(sidebarQuotaSort), sidebarAlphaSort === "az" ? "↑" : "↓", `Provider name, ${sidebarAlphaSort === "az" ? "A to Z" : "Z to A"}`]
+  ]) {
+    const button = $("#quota-sort-" + key);
+    button?.setAttribute("aria-pressed", String(active));
+    button?.setAttribute("aria-label", label);
+    const indicator = button?.querySelector?.(".quota-sort-direction");
+    if (indicator) indicator.textContent = direction;
+  }
+}
+renderPageQuotaSort();
+sidebarSortControl?.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-sort]");
+  if (option) selectQuotaSortKey(option.dataset.sort);
 });
 const quotaOpen = new Map();
 
@@ -1069,7 +1086,7 @@ function formatRelativeTime(isoString, now = Date.now()) {
   return remHours > 0 ? `in ${diffDays}d ${remHours}h` : `in ${diffDays}d`;
 }
 
-// Only reported effective scopes determine ordering. Unknown remains unknown and sorts last.
+// Shared window-based sort keys keep page and sidebar ordering consistent.
 const { project: projectQuota, groups: quotaGroups, marker: quotaMarker, remaining: quotaRemaining, active: quotaActive, windowLabels: quotaWindowLabels, windowLabel: quotaWindowLabel, valid: validQuotaPercent } = window.quotaViewModel;
 
 // Reuse the Quota page's sanitized reading; the strip never reads quota itself.
@@ -1099,7 +1116,8 @@ function compactQuotaReset(iso, now = Date.now(), shortened = false) {
   if (minutes < 1440) return `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
   return `${Math.floor(minutes / 1440)}d${Math.floor(minutes % 1440 / 60) ? ` ${Math.floor(minutes % 1440 / 60)}h` : ""}`;
 }
-function quotaFamilyBox(family, readAt, { compact = false } = {}) {
+function quotaFamilyBox(family, readAt, { compact = false, variant = "compact" } = {}) {
+  if (variant === "page") return quotaPageFamilyHtml(family, readAt);
   const windows = family.windows || [];
   const heading = escapeHtml(family.provider === "agy" ? family.name.replace(/^agy\b/, "AGY") : family.name);
   const labels = quotaWindowLabels(family);
@@ -1186,20 +1204,68 @@ function getCriticalConstraint(provider) {
   return { label: "Binding limit unknown", text: "No source-reported limiting window" };
 }
 
+function quotaFreshnessHtml(provider) {
+  return provider.stale ? `<span data-quota-key="freshness" class="quota-staleness" title="${escapeHtml(provider.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(provider.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((provider.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : provider.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(provider.reusedLabel)}" aria-label="${escapeHtml(provider.reusedLabel)}"><span class="quota-age">${escapeHtml(provider.reusedLabel)}</span></span>` : provider.status && provider.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(provider.status)}">${escapeHtml(quotaName(provider.status))}</span>` : "";
+}
+function quotaPageScopeName(scope) {
+  return scope === "claude_gpt" ? "Claude/GPT" : quotaName(scope);
+}
+function quotaPageFamilyHtml(family, capturedAt) {
+  const labels = quotaWindowLabels(family);
+  return `<div data-quota-key="${escapeHtml(JSON.stringify([family.provider, family.scope]))}" class="quota-family quota-family-page${family.windows.some(w => w.isLimiting) ? " quota-summary-window-limiting" : ""}">
+    ${family.showHeading ? `<h3 class="quota-family-heading">${escapeHtml(quotaPageScopeName(family.scope || family.provider))}${validQuotaPercent(family.effective) ? `<span>${family.effective}% effective</span>` : ""}</h3>` : ""}
+    ${family.windows.map((w, index) => {
+      const known = validQuotaPercent(w.percentRemaining), position = quotaMarker(w, capturedAt);
+      const band = window.quotaViewModel.paceBand(w, position, family.stale);
+      const pace = family.stale ? "unknown" : w.pace?.status || "unknown";
+      const reserve = pace !== "unknown" && Number.isFinite(w.pace?.reservePercentPoints) ? ` ${w.pace.reservePercentPoints > 0 ? "+" : ""}${w.pace.reservePercentPoints.toFixed(1)} pts` : "";
+      const reset = compactQuotaReset(w.resetsAt);
+      const resetText = reset === "reset passed" ? "reported reset time passed · awaiting new reading" : reset === "reset unknown" ? "reset unknown" : `resets in ${reset}`;
+      const detail = `${w.label || quotaName(w.scope)}: ${quotaPercent(w.percentRemaining)}; ${position === null ? "Reset-window position unknown (source window boundaries unavailable or inconsistent)" : `${position.toFixed(1)}% of reset window remaining at source capture`}; Pace: ${pace}${reserve}; Runway: ${w.runway?.status || "unknown"}; ${resetText}${w.isLimiting ? "; Source-reported limiting window" : ""}${w.durationBasis === "provider_label" ? "; Window length from provider label" : ""}${family.stale ? "; captured value" : ""}`;
+      return `<div data-quota-key="${escapeHtml(w.id ?? w.scope ?? index)}" class="quota-family-row${!known ? " quota-family-unknown" : w.percentRemaining === 0 ? " quota-family-exhausted" : ""}" title="${escapeHtml(detail)}">
+        <span class="quota-family-label" title="${escapeHtml(w.label || quotaName(w.scope))}" aria-label="${escapeHtml(w.label || quotaName(w.scope))}">${escapeHtml(labels[index])}${w.isLimiting ? '<span class="quota-limit-tag">LIMIT</span>' : ""}${position === null ? '<span class="sr-only"> Reset-window position unknown.</span>' : ""}</span>
+        <span class="quota-family-meter"><span class="quota-family-track${known ? "" : " quota-bar-unknown"}" role="${known ? "progressbar" : "img"}" aria-label="${escapeHtml(detail)}"${known ? ` aria-valuemin="0" aria-valuemax="100" aria-valuenow="${w.percentRemaining}" aria-valuetext="${escapeHtml(detail)}"` : ""}><span class="quota-family-fill" style="width:${known ? w.percentRemaining : 0}%"></span></span>${position === null ? "" : `<i class="quota-family-notch" style="--remaining:${position}%" role="img" aria-label="${position.toFixed(1)}% of reset window remaining at source capture"></i>`}${band ? `<i class="quota-family-band" data-kind="${band.kind}" style="left:${band.left}%;width:${band.width}%" aria-hidden="true"></i>` : ""}</span>
+        <strong class="quota-family-value" aria-label="${escapeHtml(detail)}">${known ? `${w.percentRemaining}%` : "?"}</strong>
+        <span class="quota-family-meta">${family.stale ? "<span>captured value</span>" : ""}${quotaSignal(pace, "Pace", "pace")}${reserve ? `<span>${escapeHtml(reserve)}</span>` : ""}${w.percentRemaining === 0 && (pace === "exhausted_now" || w.runway?.status === "exhausted_now" || family.exhausted) ? "<span>× exhausted</span>" : ""}<span>${escapeHtml(resetText)}</span>${w.durationBasis === "provider_label" ? '<span title="Window length from provider label">window length from provider label</span>' : ""}</span>
+        ${w.resetsAt && Number.isFinite(Date.parse(w.resetsAt)) ? `<time class="sr-only" datetime="${escapeHtml(w.resetsAt)}">Reset ${escapeHtml(w.resetsAt)}</time>` : '<span class="sr-only">Reset unknown</span>'}
+      </div>`;
+    }).join("")}</div>`;
+}
+function quotaSummaryHtml(summary) {
+  const effectiveTile = (title, winner, key) => `<div data-quota-key="${key}" class="quota-summary-tile"><dt>${title}</dt><dd>${winner ? `<a href="#quota" data-quota-target="${escapeHtml(winner.provider)}"><strong>${winner.percentRemaining}%</strong> <b>${escapeHtml(quotaName(winner.provider))} · ${escapeHtml(quotaPageScopeName(winner.scope))}</b></a>` : '<strong>—</strong> <span>No effective limit known</span>'}</dd><dd class="quota-summary-note">${summary.stale ? "unknown (stale)" : winner?.limit ? `limit: ${escapeHtml(winner.limitLabel || quotaWindowLabel(winner.limit.label))} · ${escapeHtml(formatRelativeTime(winner.limit.resetsAt) ? `resets ${formatRelativeTime(winner.limit.resetsAt)}` : "reset unknown")}` : "binding window unknown"}${winner?.tied ? ` · +${winner.tied} tied` : ""}${summary.unknown ? ` · ${summary.unknown} unknown` : ""}</dd></div>`;
+  const r = summary.runway, next = summary.nextReset, then = summary.thenReset;
+  return `<dl class="quota-summary" aria-label="At a glance">${effectiveTile("Tightest", summary.tightest, "tightest")}${effectiveTile("Most room", summary.mostRoom, "most-room")}
+    <div data-quota-key="runway" class="quota-summary-tile${r.exhausted_now || r.projected_exhaustion ? " quota-summary-warn" : ""}"><dt>Runway</dt><dd>${r.exhausted_now ? `<strong>${r.exhausted_now}</strong> exhausted now` : r.unknown === r.total ? `<strong>—</strong> Runway unknown${summary.stale ? " (stale)" : ""}` : `<strong>${r.through_reset}</strong> of ${r.total} scopes last through reset`}</dd><dd class="quota-summary-note">${r.projected_exhaustion} projected to run out${r.soonest ? ` · ${escapeHtml(quotaDuration(r.soonest.seconds) || "")}${r.soonest.exhaustedAt ? ` · <time datetime="${escapeHtml(r.soonest.exhaustedAt)}">${escapeHtml(new Date(r.soonest.exhaustedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}</time>` : ""}` : ""} · ${r.unknown} unknown</dd></div>
+    <div data-quota-key="next-reset" class="quota-summary-tile quota-summary-reset"><dt>Next reset</dt><dd>${next ? `<a href="#quota" data-quota-target="${escapeHtml(next.provider)}"><strong>${escapeHtml(compactQuotaReset(next.window.resetsAt))}</strong> <b>${escapeHtml(quotaName(next.provider))}${next.scope ? ` · ${escapeHtml(quotaPageScopeName(next.scope))}` : ""} · ${escapeHtml(next.label || quotaWindowLabel(next.window.label))}</b></a>` : "No upcoming reset reported"}</dd><dd class="quota-summary-note">${next ? `${next.captured ? "captured · " : ""}at ${escapeHtml(new Date(next.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}${then ? ` · then ${escapeHtml(quotaName(then.provider))}${then.scope ? ` ${escapeHtml(quotaPageScopeName(then.scope))}` : ""} ${escapeHtml(then.label || quotaWindowLabel(then.window.label))} in ${escapeHtml(compactQuotaReset(then.window.resetsAt))}` : ""}` : "—"}</dd></div></dl>`;
+}
+function quotaCardRunway(provider) {
+  if (provider.stale) return "unknown (stale)";
+  const statuses = provider.scopes.map(s => s.runway?.status || "unknown");
+  const status = ["exhausted_now", "projected_exhaustion", "unknown", "through_reset"].find(s => statuses.includes(s)) || "unknown";
+  const seconds = provider.scopes.filter(s => s.runway?.status === status && Number.isFinite(s.runway.seconds)).map(s => s.runway.seconds);
+  return `${status === "projected_exhaustion" ? `runs out${seconds.length ? ` in ${quotaDuration(Math.min(...seconds))}` : " (time unknown)"}` : status.replaceAll("_", " ")}${new Set(statuses).size > 1 ? " (per scope in details)" : ""}`;
+}
 function renderQuota(data) {
   const state = $("#quota-state");
-  const reading = data.readAt ? `Quota source last read ${new Date(data.readAt).toLocaleString()}.` : "No quota source reading available.";
-  renderQuotaHtml(state, escapeHtml(`${data.stale ? "Stale last successful reading. " : ""}${reading}${data.error ? ` ${data.error}.` : ""}`));
+  const allProjection = projectQuota(data, { sortMode: sidebarQuotaSort, sidebarSort: sidebarQuotaSort, now: Date.now() });
+  const counts = `${allProjection.detail.length} active · ${allProjection.inactive.filter(p => p.status === "error").length} error · ${allProjection.inactive.filter(p => p.status !== "error").length} not set up`;
+  const reading = data.readAt ? `Quota source last read ${new Date(data.readAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : "No quota source reading available.";
+  state.className = data.stale || data.error ? "notice" : "quota-freshline";
+  renderQuotaHtml(state, escapeHtml(`${data.stale ? "Stale last successful reading. " : ""}${reading} ${counts}${data.error ? `. ${data.error}.` : ""}${data.stale ? " Availability, pace and runway are unknown until a fresh reading." : ""}`));
   quotaReading = data;
   if (!quotaAgeTimer && typeof window !== "undefined" && window.setInterval) {
     quotaAgeTimer = window.setInterval(() => { if (quotaReading) renderQuota(quotaReading); }, 15000);
   }
   const providers = data.providers || [];
-  const projection = projectQuota(data, { hideInactive: quotaHideInactive, lowestFirst: quotaLowestFirst, sidebarSort: sidebarQuotaSort, now: Date.now() });
+  const projection = { ...allProjection, inactive: quotaHideInactive ? [] : allProjection.inactive };
   renderQuotaStrip(data, projection);
+  renderQuotaHtml($("#quota-summary"), projection.detail.length ? quotaSummaryHtml(window.quotaViewModel.summarize(projection, Date.now())) : "");
+  $("#quota-legend").hidden = !projection.detail.length;
+  updateSidebarSortLabel();
 
   const container = $("#quota-providers");
-  const currentJson = JSON.stringify([projection.detail.map(({ ageMs, ...provider }) => provider), projection.inactive, data.readAt, data.stale, data.error, quotaHideInactive, quotaLowestFirst, [...quotaOpen.entries()]]);
+  container.setAttribute("aria-busy", "false");
+  const currentJson = JSON.stringify([projection.detail.map(({ ageMs, ...provider }) => provider), projection.inactive, data.readAt, data.stale, data.error, data.unsupportedProviders, quotaHideInactive, sidebarQuotaSort, Math.floor(Date.now() / 15000), [...quotaOpen.entries()]]);
   if (lastRenderedQuotaJson === currentJson && container && (container.innerHTML || container.children?.length)) {
     return;
   }
@@ -1207,94 +1273,67 @@ function renderQuota(data) {
   lastRenderedQuotaJson = currentJson;
 
   const date = (value) => value ? `<time datetime="${escapeHtml(value)}" title="${escapeHtml(value)}">${escapeHtml(new Date(value).toLocaleString([], { dateStyle: "full", timeStyle: "long" }))}</time>` : "Reset unknown";
-  const bar = (value, label = "Remaining") => validQuotaPercent(value)
-    ? `<div class="quota-bar" role="progressbar" aria-label="${escapeHtml(label)}: percent remaining (filled bar)" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><span style="width:${value}%"></span></div>` : '<div class="quota-bar quota-bar-unknown" aria-label="Remaining unknown"></div>';
   const pace = (value) => value && value.status !== "unknown" ? ` · Pace: ${escapeHtml(quotaName(value.status))}${typeof value.reservePercentPoints === "number" ? ` (${formatQuotaReserve(value.reservePercentPoints)})` : ""}` : " · Pace unknown";
 
+  const unsupported = data.unsupportedProviders > 0 ? `<p data-quota-key="unsupported" class="quota-unsupported">${data.unsupportedProviders} provider ${data.unsupportedProviders === 1 ? "entry" : "entries"} not shown because the format is unsupported.</p>` : "";
   if (!providers.length) {
-    renderQuotaHtml(container, '<p class="notice">Quota unavailable. No limits are known.</p>');
+    const empty = data.error ? `<p class="quota-empty"><b>Quota unavailable</b><br>${escapeHtml(data.error)}. No limits are known.</p>` : '<p class="quota-empty">No subscriptions reported. Remaining capacity is unknown.</p>';
+    renderQuotaHtml(container, empty + unsupported);
     return;
   }
 
   const { detail: activeProviders, inactive: unconfiguredProviders } = projection;
 
+  const quotaMoreHtml = (provider) => `<div class="quota-more-body">
+    ${provider.stale || provider.quotaStatus !== "known" ? `<p class="quota-meta">Quota: ${escapeHtml(quotaName(provider.quotaStatus))}${provider.stale ? ` · ${escapeHtml(provider.staleLabel || "stale · age unknown")} · effective unknown` : ""}</p>` : ""}
+    ${provider.unresolvedWindowIds?.length ? `<p class="quota-unresolved">Unresolved windows: ${escapeHtml(provider.unresolvedWindowIds.join(", "))}</p>` : ""}
+    ${provider.scopes.length ? `<div data-quota-key="scopes" class="quota-group"><h3 class="quota-group-heading">Effective Scopes</h3>
+      <table class="quota-scopes"><thead><tr><th scope="col">Scope</th><th scope="col">Effective</th><th scope="col">Bounded by</th><th scope="col">Limit</th><th scope="col">Runway</th></tr></thead><tbody>
+      ${provider.scopes.map(s => `<tr data-quota-key="${escapeHtml(s.scope)}" class="quota-scope"><td><h3>${escapeHtml(quotaPageScopeName(s.scope))}</h3></td>
+        <td data-label="Effective">${quotaPercent(s.percentRemaining)}<br>${provider.stale ? "Effective availability unknown" : escapeHtml(quotaName(s.status))}${pace(s.pace)}</td>
+        <td data-label="Bounded by"><span class="sr-only">Reported bounds: </span>${s.boundedBy?.length ? escapeHtml(s.boundedBy.map(quotaName).join(", ")) : "Unknown"}</td>
+        <td data-label="Limit"><span class="sr-only">Source-reported limits: </span>${s.limitingWindowIds?.length ? escapeHtml(s.limitingWindowIds.map(quotaName).join(", ")) : "Unknown"}</td>
+        <td data-label="Runway">Runway: ${escapeHtml(quotaName(s.runway?.status))}${quotaDuration(s.runway?.seconds) ? ` · ${quotaDuration(s.runway.seconds)}` : ""}${s.runway?.exhaustedAt ? ` · Projected exhaustion: ${date(s.runway.exhaustedAt)}` : ""}</td></tr>`).join("")}</tbody></table></div>` : "<p>Effective scope unavailable or unknown.</p>"}
+    ${provider.windows.length ? `<div data-quota-key="windows" class="quota-group"><h3 class="quota-group-heading">Quota Windows</h3>
+      ${provider.windows.map(w => `<section data-quota-key="${escapeHtml(w.id)}" class="quota-window${w.isLimiting ? " quota-window-limiting" : ""}">
+        <div class="quota-row-head"><h3 title="${escapeHtml(w.label)} (${escapeHtml(w.kind || "unknown")})" aria-label="${escapeHtml(w.label)} (${escapeHtml(w.kind || "unknown")})">${escapeHtml(quotaWindowLabel(w.label))} <small>(${escapeHtml(quotaWindowLabel(w.kind))})</small></h3><span class="quota-head-percent">${quotaPercent(w.percentRemaining)}</span></div>
+        <p>${provider.scopes.some(s => s.boundedBy?.includes(w.id)) ? "Effective scope bound" : "Not established as an effective scope bound"}</p>
+        <p>Reset: ${date(w.resetsAt)}${formatRelativeTime(w.resetsAt) ? ` (${formatRelativeTime(w.resetsAt)})` : ""}${w.annotation ? ` · Note: ${escapeHtml(quotaName(w.annotation.category))} — ${escapeHtml(w.annotation.meaning)}` : ""}${pace(w.pace)}</p>${pacingExplanation(w.pace)}</section>`).join("")}</div>` : "<p>No subscription windows reported.</p>"}
+  </div>`;
+
   const renderActiveCard = (provider) => {
-    const isOpen = quotaOpen.has(provider.provider) ? quotaOpen.get(provider.provider) : true;
+    const isOpen = quotaOpen.has(provider.provider) ? quotaOpen.get(provider.provider) : quotaAllDetails;
     const critical = getCriticalConstraint(provider);
-    const limitingSet = new Set(provider.windows.filter((window) => window.isLimiting).map((window) => window.id));
+    const families = quotaGroups(provider);
+    const percent = quotaRemaining(provider);
+    const headingId = `quota-heading-${reviewId(provider.provider)}`;
 
     return `
-      <details data-quota-key="${escapeHtml(provider.provider)}" class="quota-card quota-accordion${provider.stale ? " quota-card-stale" : ""}" data-review-id="quota:${reviewId(provider.provider)}" data-provider="${escapeHtml(provider.provider)}"${isOpen ? " open" : ""}>
-        <summary class="quota-accordion-summary">
-          <div class="quota-summary-heading">
-            ${providerLogoHtml(provider.provider, { mono: false, size: 22 })}
-            <h2>${escapeHtml(provider.provider === "agy" ? "AGY" : provider.provider)}</h2>
-            ${provider.stale ? `<span data-quota-key="freshness" class="quota-staleness" title="${escapeHtml(provider.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(provider.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((provider.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : provider.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(provider.reusedLabel)}" aria-label="${escapeHtml(provider.reusedLabel)}"><span class="quota-age">${escapeHtml(provider.reusedLabel)}</span></span>` : provider.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(provider.status)}">${escapeHtml(quotaName(provider.status))}</span>` : ""}
-          </div>
-          <div class="quota-summary-constraint"><span class="quota-critical-label">${escapeHtml(critical.label)}</span> ${escapeHtml(critical.text)}</div>
-          <div class="quota-summary-windows" aria-label="Reported quota windows; filled bars show percent remaining, not percent used or elapsed time">
-            ${provider.windows.length ? quotaGroups(provider).map((family) => quotaFamilyBox({ ...family, status: provider.status, stale: provider.stale, staleLabel: provider.staleLabel, reusedLabel: provider.reusedLabel, windows: family.windows.map((w) => ({ ...w, stale: provider.stale })) }, data.capturedAt === undefined ? data.readAt : data.capturedAt)).join("") : '<span class="quota-meta">No subscription windows reported.</span>'}
-          </div>
-        </summary>
-        <div class="quota-accordion-content">
-          ${provider.stale || provider.quotaStatus !== "known" ? `<p class="quota-meta">Quota: ${escapeHtml(quotaName(provider.quotaStatus))}${provider.stale ? ` · ${escapeHtml(provider.staleLabel || "stale · age unknown")} · effective unknown` : ""}</p>` : ""}
-          ${provider.unresolvedWindowIds?.length ? `<p class="quota-unresolved">Unresolved windows: ${escapeHtml(provider.unresolvedWindowIds.join(", "))}</p>` : ""}
-
-          ${provider.scopes?.length ? `
-            <div data-quota-key="scopes" class="quota-group">
-              <h3 class="quota-group-heading">Effective Scopes</h3>
-              ${provider.scopes.map((scope) => `
-                <section data-quota-key="${escapeHtml(scope.scope)}" class="quota-scope">
-                  <div class="quota-row-head">
-                    <h3>${escapeHtml(quotaName(scope.scope))}</h3>
-                    <span class="quota-head-percent">${quotaPercent(scope.percentRemaining)}</span>
-                  </div>
-                  <p>${provider.stale ? "Effective availability unknown" : escapeHtml(quotaName(scope.status))}${pace(scope.pace)}</p>
-                  ${bar(scope.percentRemaining, scope.scope)}
-                  <p>Reported bounds: ${scope.boundedBy?.length ? escapeHtml(scope.boundedBy.map(quotaName).join(", ")) : "Unknown"} · Source-reported limits: ${scope.limitingWindowIds?.length ? escapeHtml(scope.limitingWindowIds.map(quotaName).join(", ")) : "Unknown"}</p>
-                  <p>Runway: ${escapeHtml(quotaName(scope.runway?.status))}${quotaDuration(scope.runway?.seconds) ? ` · ${quotaDuration(scope.runway.seconds)}` : ""}${scope.runway?.exhaustedAt ? ` · Projected exhaustion: ${date(scope.runway.exhaustedAt)}` : ""}</p>
-                </section>
-              `).join("")}
-            </div>` : "<p>Effective scope unavailable or unknown.</p>"}
-
-          ${provider.windows?.length ? `
-            <div data-quota-key="windows" class="quota-group">
-              <h3 class="quota-group-heading">Quota Windows</h3>
-              ${provider.windows.map((window) => {
-                const isLimiting = limitingSet.has(window.id);
-                const relReset = window.resetsAt ? formatRelativeTime(window.resetsAt) : null;
-                return `
-                  <section data-quota-key="${escapeHtml(window.id)}" class="quota-window${isLimiting ? " quota-window-limiting" : ""}">
-                    <div class="quota-row-head">
-                      <h3 title="${escapeHtml(window.label)} (${escapeHtml(window.kind)})" aria-label="${escapeHtml(window.label)} (${escapeHtml(window.kind)})">${escapeHtml(quotaWindowLabel(window.label))} <small>(${escapeHtml(quotaWindowLabel(window.kind))})</small></h3>
-                      <span class="quota-head-percent">${quotaPercent(window.percentRemaining)}</span>
-                    </div>
-                    <p>${provider.scopes.some((scope) => scope.boundedBy?.includes(window.id)) ? "Effective scope bound" : "Not established as an effective scope bound"}</p>
-                    <p>Reset: ${date(window.resetsAt)}${relReset ? ` (${relReset})` : ""}${window.annotation ? ` · Note: ${escapeHtml(quotaName(window.annotation.category))} — ${escapeHtml(window.annotation.meaning)}` : ""}${pace(window.pace)}</p>
-                    ${bar(window.percentRemaining, window.label)}
-                    ${pacingExplanation(window.pace)}
-                  </section>`;
-              }).join("")}
-            </div>` : "<p>No subscription windows reported.</p>"}
+      <article data-quota-key="${escapeHtml(provider.provider)}" class="quota-card${provider.stale ? " quota-card-stale" : ""}" data-review-id="quota:${reviewId(provider.provider)}" data-provider="${escapeHtml(provider.provider)}" aria-labelledby="${headingId}">
+        <div data-quota-key="header" class="quota-card-head">
+          ${providerLogoHtml(provider.provider, { mono: false, size: 28 })}
+          <h2 id="${headingId}" tabindex="-1">${escapeHtml(provider.provider === "agy" ? "AGY" : quotaName(provider.provider))}</h2>
+          ${provider.scopes.length ? `<div class="quota-effective">${percent === null ? "?" : `${percent}%`}<small>${percent === null ? "effective unknown" : provider.scopes.length > 1 ? "lowest effective" : "effective"}</small></div>` : '<small>no effective scope reported</small>'}
+          <div class="quota-card-headline">${provider.stale ? "" : `<span>${provider.critical.kind === "source-limiting" ? `limit ${escapeHtml(provider.critical.windows.map(w => quotaWindowLabels({ provider: provider.provider, scope: null, windows: [w] })[0]).join(", "))}` : escapeHtml(critical.label)}</span>`}<span class="${provider.scopes.some(s => ["projected_exhaustion", "exhausted_now"].includes(s.runway?.status)) ? "quota-runway-warn" : "quota-runway"}">Runway ${escapeHtml(quotaCardRunway(provider))}</span>${quotaFreshnessHtml(provider)}${sidebarQuotaSort.startsWith("runway") ? `<small class="quota-sort-basis">runway basis: ${escapeHtml(provider.sortRunway?.basis || "unknown")}</small>` : ""}</div>
         </div>
-      </details>`;
+        <div data-quota-key="families" class="quota-summary-windows" aria-label="Reported quota windows; filled bars show percent remaining, not percent used or elapsed time">
+          ${families.length ? families.map((family) => quotaFamilyBox({ ...family, stale: provider.stale, effective: provider.scopes.find(s => s.scope === family.scope)?.percentRemaining, showHeading: families.length > 1, exhausted: provider.scopes.some(s => s.runway?.status === "exhausted_now") }, data.capturedAt === undefined ? data.readAt : data.capturedAt, { variant: "page" })).join("") : '<span class="quota-meta">No subscription windows reported.</span>'}
+        </div>
+        <details data-quota-key="more" class="quota-more" data-provider="${escapeHtml(provider.provider)}"${isOpen ? " open" : ""}><summary>Scopes, exact resets &amp; notes</summary>
+        ${quotaMoreHtml(provider)}</details>
+      </article>`;
   };
 
   const activeHtml = activeProviders.map(renderActiveCard).join("");
   const unconfiguredHtml = unconfiguredProviders.length ? `
     <div class="quota-unconfigured-tray">
-      <h3 class="quota-unconfigured-title">Unconfigured / Setup Required (${unconfiguredProviders.length})</h3>
+      <h3 class="quota-unconfigured-title">Not reporting limits (${unconfiguredProviders.length})</h3>
       <div class="quota-unconfigured-grid">
-        ${unconfiguredProviders.map((provider) => `
-          <div data-quota-key="${escapeHtml(provider.provider)}" class="quota-card quota-card-compact" data-review-id="quota:${reviewId(provider.provider)}">
-            <h2 class="quota-card-heading">${providerLogoHtml(provider.provider, { mono: false, size: 20 })}<span>${escapeHtml(provider.provider === "agy" ? "AGY" : provider.provider)}</span></h2>
-            <p>${escapeHtml(provider.status)}${provider.quotaStatus && provider.quotaStatus !== provider.status ? ` · ${escapeHtml(provider.quotaStatus)}` : ""}</p>
-          </div>
-        `).join("")}
+        ${[...unconfiguredProviders].sort((a, b) => (a.status === "error" ? 0 : a.status === "fresh" ? 1 : 2) - (b.status === "error" ? 0 : b.status === "fresh" ? 1 : 2)).map((provider) => `<span data-quota-key="${escapeHtml(provider.provider)}" class="quota-unconfigured-chip${provider.status === "error" ? " quota-chip-error" : ""}" data-review-id="quota:${reviewId(provider.provider)}">${escapeHtml(quotaName(provider.provider))} · ${escapeHtml(provider.status === "fresh" ? "connected, no limits reported" : provider.status === "auth_required" ? "sign-in required" : provider.status === "unavailable" ? "unavailable" : provider.status === "error" ? "error" : quotaName(provider.status))}</span>`).join("")}
       </div>
     </div>` : "";
 
-  renderQuotaHtml(container, activeHtml + unconfiguredHtml || '<p class="notice">No active subscriptions reported. Remaining capacity is unknown.</p>');
+  renderQuotaHtml(container, activeHtml + unconfiguredHtml + unsupported || '<p class="quota-empty">No active subscriptions reported. Remaining capacity is unknown.</p>');
 }
 
 function renderPreferences(data) {
@@ -1970,31 +2009,50 @@ document.querySelector(".primary-nav").addEventListener("click", (event) => {
 });
 $("#refresh").addEventListener("click", loadDashboard);
 $("#quota-providers").addEventListener("toggle", (event) => {
-  if (event.target.dataset?.provider) quotaOpen.set(event.target.dataset.provider, event.target.open);
+  if (event.target.dataset?.provider && event.target.tagName === "DETAILS") {
+    quotaOpen.set(event.target.dataset.provider, event.target.open);
+    updateQuotaDetailsLabel();
+  }
 }, true);
 $("#quota-hide-inactive").addEventListener("change", (event) => {
   quotaHideInactive = event.target.checked;
   if (quotaReading) renderQuota(quotaReading);
 });
-$("#quota-order").addEventListener("click", () => {
-  quotaLowestFirst = !quotaLowestFirst;
-  const button = $("#quota-order");
-  button.textContent = quotaLowestFirst ? "Lowest remaining first ↑" : "Highest remaining first ↓";
-  button.setAttribute("aria-label", quotaLowestFirst ? "Sort by highest remaining first" : "Sort by lowest remaining first");
-  button.setAttribute("aria-pressed", String(quotaLowestFirst));
-  if (quotaReading) renderQuota(quotaReading);
+for (const key of ["left", "runway", "az"]) $("#quota-sort-" + key)?.addEventListener("click", () => selectQuotaSortKey(key));
+$("#quota-summary")?.addEventListener("click", (event) => {
+  const provider = event.target.closest?.("[data-quota-target]")?.dataset.quotaTarget;
+  if (!provider) return;
+  const heading = $("#quota-providers")?.querySelector(`#quota-heading-${reviewId(provider)}`);
+  if (!heading) return;
+  event.preventDefault();
+  heading.scrollIntoView({ block: "start" });
+  heading.focus();
 });
+function updateQuotaDetailsLabel() {
+  const details = $("#quota-providers")?.querySelectorAll("details.quota-more");
+  quotaAllDetails = Boolean(details?.length && [...details].every(item => item.open));
+  const button = $("#quota-details-toggle");
+  if (button) {
+    button.textContent = quotaAllDetails ? "Hide all details" : "Show all details";
+    button.setAttribute("aria-pressed", String(quotaAllDetails));
+  }
+}
 function setQuotaAccordionsOpen(open) {
   for (const provider of (quotaReading?.providers || [])) quotaOpen.set(provider.provider, open);
   // Change the existing native disclosures directly. Re-rendering can be
   // skipped by the snapshot cache if a just-tapped <details> has not yet
   // dispatched its asynchronous toggle event to update quotaOpen.
-  const details = $("#quota-providers")?.querySelectorAll("details.quota-accordion");
+  const details = $("#quota-providers")?.querySelectorAll("details.quota-more");
   if (details?.length) details.forEach((item) => { item.open = open; });
   else if (quotaReading) renderQuota(quotaReading);
+  updateQuotaDetailsLabel();
 }
-$("#quota-expand-all")?.addEventListener("click", () => setQuotaAccordionsOpen(true));
-$("#quota-collapse-all")?.addEventListener("click", () => setQuotaAccordionsOpen(false));
+$("#quota-details-toggle")?.addEventListener("click", () => {
+  // Native toggle events are asynchronous; inspect the current disclosures,
+  // not the last event's label, even immediately after a user closes one.
+  updateQuotaDetailsLabel();
+  setQuotaAccordionsOpen(!quotaAllDetails);
+});
 $("#preferences-density").addEventListener("change", (event) => {
   preferenceDensity = event.target.value;
   preferenceOpen.clear();

@@ -91,7 +91,29 @@ window.quotaViewModel = (() => {
     const resetSeconds = Math.min(...bounded.map((w) => (Date.parse(w.resetsAt) - now) / 1000));
     return { value: (Math.min(1, runway.seconds / resetSeconds) - 1) * 100, basis: "source runway / reset coverage" };
   };
-  const project = (reading, { hideInactive = false, lowestFirst = false, sidebarSort = "highest", now = Date.now() } = {}) => {
+  const familyMetrics = (provider, family, now) => {
+    const scopes = family.scope ? provider.scopes.filter((scope) => scope.scope === family.scope)
+      : provider.scopes.filter((scope) => scope.boundedBy?.length && scope.boundedBy.every((id) => family.windows.some((w) => w.id === id)));
+    const margins = scopes.length ? scopes.map((scope) => runwayMargin(scope, family.windows, now)) : [runwayMargin(null, family.windows, now)];
+    const percentages = family.windows.map((w) => w.percentRemaining);
+    return {
+      sortRunway: !provider.stale && margins.every(Boolean) ? margins.reduce((a, b) => a.value <= b.value ? a : b) : null,
+      sortRemaining: !provider.stale && percentages.length && percentages.every(valid) ? Math.min(...percentages) : null
+    };
+  };
+  const compare = (mode) => (a, b) => {
+    if (mode === "source") return 0;
+    if (["az", "za"].includes(mode)) {
+      const alphabetical = a.provider.localeCompare(b.provider, "en", { sensitivity: "base" });
+      return mode === "za" ? -alphabetical : alphabetical;
+    }
+    const left = ["runway", "runway-lowest"].includes(mode) ? a.sortRunway?.value ?? null : a.sortRemaining;
+    const right = ["runway", "runway-lowest"].includes(mode) ? b.sortRunway?.value ?? null : b.sortRemaining;
+    if (left === null) return right === null ? 0 : 1;
+    if (right === null) return -1;
+    return ["lowest", "runway-lowest"].includes(mode) ? left - right : right - left;
+  };
+  const project = (reading, { hideInactive = false, lowestFirst = false, sortMode = lowestFirst ? "lowest" : "highest", sidebarSort = "highest", now = Date.now() } = {}) => {
     const maxAgeMs = Number.isFinite(reading.maxAgeMs) && reading.maxAgeMs > 0 ? reading.maxAgeMs : 300000;
     const timedReading = { ...reading, now };
     const providers = (reading.providers || []).map((provider) => {
@@ -110,14 +132,14 @@ window.quotaViewModel = (() => {
       const critical = stale ? { kind: "unknown" } : limiting.length
         ? { kind: "source-limiting", windows: limiting }
         : lowest ? { kind: "lowest-scope-binding-unknown", scope: lowest } : { kind: "unknown" };
-      return { ...provider, stale, ageMs, reusedLabel, staleLabel, windows, scopes, critical };
+      const projected = { ...provider, stale, ageMs, reusedLabel, staleLabel, windows, scopes, critical };
+      const families = windows.length ? groups(projected) : scopes.map((scope) => ({ scope: scope.scope, windows: [{ ...scope, label: scope.scope }] }));
+      const metrics = families.map((family) => familyMetrics(projected, family, now));
+      projected.sortRemaining = metrics.length && metrics.every((m) => m.sortRemaining !== null) ? Math.min(...metrics.map((m) => m.sortRemaining)) : null;
+      projected.sortRunway = metrics.length && metrics.every((m) => m.sortRunway !== null) ? metrics.map((m) => m.sortRunway).reduce((a, b) => a.value <= b.value ? a : b) : null;
+      return projected;
     });
-    const detail = providers.filter(active).sort((a, b) => {
-      const left = remaining(a), right = remaining(b);
-      if (left === null) return right === null ? 0 : 1;
-      if (right === null) return -1;
-      return lowestFirst ? left - right : right - left;
-    });
+    const detail = providers.filter(active).sort(compare(sortMode));
     const inactive = hideInactive ? [] : providers.filter((provider) => !active(provider));
     const sidebar = providers.flatMap((provider, index) => {
       if ((provider.authStatus && provider.authStatus !== "usable") || ["auth_required", "unavailable", "error"].includes(provider.status)) return [];
@@ -126,29 +148,58 @@ window.quotaViewModel = (() => {
       if (!limits.some((limit) => valid(limit.percentRemaining))) return [];
       const families = provider.windows.length ? groups(provider) : provider.scopes.filter((_, scopeIndex) => valid(source.scopes[scopeIndex].percentRemaining)).map((scope) => ({ name: provider.provider, provider: provider.provider, scope: scope.scope, windows: [{ ...scope, label: scope.scope }] }));
       return families.map((family) => {
-        const scopes = family.scope ? provider.scopes.filter((scope) => scope.scope === family.scope)
-          : provider.scopes.filter((scope) => scope.boundedBy?.length && scope.boundedBy.every((id) => family.windows.some((w) => w.id === id)));
-        const margins = scopes.length ? scopes.map((scope) => runwayMargin(scope, family.windows, now)) : [runwayMargin(null, family.windows, now)];
-        const runway = !provider.stale && margins.every(Boolean) ? margins.reduce((a, b) => a.value <= b.value ? a : b) : null;
-        const percentages = family.windows.map((w) => w.percentRemaining);
-        const capacity = !provider.stale && percentages.length && percentages.every(valid) ? Math.min(...percentages) : null;
+        const { sortRunway: runway, sortRemaining: capacity } = familyMetrics(provider, family, now);
         return { ...family, status: provider.status, stale: provider.stale, staleLabel: provider.staleLabel, reusedLabel: provider.reusedLabel,
           sortRemaining: capacity, sortRunway: runway,
           windows: family.windows.map((window) => ({ ...window, stale: provider.stale })) };
       });
-    }).sort((a, b) => {
-      if (sidebarSort === "source") return 0;
-      if (["az", "za"].includes(sidebarSort)) {
-        const alphabetical = a.provider.localeCompare(b.provider, "en", { sensitivity: "base" });
-        return sidebarSort === "za" ? -alphabetical : alphabetical;
-      }
-      const left = ["runway", "runway-lowest"].includes(sidebarSort) ? a.sortRunway?.value ?? null : a.sortRemaining;
-      const right = ["runway", "runway-lowest"].includes(sidebarSort) ? b.sortRunway?.value ?? null : b.sortRemaining;
-      if (left === null) return right === null ? 0 : 1;
-      if (right === null) return -1;
-      return ["lowest", "runway-lowest"].includes(sidebarSort) ? left - right : right - left;
-    });
-    return { detail, inactive, sidebar };
+    }).sort(compare(sidebarSort));
+    return { detail, inactive, sidebar, wholeStale: Boolean(reading.stale) };
   };
-  return { project, groups, marker, windowLabels, windowLabel, valid, remaining, active, ageLabel };
+  // Geometry depicts two captured source values; reserve text is never inferred
+  // from the distance. Label-derived durations alone cannot establish pace.
+  const paceBand = (window, position, stale = false) => {
+    if (stale || window.stale || !valid(window.percentRemaining) || !valid(position) || !window.pace?.status || window.pace.status === "unknown" || !Number.isFinite(window.pace.reservePercentPoints)) return null;
+    return { left: Math.min(window.percentRemaining, position), width: Math.abs(window.percentRemaining - position),
+      kind: window.percentRemaining >= position ? "reserve" : "deficit", reserve: window.pace.reservePercentPoints };
+  };
+  const summarize = (projection, now = Date.now()) => {
+    const known = [], resets = [];
+    const runway = { total: 0, through_reset: 0, projected_exhaustion: 0, exhausted_now: 0, unknown: 0, soonest: null };
+    let unknown = 0;
+    for (const provider of projection.detail || []) {
+      const fresh = !provider.stale && provider.status === "fresh";
+      const familyFor = (window) => groups(provider).find(f => f.windows.includes(window));
+      const labelFor = (window) => {
+        const family = familyFor(window);
+        return family ? windowLabels(family)[family.windows.indexOf(window)] : windowLabel(window.label);
+      };
+      for (const scope of provider.scopes || []) {
+        if (fresh && valid(scope.percentRemaining)) {
+          const limit = (scope.limitingWindowIds || []).map((id) => provider.windows.find((w) => w.id === id)).find(Boolean) || null;
+          known.push({ provider: provider.provider, scope: scope.scope, percentRemaining: scope.percentRemaining, limit, limitLabel: limit ? labelFor(limit) : null });
+        } else unknown++;
+        runway.total++;
+        const status = fresh && ["through_reset", "projected_exhaustion", "exhausted_now"].includes(scope.runway?.status) ? scope.runway.status : "unknown";
+        runway[status]++;
+        if (status === "projected_exhaustion" && Number.isFinite(scope.runway.seconds) && scope.runway.seconds >= 0 && (!runway.soonest || scope.runway.seconds < runway.soonest.seconds)) runway.soonest = scope.runway;
+      }
+      // A failed whole refresh may still expose explicitly labelled captured
+      // reset timestamps. Individually stale providers are otherwise excluded.
+      if (fresh || projection.wholeStale) for (const window of provider.windows || []) {
+        const time = Date.parse(window.resetsAt);
+        if (Number.isFinite(time) && time > now) resets.push({ provider: provider.provider, scope: familyFor(window)?.scope || null, window, label: labelFor(window), time, captured: projection.wholeStale });
+      }
+    }
+    const winner = (direction) => {
+      if (!known.length) return null;
+      const value = direction === "min" ? Math.min(...known.map((s) => s.percentRemaining)) : Math.max(...known.map((s) => s.percentRemaining));
+      const tied = known.filter((s) => s.percentRemaining === value);
+      return { ...tied[0], tied: tied.length - 1 };
+    };
+    resets.sort((a, b) => a.time - b.time);
+    return { tightest: winner("min"), mostRoom: winner("max"), unknown, runway, nextReset: resets[0] || null, thenReset: resets[1] || null, stale: Boolean(projection.wholeStale) };
+  };
+  return { project, groups, marker, windowLabels, windowLabel, valid, remaining, active, ageLabel, summarize, paceBand };
+
 })();

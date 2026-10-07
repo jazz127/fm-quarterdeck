@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { quotaDom } from "./helpers/quota-dom.js";
+import { createHash } from "node:crypto";
 
 const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
@@ -146,7 +147,7 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true } = {}) {
         return null;
       }
       if (!nodes.has(selector)) {
-        if (["#quota-providers", "#quota-strip", "#mobile-quota-sheet-content", "#quota-state", "#sidebar-quota-freshness"].includes(selector)) {
+        if (["#quota-providers", "#quota-summary", "#quota-strip", "#mobile-quota-sheet-content", "#quota-state", "#sidebar-quota-freshness"].includes(selector)) {
           nodes.set(selector, quotaNodes.element("div", true));
           return nodes.get(selector);
         }
@@ -1337,6 +1338,50 @@ test("Quota route renders known, partial and unknown without inventing zero or l
   assert.match(app.node("#quota-state").textContent, /Stale last successful reading.*Quota source last read.*Quota refresh unavailable/);
 });
 
+test("quota page summarizes source evidence, renders unsupported counts and suppresses stale winners", () => {
+  const app = ui();
+  const reading = { providers: [{ provider: "grok", status: "fresh", scopes: [{ scope: "all", percentRemaining: 12, runway: { status: "through_reset" } }], windows: [] }], unsupportedProviders: 2 };
+  app.run(`renderQuota(${JSON.stringify(reading)})`);
+  assert.equal(app.node("#quota-summary").querySelectorAll(".quota-summary-tile").length, 4);
+  assert.match(app.node("#quota-summary").textContent, /12%/);
+  assert.match(app.node("#quota-providers").textContent, /2 provider entries not shown because the format is unsupported/);
+  const stateText = app.node("#quota-state").textContent;
+  app.run(`renderQuota(${JSON.stringify(reading)})`);
+  assert.equal(app.node("#quota-state").textContent, stateText, "countdown updates do not change the live region");
+  app.run(`renderQuota(${JSON.stringify({ ...reading, stale: true })})`);
+  const tightest = app.node("#quota-summary").querySelector('[data-quota-key="tightest"]');
+  assert.match(tightest.textContent, /—.*unknown \(stale\)/);
+  assert.doesNotMatch(tightest.textContent, /\d+%/);
+  app.run('renderQuota({ providers: [], unsupportedProviders: 2 })');
+  assert.match(app.node("#quota-providers").textContent, /No subscriptions reported.*2 provider entries not shown/);
+});
+
+test("page sort has one bidirectional key each and shares every stored mode with the sidebar", () => {
+  const app = ui();
+  const stored = () => app.run('sidebarQuotaSort');
+  const click = key => app.node("#quota-sort-" + key).dispatchEvent({ type: "click" });
+  assert.equal(stored(), "highest");
+  click("left"); assert.equal(stored(), "lowest");
+  click("left"); assert.equal(stored(), "highest");
+  click("runway"); assert.equal(stored(), "runway");
+  click("runway"); assert.equal(stored(), "runway-lowest");
+  click("az"); assert.equal(stored(), "az");
+  click("az"); assert.equal(stored(), "za");
+  click("runway"); assert.equal(stored(), "runway-lowest", "returning to a key keeps its direction");
+  click("left"); assert.equal(stored(), "highest");
+  assert.equal(app.node("#quota-sort-left").getAttribute("aria-pressed"), "true");
+  assert.equal(app.node("#quota-sort-runway").getAttribute("aria-pressed"), "false");
+});
+
+test("compact quota family output is byte-identical to the sidebar batch baseline", () => {
+  const app = ui();
+  const family = { provider: "grok", name: "grok", scope: null, status: "fresh", windows: [{ id: "credits", label: "week", percentRemaining: 12, isLimiting: true }, { id: "chat", label: "Chat", percentRemaining: null }] };
+  const output = app.run(`quotaFamilyBox(${JSON.stringify(family)}, null, { compact: true })`);
+  // SHA-256 snapshot of the exact 3bb5fbf renderer for this synthetic fixture.
+  assert.equal(createHash("sha256").update(output).digest("hex"), "8fee7376db5b0037eb3e9314dc10195bdf819fee171ab2aeef8117f16b5f69c3");
+  assert.doesNotMatch(output, /quota-family-band|quota-family-meta|LIMIT/);
+});
+
 test("quota window annotations are shown for every subscription, including unknown text", () => {
   const app = ui();
   app.run(`renderQuota(${JSON.stringify({ providers: ["codex", "agy"].map((provider) => ({ provider, status: "fresh", quotaStatus: "known", stale: false, scopes: [], windows: [
@@ -1421,7 +1466,7 @@ test("grouped quota cards keep two compact rows, truthful remaining and timing u
     assert.match(html, /Reset-window position unknown/);
     assert.doesNotMatch(html, /time \?/);
     assert.match(html, /provider-monogram/);
-    assert.match(html, /<b class="provider-name">AGY/);
+    assert.match(html, html === strip ? /<b class="provider-name">AGY/ : /<h2[^>]*>AGY<\/h2>/);
     assert.doesNotMatch(html, /<span class="provider-name">/);
     assert.equal((html.match(/class="quota-family-notch"/g) || []).length, 1);
     assert.ok(html.includes("2030-01-08"));
@@ -1501,13 +1546,13 @@ test("Quota controls sort known effective remaining, keep unknown last, and hide
   ];
   app.run(`renderQuota(${JSON.stringify({ providers, readAt: null, stale: false, error: null })})`);
   let cards = app.node("#quota-providers").innerHTML;
-  assert.ok(cards.indexOf("high</h2>") < cards.indexOf("low</h2>"));
-  assert.ok(cards.indexOf("low</h2>") < cards.indexOf("unknown</h2>"));
+  assert.ok(cards.indexOf("High</h2>") < cards.indexOf("Low</h2>"));
+  assert.ok(cards.indexOf("Low</h2>") < cards.indexOf("Unknown</h2>"));
   assert.match(cards, /inactive/);
-  app.node("#quota-order").dispatchEvent({ type: "click" });
+  app.node("#quota-sort-left").dispatchEvent({ type: "click" });
   cards = app.node("#quota-providers").innerHTML;
-  assert.ok(cards.indexOf("low</h2>") < cards.indexOf("high</h2>"));
-  assert.ok(cards.indexOf("high</h2>") < cards.indexOf("unknown</h2>"));
+  assert.ok(cards.indexOf("Low</h2>") < cards.indexOf("High</h2>"));
+  assert.ok(cards.indexOf("High</h2>") < cards.indexOf("Unknown</h2>"));
   app.node("#quota-hide-inactive").dispatchEvent({ type: "change", target: { checked: true } });
   cards = app.node("#quota-providers").innerHTML;
   assert.doesNotMatch(cards, /inactive/);
@@ -1562,7 +1607,7 @@ test("Quota density: unconfigured providers are grouped in compact tray, and ref
 
   // Empty providers grouped into compact unconfigured tray
   assert.match(initialHtml, /quota-unconfigured-tray/);
-  assert.match(initialHtml, /quota-card-compact/);
+  assert.match(initialHtml, /quota-unconfigured-chip/);
   assert.match(initialHtml, /empty-provider-1/);
   assert.match(initialHtml, /empty-provider-2/);
 
@@ -1716,11 +1761,11 @@ test("Quota summary retains every reported window and only source-named binding 
   ] })})`);
   const html = app.node("#quota-providers").innerHTML;
   const summary = html.split("</summary>")[0];
-  assert.match(summary, /Source-reported limit<\/span> Week/);
+  assert.match(summary, /limit 7d/);
   assert.match(summary, /Day/);
   assert.equal((summary.match(/quota-summary-window-limiting/g) || []).length, 1);
   assert.doesNotMatch(summary, /reported windows|elapsed-time marker unavailable|Limiting constraint/);
-  assert.match(summary, /aria-label="Week percent remaining"[^>]+aria-valuenow="12"/);
+  assert.match(summary, /aria-label="Week: 12% remaining[^>]+aria-valuenow="12"/);
   assert.match(html, /2030-01-08/);
   assert.match(html, /-5\.00% reserve/);
   assert.match(html, /\+12\.35% reserve/);
@@ -1737,7 +1782,7 @@ test("Quota with incomplete relationships or values never invents binding, elaps
   ] })})`);
   const html = app.node("#quota-providers").innerHTML;
   assert.match(html, /Binding limit unknown/);
-  assert.match(html, /No source-reported limiting window/);
+  assert.match(html, /no effective scope reported/);
   assert.doesNotMatch(html, /quota-summary-window-limiting/);
   assert.match(html, /Remaining unknown/);
   assert.match(html, /Reset unknown/);
@@ -1754,9 +1799,12 @@ test("Quota Expand all updates native disclosures even before a tapped toggle ev
   const disclosure = { dataset: { provider: "codex" }, open: false };
   const list = app.node("#quota-providers");
   list.querySelectorAll = () => [disclosure];
-  app.node("#quota-expand-all").dispatchEvent({ type: "click" });
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
   assert.equal(disclosure.open, true);
-  app.node("#quota-collapse-all").dispatchEvent({ type: "click" });
+  disclosure.open = false; // User closes it before the native toggle event.
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
+  assert.equal(disclosure.open, true, "reads live native state rather than a stale all-open label");
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
   assert.equal(disclosure.open, false);
 });
 
@@ -1814,13 +1862,14 @@ test("Quota detailed view adapts provider accordion, critical constraint, pacing
   const cards = app.node("#quota-providers").innerHTML;
 
   // Accordion details and summary markup
-  const accordions = app.node("#quota-providers").querySelectorAll("details.quota-card.quota-accordion");
-  assert.ok(accordions.length > 0);
-  assert.match(cards, /<summary class="quota-accordion-summary"/);
+  const accordions = app.node("#quota-providers").querySelectorAll("details.quota-more");
+  assert.equal(accordions.length, 3);
+  assert.ok(accordions.every(details => !details.open));
+  assert.equal(app.node("#quota-providers").querySelectorAll("article.quota-card").length, 3);
 
-  // Critical constraint summary identifying the limiting window
-  assert.match(cards, /Source-reported limit/);
-  assert.match(cards, /Gemini 5h/);
+  // Source-named limiting windows remain visible on the meter rows.
+  assert.match(cards, /Source-reported limiting window/);
+  assert.match(cards, /Gemini 5-hour/);
 
   // Truthful pacing comparisons
   assert.match(cards, /Consuming faster than elapsed-time pacing/);
@@ -1839,11 +1888,10 @@ test("Quota detailed view adapts provider accordion, critical constraint, pacing
   assert.match(cards, /commandcode/);
 
   // Expand all and collapse all controls toggle state
-  app.node("#quota-collapse-all").dispatchEvent({ type: "click" });
-  assert.ok(accordions.every((details) => !details.open));
-
-  app.node("#quota-expand-all").dispatchEvent({ type: "click" });
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
   assert.ok(accordions.every((details) => details.open));
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
+  assert.ok(accordions.every((details) => !details.open));
 });
 
 test("compact reset labels use only days/hours/minutes with deterministic short fallbacks", () => {
@@ -2252,8 +2300,10 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     };
     app.run(`renderQuota(${JSON.stringify(reading)})`);
     const cards = app.node("#quota-providers");
-    const card = cards.querySelector('details[data-provider="codex"]');
-    const summary = card.querySelector("summary");
+    const card = cards.querySelector('article[data-provider="codex"]');
+    const disclosure = card.querySelector("details");
+    disclosure.open = true;
+    const summary = disclosure.querySelector("summary");
     const strip = app.node("#quota-strip");
     const link = strip.querySelector("a");
     const mobile = app.node("#mobile-quota-sheet-content");
@@ -2272,7 +2322,7 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     else selection.setBaseAndExtent(selectedText, backward ? selectedLength : 0, selectedText, backward ? 0 : selectedLength);
 
     const assertInteraction = () => {
-      assert.equal(cards.querySelector('details[data-provider="codex"]'), card, interaction);
+      assert.equal(cards.querySelector('article[data-provider="codex"]'), card, interaction);
       assert.equal(card.querySelector("summary"), summary, interaction);
       assert.ok([...strip.querySelectorAll("a")].includes(link), interaction);
       assert.ok([...mobile.querySelectorAll(".mobile-quota-sheet-row")].includes(row), interaction);
@@ -2291,7 +2341,7 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     assert.equal(card.querySelector(".quota-reused"), freshness);
     assert.equal(freshness.textContent, "reused 2m");
     assertInteraction();
-    if (interaction === "card-focus") card.open = false;
+    if (interaction === "card-focus") disclosure.open = false;
 
     app.run('quotaNow = Date.parse("2030-01-01T02:34:50Z"); quotaTick()');
     assertInteraction();
@@ -2302,7 +2352,7 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     assert.match(card.textContent, /Runway: Unknown/);
     assert.doesNotMatch(card.textContent, /Pace: Ahead|Projected exhaustion|percentage points reserve/);
     assert.equal(cards.querySelector("details").dataset.provider, "agy", "stale scopes sort after fresh scopes");
-    assert.equal(card.open, interaction !== "card-focus", "pending native toggle state survives freshness changes");
+    assert.equal(disclosure.open, interaction !== "card-focus", "pending native toggle state survives freshness changes");
     for (const surface of [card, link, row]) {
       const notch = surface.querySelector(".quota-family-notch");
       assert.equal(notch.getAttribute("style"), "--remaining:50%");
@@ -2312,15 +2362,15 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     }
     assertInteraction();
 
-    card.open = false;
-    card.dispatchEvent({ type: "toggle" });
+    disclosure.open = false;
+    disclosure.dispatchEvent({ type: "toggle" });
     reading.providers[0].refreshedAt = new Date(app.run("quotaNow")).toISOString();
     app.run(`renderQuota(${JSON.stringify(reading)})`);
-    assert.equal(card.open, false, "native disclosure state survives a refreshed reading");
+    assert.equal(disclosure.open, false, "native disclosure state survives a refreshed reading");
     assert.equal(card.classList.contains("quota-card-stale"), false);
     assert.match(card.textContent, /Pace: Ahead/);
     assertInteraction();
-    app.node("#quota-order").dispatchEvent({ type: "click" });
+    app.node("#quota-sort-left").dispatchEvent({ type: "click" });
     assert.equal(cards.querySelector("details").dataset.provider, "agy");
     assertInteraction();
   }
