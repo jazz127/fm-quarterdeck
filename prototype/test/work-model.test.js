@@ -110,30 +110,92 @@ test("genuine-active review threshold and Linux liveness retain exact incarnatio
 
 test("macOS liveness matches recorded process start identity and distinguishes dead and reused PIDs", async (context) => {
   const originalTimezone = process.env.TZ;
+  const originalLocale = process.env.LC_ALL;
   process.env.TZ = "Australia/Brisbane";
+  process.env.LC_ALL = "de_DE.UTF-8";
   context.after(() => {
     if (originalTimezone === undefined) delete process.env.TZ;
     else process.env.TZ = originalTimezone;
+    if (originalLocale === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = originalLocale;
   });
   const pid = "76114", lstart = "Sun Oct  4 02:33:10 2026", identity = "2026-10-03T16:33:10.000Z";
   const meta = { worker_pid: pid, worker_start_identity: identity };
   const ps = async (command, args, options) => {
     assert.equal(command, "ps"); assert.equal(options.timeout, 2500);
     assert.deepEqual(args, ["-o", "lstart=", "-o", "stat=", "-p", pid]);
-    return { stdout: `${lstart} S\n` };
+    assert.equal(options.env?.TZ, "Australia/Brisbane", "pinning the locale preserves the host timezone");
+    return { stdout: `${options.env?.LC_ALL === "C" ? lstart : "So Okt  4 02:33:10 2026"} S\n` };
   };
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: ps }), true, "Brisbane ps time is UTC+10 and matches the recorded absolute instant");
   assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2026-10-04T02:33:10.000Z" }, { platform: "darwin", run: ps }), false, "interpreting the local ps timestamp as UTC must not match");
   assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2020-01-01T00:00:00Z" }, { platform: "darwin", run: ps }), false, "a reused PID with another start time is not the same incarnation");
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: "" }) }), false);
-  const dead = async () => { const error = new Error("not found"); error.code = "ESRCH"; throw error; };
-  assert.equal(await endpointIsLive(meta, { platform: "darwin", run: dead }), false);
   assert.equal(await endpointIsLive({ worker_pid: pid }, { platform: "darwin", run: ps }), null, "a PID without recorded incarnation remains unknown");
   let paneFallbackCalls = 0;
   const withPane = { ...meta, backend: "herdr", herdr_session: "default", herdr_pane_id: "w1:p2" };
   assert.equal(await endpointIsLive(withPane, { platform: "darwin", run: async (...args) => { if (args[0] === "ps") return ps(...args); paneFallbackCalls++; return { stdout: "" }; } }), true);
   assert.equal(paneFallbackCalls, 0, "process identity remains preferred to pane fallback");
   assert.equal(executionFingerprint(meta, true), fingerprint("execution.v1", null, pid, identity));
+  const starts = [
+    { worker_start_identity: identity },
+    { worker_start_identity: "2026-10-04T02:33:10+10:00" },
+    { worker_start_identity: "2026-10-03T16:33:10Z" },
+    { worker_start_identity: "2026-10-03T16:33:10.999Z" },
+    { worker_started_at: identity },
+    { worker_started_at: "2026-10-04T02:33:10+10:00" },
+    { worker_started_at: "2026-10-03T16:33:10Z" },
+    { worker_started_at: "2026-10-03T16:33:10.999Z" },
+    { worker_start_identity: identity, worker_started_at: "2020-01-01T00:00:00Z" }
+  ];
+  const rows = [];
+  for (const [index, start] of starts.entries()) {
+    const worker = { worker_pid: pid, ...start };
+    const endpointLive = await endpointIsLive(worker, { platform: "darwin", run: ps });
+    assert.equal(endpointLive, true);
+    const execution = executionFingerprint(worker, endpointLive);
+    assert.equal(execution, fingerprint("execution.v1", null, pid, identity), "all spellings of the verified start second share the canonical UTC fingerprint");
+    rows.push(record({ id: `slice-${index}`, state: "working", inFlight: true, endpointLive, executionFingerprint: execution }));
+  }
+  const model = await projectWork(rows, emptyAgentState());
+  assert.equal(model.items.filter((item) => item.status === "active").length, 9);
+  assert.equal(model.activeWorkerCount, 1, "nine slices of the same verified macOS incarnation count as one worker");
+  assert.equal(model.activeReviewRequired, false);
+  assert.notEqual(executionFingerprint({ ...meta, worker_pid: "76115" }, true), executionFingerprint(meta, true));
+  assert.notEqual(executionFingerprint({ ...meta, worker_start_identity: "2026-10-03T16:33:11Z" }, true), executionFingerprint(meta, true));
+  assert.equal(executionFingerprint({ ...meta, worker_start_identity: "invalid" }, true), null);
+  assert.equal(executionFingerprint({ worker_pid: pid, worker_started_at: "invalid" }, true), null);
+});
+
+test("macOS liveness distinguishes absent PIDs from executable and probe failures", async () => {
+  const meta = { worker_pid: "76114", worker_start_identity: "2026-10-03T16:33:10.000Z", backend: "tmux", window: "default:worker" };
+  const failures = [
+    { error: { code: 1, stdout: "", stderr: "" }, expected: false },
+    { error: { code: 1, stdout: " \n", stderr: "" }, expected: false },
+    { error: { code: "ENOENT", stdout: "", stderr: "" }, expected: null },
+    { error: { code: "ESRCH", stdout: "", stderr: "" }, expected: null },
+    { error: { code: "EACCES", stdout: "", stderr: "" }, expected: null },
+    { error: { code: 1, stdout: "", stderr: "ps: sysctl failed" }, expected: null },
+    { error: { code: 1, stdout: "unparseable row", stderr: "" }, expected: null },
+    { error: { code: 2, stdout: "", stderr: "" }, expected: null },
+    { error: { code: 1 }, expected: null },
+    { error: { code: 1, stdout: "", stderr: "", killed: true, signal: "SIGTERM" }, expected: null }
+  ];
+  for (const { error, expected } of failures) {
+    const commands = [];
+    const run = async (command) => {
+      commands.push(command);
+      throw Object.assign(new Error("Synthetic execFile failure"), error);
+    };
+    const endpointLive = await endpointIsLive(meta, { platform: "darwin", run });
+    assert.equal(endpointLive, expected);
+    assert.deepEqual(commands, ["ps"], "process probe failures must not fall back to tmux");
+    const model = await projectWork([record({ state: "working", inFlight: true, endpointLive })], emptyAgentState());
+    assert.equal(model.items[0].livenessEvidence, expected === false ? "endpoint not live" : "liveness unknown");
+    assert.equal(model.items[0].endpointEvidence, expected === false ? "endpoint not live" : "liveness unknown");
+    assert.equal(model.activeWorkerCount, 0);
+  }
+  assert.equal(await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: "", stderr: "ps: sysctl failed" }) }), null, "a successful exit with probe diagnostics is still inconclusive");
 });
 
 test("remote process and pane records stay unknown without local probes or active evidence", async () => {

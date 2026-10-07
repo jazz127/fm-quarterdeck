@@ -74,14 +74,18 @@ export async function endpointIsLive(meta, { platform = process.platform, read =
     const expectedStart = darwinStartIdentity(meta);
     if (expectedStart !== null) {
       try {
-        const { stdout } = await run("ps", ["-o", "lstart=", "-o", "stat=", "-p", meta.worker_pid], { encoding: "utf8", timeout: 2500, maxBuffer: 4096 });
+        const { stdout, stderr } = await run("ps", ["-o", "lstart=", "-o", "stat=", "-p", meta.worker_pid], { encoding: "utf8", timeout: 2500, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C" } });
+        if (stderr?.trim()) return null;
         if (!stdout.trim()) return false;
         const match = stdout.trim().match(/^(.+?)\s+([A-Z][A-Za-z+<>-]*)$/);
         if (!match) return null;
         const actualStart = Date.parse(match[1]);
         if (!Number.isFinite(actualStart)) return null;
         return Math.floor(actualStart / 1000) === expectedStart && !/[ZX]/.test(match[2]);
-      } catch (error) { if (["ENOENT", "ESRCH"].includes(error.code)) return false; return null; }
+      } catch (error) {
+        if (error.code === 1 && error.stdout?.trim() === "" && !error.stderr?.trim() && !error.killed && !error.signal) return false;
+        return null;
+      }
     }
   } else if (validPid(meta) && platform === "linux" && /^\d+$/.test(meta.worker_start_ticks || "") && /^[a-f0-9-]{36}$/.test(meta.worker_boot_id || "")) {
     try {
@@ -105,8 +109,13 @@ export function executionFingerprint(meta, endpointLive) {
   const processFields = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at];
   if (processFields.some((value) => value !== undefined && value !== null && value !== "")) {
     if (!validPid(meta)) return null;
-    const identity = meta.worker_start_ticks || meta.worker_start_identity || meta.worker_started_at;
-    if (!identity || (meta.worker_start_ticks && !/^[a-f0-9-]{36}$/.test(meta.worker_boot_id || ""))) return null;
+    let identity = meta.worker_start_ticks;
+    if (!identity) {
+      const start = darwinStartIdentity(meta);
+      if (start === null) return null;
+      identity = new Date(start * 1000).toISOString();
+    }
+    if (meta.worker_start_ticks && !/^[a-f0-9-]{36}$/.test(meta.worker_boot_id || "")) return null;
     return fingerprint("execution.v1", meta.worker_boot_id || null, meta.worker_pid, identity);
   }
   if (meta.backend === "herdr" && meta.herdr_session && meta.herdr_pane_id) return fingerprint("execution.pane.v1", meta.backend, meta.herdr_session, meta.herdr_pane_id);
