@@ -119,16 +119,16 @@ test("macOS liveness matches recorded process start identity and distinguishes d
     if (originalLocale === undefined) delete process.env.LC_ALL;
     else process.env.LC_ALL = originalLocale;
   });
-  const pid = "76114", lstart = "Sun Oct  4 02:33:10 2026", identity = "2026-10-03T16:33:10.000Z";
+  const pid = "76114", lstart = "Sat Oct  3 16:33:10 2026", identity = "2026-10-03T16:33:10.000Z";
   const meta = { worker_pid: pid, worker_start_identity: identity };
   const ps = async (command, args, options) => {
     assert.equal(command, "ps"); assert.equal(options.timeout, 2500);
     assert.deepEqual(args, ["-o", "lstart=", "-o", "stat=", "-p", pid]);
-    assert.equal(options.env?.TZ, "Australia/Brisbane", "pinning the locale preserves the host timezone");
-    return { stdout: `${options.env?.LC_ALL === "C" ? lstart : "So Okt  4 02:33:10 2026"} S\n` };
+    assert.equal(options.env?.TZ, "UTC", "the ps timestamp uses UTC even when the host uses Brisbane time");
+    return { stdout: `${options.env?.LC_ALL === "C" ? lstart : "Sa Okt  3 16:33:10 2026"} S\n` };
   };
-  assert.equal(await endpointIsLive(meta, { platform: "darwin", run: ps }), true, "Brisbane ps time is UTC+10 and matches the recorded absolute instant");
-  assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2026-10-04T02:33:10.000Z" }, { platform: "darwin", run: ps }), false, "interpreting the local ps timestamp as UTC must not match");
+  assert.equal(await endpointIsLive(meta, { platform: "darwin", run: ps }), true, "the UTC ps fixture matches the recorded absolute instant on a non-UTC host");
+  assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2026-10-03T06:33:10.000Z" }, { platform: "darwin", run: ps }), false, "interpreting the UTC ps timestamp as Brisbane local time must not match");
   assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2020-01-01T00:00:00Z" }, { platform: "darwin", run: ps }), false, "a reused PID with another start time is not the same incarnation");
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: "" }) }), false);
   assert.equal(await endpointIsLive({ worker_pid: pid }, { platform: "darwin", run: ps }), null, "a PID without recorded incarnation remains unknown");
@@ -137,6 +137,15 @@ test("macOS liveness matches recorded process start identity and distinguishes d
   assert.equal(await endpointIsLive(withPane, { platform: "darwin", run: async (...args) => { if (args[0] === "ps") return ps(...args); paneFallbackCalls++; return { stdout: "" }; } }), true);
   assert.equal(paneFallbackCalls, 0, "process identity remains preferred to pane fallback");
   assert.equal(executionFingerprint(meta, true), fingerprint("execution.v1", null, pid, identity));
+  for (const [stat, expected] of [["S", true], ["SX", true], ["SX+", true], ["R<X", true], ["TX", true], ["Z", false], ["ZX+", false], ["X", false]]) {
+    const endpointLive = await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: `${lstart} ${stat}\n` }) });
+    assert.equal(endpointLive, expected, `${stat} is classified by its primary state, not its tracing modifier`);
+    const execution = executionFingerprint(meta, endpointLive);
+    assert.equal(execution, expected ? fingerprint("execution.v1", null, pid, identity) : null);
+    const model = await projectWork([record({ state: "working", inFlight: true, endpointLive, executionFingerprint: execution })], emptyAgentState());
+    assert.equal(model.activeWorkerCount, expected ? 1 : 0);
+    assert.equal(model.items[0].endpointEvidence, expected ? "live process incarnation" : "endpoint not live");
+  }
   const starts = [
     { worker_start_identity: identity },
     { worker_start_identity: "2026-10-04T02:33:10+10:00" },
@@ -165,6 +174,37 @@ test("macOS liveness matches recorded process start identity and distinguishes d
   assert.notEqual(executionFingerprint({ ...meta, worker_start_identity: "2026-10-03T16:33:11Z" }, true), executionFingerprint(meta, true));
   assert.equal(executionFingerprint({ ...meta, worker_start_identity: "invalid" }, true), null);
   assert.equal(executionFingerprint({ worker_pid: pid, worker_started_at: "invalid" }, true), null);
+});
+
+test("macOS liveness distinguishes both incarnations in a repeated daylight-saving hour", async (context) => {
+  const originalTimezone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  context.after(() => {
+    if (originalTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimezone;
+  });
+  const fixtures = [
+    { identity: "2020-11-01T08:30:00.000Z", lstart: "Sun Nov  1 08:30:00 2020" },
+    { identity: "2020-11-01T09:30:00.000Z", lstart: "Sun Nov  1 09:30:00 2020" }
+  ];
+  const executions = [];
+  for (const fixture of fixtures) {
+    const run = async (command, args, options) => {
+      assert.equal(command, "ps");
+      return { stdout: `${options.env?.TZ === "UTC" ? fixture.lstart : "Sun Nov  1 01:30:00 2020"} S\n` };
+    };
+    for (const field of ["worker_start_identity", "worker_started_at"]) {
+      const meta = { worker_pid: "76114", [field]: fixture.identity };
+      const endpointLive = await endpointIsLive(meta, { platform: "darwin", run });
+      assert.equal(endpointLive, true, "the two occurrences of 01:30 Los Angeles time have distinct fixed UTC identities");
+      const execution = executionFingerprint(meta, endpointLive);
+      assert.equal(execution, fingerprint("execution.v1", null, meta.worker_pid, fixture.identity));
+      executions.push(execution);
+      const other = fixtures.find((entry) => entry !== fixture);
+      assert.equal(await endpointIsLive({ ...meta, [field]: other.identity }, { platform: "darwin", run }), false, "a PID from the other occurrence is a different incarnation");
+    }
+  }
+  assert.notEqual(executions[0], executions[2]);
 });
 
 test("macOS liveness distinguishes absent PIDs from executable and probe failures", async () => {
@@ -232,7 +272,7 @@ test("legacy pane liveness uses exact read-only backend checks and leaves uncert
     if (op === "pane get") return { stdout: JSON.stringify({ result: { pane: { pane_id: "w2T:p2" } } }) };
     if (op === "agent get") return { stdout: JSON.stringify({ result: { agent: { agent_status: "working" } } }) };
     assert.deepEqual(args, ["pane", "process-info", "--pane", "w2T:p2", "--session", "default"]);
-    return { stdout: JSON.stringify({ result: { type: "pane_process_info", process_info: { pane_id: "w2T:p2", shell_pid: 99, foreground_processes: [{ name: "node", argv0: "/opt/claude" }] } } }) };
+    return { stdout: JSON.stringify({ result: { type: "pane_process_info", process_info: { pane_id: "w2T:p2", shell_pid: 99, foreground_processes: [{ pid: 100, name: "node", argv0: "/opt/claude" }] } } }) };
   };
   assert.equal(await endpointIsLive(herdrMeta, { run: herdrRun }), true);
 
@@ -248,6 +288,30 @@ test("legacy pane liveness uses exact read-only backend checks and leaves uncert
     ? { stdout: JSON.stringify({ result: { type: "pane_process_info", process_info: { pane_id: "w2T:p2", shell_pid: 99, foreground_processes: [{ name: "zsh", argv0: "-zsh" }] } } }) }
     : herdrRun(command, args, options);
   assert.equal(await endpointIsLive(herdrMeta, { run: allShell }), false, "shell-only panes do not prove a worker is alive");
+  const foregroundCases = [
+    { processes: [{ pid: 99, name: "nu" }], expected: false },
+    { processes: [{ pid: 99, name: "custom-shell", argv0: "/opt/custom-shell" }], expected: false },
+    { processes: [{ pid: 99 }], expected: false },
+    { processes: [{ pid: 100, name: "zsh", argv0: "-zsh" }], expected: false },
+    { processes: [{ pid: 100, name: "nu", argv0: "/opt/nu" }], expected: false },
+    { processes: [{ pid: 100, argv0: "-nu" }], expected: false },
+    { processes: [{ pid: 99, name: "nu" }, { pid: 100, name: "node" }], expected: true },
+    { processes: [{ pid: 100, name: "node" }, { pid: 99, name: "nu" }], expected: true }
+  ];
+  for (const { processes, expected } of foregroundCases) {
+    const run = async (command, args, options) => {
+      if (args[0] === "agent") return { stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }) };
+      if (args[0] === "pane" && args[1] === "process-info") return { stdout: JSON.stringify({ result: { type: "pane_process_info", process_info: { pane_id: "w2T:p2", shell_pid: 99, foreground_processes: processes } } }) };
+      return herdrRun(command, args, options);
+    };
+    const endpointLive = await endpointIsLive(herdrMeta, { run });
+    assert.equal(endpointLive, expected, "only a foreground process other than the recorded or nested shell can prove worker liveness");
+    const execution = executionFingerprint(herdrMeta, endpointLive);
+    assert.equal(execution, expected ? fingerprint("execution.pane.v1", "herdr", "default", "w2T:p2") : null);
+    const model = await projectWork([record({ state: "working", inFlight: true, endpointLive, executionFingerprint: execution, livenessEvidence: expected ? "live terminal pane" : "endpoint not live" })], emptyAgentState());
+    assert.equal(model.activeWorkerCount, expected ? 1 : 0);
+    assert.equal(model.items[0].endpointEvidence, expected ? "live terminal pane" : "endpoint not live");
+  }
   const unnamedProcess = async (command, args, options) => args[0] === "pane" && args[1] === "process-info"
     ? { stdout: JSON.stringify({ result: { type: "pane_process_info", process_info: { pane_id: "w2T:p2", shell_pid: 99, foreground_processes: [{}] } } }) }
     : herdrRun(command, args, options);

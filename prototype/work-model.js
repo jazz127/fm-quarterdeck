@@ -74,14 +74,14 @@ export async function endpointIsLive(meta, { platform = process.platform, read =
     const expectedStart = darwinStartIdentity(meta);
     if (expectedStart !== null) {
       try {
-        const { stdout, stderr } = await run("ps", ["-o", "lstart=", "-o", "stat=", "-p", meta.worker_pid], { encoding: "utf8", timeout: 2500, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C" } });
+        const { stdout, stderr } = await run("ps", ["-o", "lstart=", "-o", "stat=", "-p", meta.worker_pid], { encoding: "utf8", timeout: 2500, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } });
         if (stderr?.trim()) return null;
         if (!stdout.trim()) return false;
         const match = stdout.trim().match(/^(.+?)\s+([A-Z][A-Za-z+<>-]*)$/);
         if (!match) return null;
-        const actualStart = Date.parse(match[1]);
+        const actualStart = Date.parse(`${match[1]} UTC`);
         if (!Number.isFinite(actualStart)) return null;
-        return Math.floor(actualStart / 1000) === expectedStart && !/[ZX]/.test(match[2]);
+        return Math.floor(actualStart / 1000) === expectedStart && !["Z", "X"].includes(match[2][0]);
       } catch (error) {
         if (error.code === 1 && error.stdout?.trim() === "" && !error.stderr?.trim() && !error.killed && !error.signal) return false;
         return null;
@@ -151,10 +151,11 @@ async function herdrPaneIsLive(meta, run, options) {
   catch { return null; }
   const info = processReply.result?.process_info;
   if (processReply.result?.type !== "pane_process_info" || info?.pane_id !== pane || !Number.isSafeInteger(info.shell_pid) || !Array.isArray(info.foreground_processes) || !info.foreground_processes.length) return null;
-  const shells = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish"]);
+  const shells = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish", "nu"]);
   const isShell = (value) => shells.has(path.basename(String(value || "")).replace(/^-/, ""));
   let sawShellOnly = false;
   for (const process of info.foreground_processes) {
+    if (process.pid === info.shell_pid) { sawShellOnly = true; continue; }
     const names = [process.name, process.argv0].filter((value) => typeof value === "string" && value);
     if (!names.length) continue;
     if (!names.every(isShell)) return true;
