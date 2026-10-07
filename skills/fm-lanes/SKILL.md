@@ -28,7 +28,8 @@ An implementation slice, worker, branch, task ID, or isolated copy is not a thir
    Keep blocks syntactically flat: nested tags are not supported by the current standalone-block router and can make streaming, routing, and closure ambiguous.
 3. **Naming Convention:** `<LaneName>` must be a single continuous descriptive string (use hyphens instead of spaces) representing the project or its theme (e.g., `Example-Store`, `Example-Store-UI`); use a registered lane name for explicit UI routing.
 4. **The General Lane:** For fleet-wide status updates, administrative chatter, or responses that apply globally, use `[fm-lane General]`.
-5. **Multiple Lanes:** You may report on multiple distinct projects in a single output by using sequential lane blocks.
+5. **One Topic Per Block:** Every sentence inside a block must belong to that lane; a reminder or question about another project or decision goes in its own sequential block, never appended to the current one.
+6. **Multiple Lanes:** You may report on multiple distinct projects in a single output by using sequential lane blocks.
 
 ## Examples
 
@@ -47,4 +48,16 @@ All crewmates are healthy and operating within token limits.
 
 [fm-lane Database-Migration]
 The migration script failed on row 452. The error log is in `scratch/err.log`. Should I have the crew retry?
+[end Database-Migration]
+
+**Incorrect (trailing cross-project line):** The store UI is complete. A database migration is still waiting on review, all wrapped in the Example-Store-UI lane.
+
+**Correct (separate cross-project block):**
+
+[fm-lane Example-Store-UI]
+The store UI is complete.
+[end Example-Store-UI]
+
+[fm-lane Database-Migration]
+The migration is still waiting on review.
 [end Database-Migration]
