@@ -49,7 +49,7 @@ Lane/kind/source/task/search filters intersect. Search is debounced and escaped.
 
 ## Surfaces
 
-- **Overview / Work Split:** repository → lane/workstream → theme, explicit classification and exact task links. [Work taxonomy](../prototype/WORK-TAXONOMY.md) owns execution evidence, pressure and completion attention semantics.
+- **Overview / Work Split:** repository → lane/workstream → theme, explicit classification and exact task links. Active requires in-flight executing work with process-incarnation proof. A recorded terminal pane is a weaker, visibly labelled evidence tier; it can inform the row but cannot establish Active or a live worker process. [Work taxonomy](../prototype/WORK-TAXONOMY.md) owns platform probes, evidence labels, pressure and completion attention semantics.
 - **Lane Chats:** oldest-to-newest feed, independent refresh, preserved reading intent, safe Markdown/raw text, bounded history and context drawers. Lane envelopes are display hints, not agent authority.
 - **Expenses:** selected private overlay before empty canonical public ledger; labeled synthetic demo only when the canonical file is absent. Decimal strings use BigInt cents with separate currency/project/category totals. Billing snapshots are separate, never added to ledger totals. Attribution comes from private `costs.json`; unknown allocation stays unclassified.
 - **Quota:** allowlisted account adapter with six-second/one-MiB read bounds. Unsupported timing stays unknown. [Quota usage](../README.md#product-surfaces) owns the invocation, caching and freshness behavior.

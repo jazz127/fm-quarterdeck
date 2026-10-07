@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
 import { createAgentStateOwner, emptyAgentState, validateAgentState, fingerprint } from "../agent-state.js";
-import { classifyCurrent, projectWork, verifyDurability, endpointIsLive, executionFingerprint, foldStatusLines } from "../work-model.js";
+import { classifyCurrent, projectWork, verifyDurability, endpointIsLive, executionFingerprint, hasProcessIdentity, shouldProbeLiveness, createConcurrencyLimiter, foldStatusLines } from "../work-model.js";
 import { createServer, loadFirstmateHome } from "../server.js";
 const lab = path.resolve(import.meta.dirname, "../../.taxonomy-lab");
 async function temporary(context) { await mkdir(lab, { recursive: true }); const dir = await mkdtemp(path.join(lab, "test-")); context.after(() => rm(dir, { recursive: true, force: true })); return dir; }
@@ -20,6 +20,23 @@ test("current-state classification excludes preserved, completed, dead and unkno
   const input = { inFlight: true, endpointLive: true, state: "working" };
   assert.equal(classifyCurrent(input), "active");
   for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
+});
+
+test("liveness probes are gated to executing in-flight work and bounded concurrently", async () => {
+  assert.equal(shouldProbeLiveness("working", true), true);
+  for (const state of ["done", "paused", "blocked", "waiting", "unknown"]) assert.equal(shouldProbeLiveness(state, true), false);
+  assert.equal(shouldProbeLiveness("working", false), false);
+  const limit = createConcurrencyLimiter(2);
+  let active = 0, maximum = 0;
+  await Promise.all(Array.from({ length: 8 }, () => limit(async () => {
+    active++;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+  })));
+  assert.equal(maximum, 2);
+  assert.equal(active, 0);
+  assert.throws(() => createConcurrencyLimiter(0), /positive integer/);
 });
 
 test("taxonomy is three levels with explicit fallback, distinct repositories and no duplicate slices", async () => {
@@ -128,6 +145,11 @@ test("macOS liveness matches recorded process start identity and distinguishes d
     return { stdout: `${options.env?.LC_ALL === "C" ? lstart : "Sa Okt  3 16:33:10 2026"} S\n` };
   };
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: ps }), true, "the UTC ps fixture matches the recorded absolute instant on a non-UTC host");
+  assert.equal(await endpointIsLive({ worker_pid: pid, worker_start_identity: "2026-10-03T16:33:10" }, { platform: "darwin", run: ps }), null, "a timezone-less timestamp cannot identify an absolute process start");
+  assert.equal(await endpointIsLive({ worker_pid: pid, worker_started_at: "2026-10-03T16:33:10" }, { platform: "darwin", run: ps }), null, "the legacy timestamp field also requires an explicit timezone");
+  assert.equal(executionFingerprint({ worker_pid: pid, worker_start_identity: "2026-10-03T16:33:10" }, true), null);
+  assert.equal(hasProcessIdentity({ worker_pid: pid }), true);
+  assert.equal(hasProcessIdentity({ worker_pid: "", worker_start_identity: null }), false);
   assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2026-10-03T06:33:10.000Z" }, { platform: "darwin", run: ps }), false, "interpreting the UTC ps timestamp as Brisbane local time must not match");
   assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2020-01-01T00:00:00Z" }, { platform: "darwin", run: ps }), false, "a reused PID with another start time is not the same incarnation");
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: "" }) }), false);
@@ -231,8 +253,8 @@ test("macOS liveness distinguishes absent PIDs from executable and probe failure
     assert.equal(endpointLive, expected);
     assert.deepEqual(commands, ["ps"], "process probe failures must not fall back to tmux");
     const model = await projectWork([record({ state: "working", inFlight: true, endpointLive })], emptyAgentState());
-    assert.equal(model.items[0].livenessEvidence, expected === false ? "endpoint not live" : "liveness unknown");
     assert.equal(model.items[0].endpointEvidence, expected === false ? "endpoint not live" : "liveness unknown");
+    assert.equal("livenessEvidence" in model.items[0], false);
     assert.equal(model.activeWorkerCount, 0);
   }
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: "", stderr: "ps: sysctl failed" }) }), null, "a successful exit with probe diagnostics is still inconclusive");
@@ -257,8 +279,8 @@ test("remote process and pane records stay unknown without local probes or activ
     assert.equal(execution, null);
     const model = await projectWork([record({ state: "working", inFlight: true, endpointLive, executionFingerprint: execution })], emptyAgentState());
     assert.equal(model.items[0].status, "unknown");
-    assert.equal(model.items[0].livenessEvidence, "liveness unknown");
     assert.equal(model.items[0].endpointEvidence, "liveness unknown");
+    assert.equal("livenessEvidence" in model.items[0], false);
     assert.equal(model.activeWorkerCount, 0);
   }
 });
@@ -308,9 +330,11 @@ test("legacy pane liveness uses exact read-only backend checks and leaves uncert
     assert.equal(endpointLive, expected, "only a foreground process other than the recorded or nested shell can prove worker liveness");
     const execution = executionFingerprint(herdrMeta, endpointLive);
     assert.equal(execution, expected ? fingerprint("execution.pane.v1", "herdr", "default", "w2T:p2") : null);
-    const model = await projectWork([record({ state: "working", inFlight: true, endpointLive, executionFingerprint: execution, livenessEvidence: expected ? "live terminal pane" : "endpoint not live" })], emptyAgentState());
-    assert.equal(model.activeWorkerCount, expected ? 1 : 0);
-    assert.equal(model.items[0].endpointEvidence, expected ? "live terminal pane" : "endpoint not live");
+    const model = await projectWork([record({ state: "working", inFlight: true, endpointLive, executionFingerprint: execution, endpointEvidence: expected ? "live terminal pane (weaker evidence; worker process unverified)" : "endpoint not live" })], emptyAgentState());
+    assert.equal(model.activeWorkerCount, 0, "a terminal pane never proves a worker process incarnation");
+    assert.equal(model.items[0].status, "unknown");
+    assert.equal(model.items[0].endpointEvidence, expected ? "live terminal pane (weaker evidence; worker process unverified)" : "endpoint not live");
+    assert.equal("livenessEvidence" in model.items[0], false, "work rows expose one evidence field");
   }
   const unnamedProcess = async (command, args, options) => args[0] === "pane" && args[1] === "process-info"
     ? { stdout: JSON.stringify({ result: { type: "pane_process_info", process_info: { pane_id: "w2T:p2", shell_pid: 99, foreground_processes: [{}] } } }) }
@@ -324,29 +348,45 @@ test("legacy pane liveness uses exact read-only backend checks and leaves uncert
   assert.equal(await endpointIsLive({ ...herdrMeta, remote_host: "crew-host" }, { run: async () => { remoteCalls++; return { stdout: "" }; } }), null);
   assert.equal(remoteCalls, 0, "remote pane state is never probed locally");
 
-  const tmuxMeta = { backend: "tmux", window: "default:worker" };
+  const tmuxMeta = { window: "default:worker" };
+  const calls = [];
   const tmuxRun = async (command, args, options) => {
     assert.equal(command, "tmux"); assert.equal(options.timeout, 1500);
-    assert.deepEqual(args, ["list-windows", "-t", "=default", "-F", "#{window_name}"]);
-    return { stdout: "other\nworker\n" };
+    calls.push(args);
+    if (args[0] === "list-windows") {
+      assert.deepEqual(args, ["list-windows", "-t", "=default", "-F", "#{window_id}\t#{window_name}"]);
+      return { stdout: "@1\tother\n@2\tworker\n" };
+    }
+    assert.deepEqual(args, ["list-panes", "-t", "@2", "-F", "#{pane_current_command}"]);
+    return { stdout: "zsh\nnode\n" };
   };
   assert.equal(await endpointIsLive(tmuxMeta, { run: tmuxRun }), true);
-  assert.equal(await endpointIsLive(tmuxMeta, { run: async () => ({ stdout: "other\n" }) }), false);
-  assert.equal(await endpointIsLive(tmuxMeta, { run: async () => ({ stdout: "worker-backup\nWorker\n" }) }), false, "the recorded window name must match exactly");
+  assert.equal(calls.length, 2);
+  const tmuxReply = (windows, panes = "node\n") => async (_command, args) => ({ stdout: args[0] === "list-windows" ? windows : panes });
+  assert.equal(await endpointIsLive(tmuxMeta, { run: tmuxReply("@1\tother\n") }), false);
+  assert.equal(await endpointIsLive(tmuxMeta, { run: tmuxReply("@1\tworker-backup\n@2\tWorker\n") }), false, "the recorded window name must match exactly");
+  assert.equal(await endpointIsLive(tmuxMeta, { run: tmuxReply("@2\tworker\n", "zsh\nbash\n") }), false, "shell-only tmux panes do not prove a worker is alive");
+  assert.equal(await endpointIsLive(tmuxMeta, { run: tmuxReply("@2\tworker\n", "zsh\nnode\n") }), true);
+  assert.equal(await endpointIsLive({ backend: "", window: "default:worker" }, { run: tmuxRun }), true, "an empty backend retains the default-tmux meaning");
   assert.equal(await endpointIsLive(tmuxMeta, { run: async () => { throw new Error("tmux unavailable"); } }), null);
   assert.equal(await endpointIsLive({ backend: "tmux", window: "malformed" }, { run: tmuxRun }), null);
+  assert.equal(executionFingerprint(tmuxMeta, true), fingerprint("execution.pane.v1", "tmux", "default:worker"));
+  assert.equal(executionFingerprint({ backend: "", window: "default:worker" }, true), fingerprint("execution.pane.v1", "tmux", "default:worker"));
+  assert.equal(hasProcessIdentity({ backend: "tmux", window: "default:worker" }), false);
 });
 
 test("tmux pane fallback cannot borrow a matching window from a prefix or glob session", async () => {
   for (const session of ["default", "default*"]) {
     const run = async (command, args) => {
       assert.equal(command, "tmux");
-      if (["default", "default*", "=default-backup"].includes(args[2])) return { stdout: "worker\n" };
+      assert.equal(args[0], "list-windows");
+      if (args[2] === `=${session}`) return { stdout: "@1\tworker\n" };
       throw new Error("No exact session exists; only default-backup is present");
     };
     assert.equal(await endpointIsLive({ backend: "tmux", window: `${session}:worker` }, { run }), null, "an absent exact session cannot prove liveness");
-    assert.equal(await endpointIsLive({ backend: "tmux", window: "default-backup:worker" }, { run }), true, "the exact surviving session still proves its own window is live");
   }
+  const exact = async (_command, args) => args[0] === "list-windows" ? { stdout: "@1\tworker\n" } : { stdout: "node\n" };
+  assert.equal(await endpointIsLive({ backend: "tmux", window: "default-backup:worker" }, { run: exact }), true, "the exact surviving session and its pane process provide evidence");
 });
 
 test("pane execution fingerprints are stable and shared panes count once", async () => {
@@ -360,12 +400,12 @@ test("pane execution fingerprints are stable and shared panes count once", async
   assert.equal(executionFingerprint(linux, true), fingerprint("execution.v1", linux.worker_boot_id, linux.worker_pid, linux.worker_start_ticks));
   const tmux = { backend: "tmux", window: "default:worker" };
   assert.equal(executionFingerprint(tmux, true), fingerprint("execution.pane.v1", "tmux", "default:worker"));
-  const rows = ["slice-a", "slice-b"].map((id) => record({ id, state: "working", inFlight: true, endpointLive: true, executionFingerprint: first, livenessEvidence: "live terminal pane" }));
+  const rows = ["slice-a", "slice-b"].map((id) => record({ id, state: "working", inFlight: true, endpointLive: true, executionFingerprint: first, endpointEvidence: "live terminal pane (weaker evidence; worker process unverified)" }));
   const model = await projectWork(rows, emptyAgentState());
-  assert.equal(model.activeWorkerCount, 1);
-  assert.equal(model.items.filter((item) => item.status === "active").length, 2);
-  assert.equal(model.items[0].livenessEvidence, "live terminal pane");
-  assert.equal(model.items[0].endpointEvidence, "live terminal pane");
+  assert.equal(model.activeWorkerCount, 0);
+  assert.equal(model.items.filter((item) => item.status === "active").length, 0);
+  assert.equal(model.items[0].endpointEvidence, "live terminal pane (weaker evidence; worker process unverified)");
+  assert.equal("livenessEvidence" in model.items[0], false);
 });
 
 test("origin-guarded presentation endpoint is idempotent, exact and cannot change Firstmate status", async (context) => {

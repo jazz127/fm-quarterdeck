@@ -6,6 +6,42 @@ import { fingerprint } from "./agent-state.js";
 const exec = promisify(execFile);
 export const WORK_STATUSES = ["active", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
+const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
+const PANE_EVIDENCE = "live terminal pane (weaker evidence; worker process unverified)";
+const SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish", "nu"]);
+
+export function hasProcessIdentity(meta) {
+  return [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at]
+    .some((value) => value !== undefined && value !== null && value !== "");
+}
+
+export function shouldProbeLiveness(state, inFlight) {
+  return inFlight === true && EXECUTING_STATES.has(state);
+}
+
+export function createConcurrencyLimiter(limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError("limit must be a positive integer");
+  let active = 0;
+  const waiting = [];
+  return (operation) => new Promise((resolve, reject) => {
+    const start = () => {
+      active++;
+      Promise.resolve().then(operation).then(resolve, reject).finally(() => {
+        active--;
+        waiting.shift()?.();
+      });
+    };
+    if (active < limit) start();
+    else waiting.push(start);
+  });
+}
+
+function paneBackend(meta) {
+  if (meta.backend === "herdr") return "herdr";
+  if (meta.backend === undefined || meta.backend === null || meta.backend === "" || meta.backend === "tmux") return "tmux";
+  return null;
+}
+
 export function safeWorkNote(value) {
   const text = String(value || "");
   if (/-----BEGIN [\w ]*PRIVATE KEY-----|\b(?:api[_ -]?key|access[_ -]?token|password|secret|credential)\s*[:=]\s*\S+|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9_]{20,})\b/i.test(text)) return "Sensitive operational detail withheld";
@@ -45,7 +81,7 @@ export function foldStatusLines(lines) {
   return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1), pendingIssues: [...open.values()].map(({ key, state }) => ({ key, state })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, queued, retained, pendingIssues = [] }) {
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [] }) {
   if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
   if (pendingIssues.length) return "waiting";
   if (state === "needs-decision") return "captain-action";
@@ -53,7 +89,7 @@ export function classifyCurrent({ state, inFlight, endpointLive, queued, retaine
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";
   if (state === "done") return "newly-done";
   if (queued && !inFlight) return "backlog";
-  if (inFlight && endpointLive === true && ["working", "active", "in-progress"].includes(state)) return "active";
+  if (inFlight && endpointLive === true && endpointEvidence !== PANE_EVIDENCE && EXECUTING_STATES.has(state)) return "active";
   return "unknown";
 }
 
@@ -62,14 +98,14 @@ function validPid(meta) { return /^[1-9]\d*$/.test(meta.worker_pid || ""); }
 
 function darwinStartIdentity(meta) {
   const identity = meta.worker_start_identity || meta.worker_started_at;
-  if (!identity) return null;
+  if (typeof identity !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(identity)) return null;
   const timestamp = Date.parse(identity);
   return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null;
 }
 
 export async function endpointIsLive(meta, { platform = process.platform, read = readFile, run = exec } = {}) {
   if (meta.remote_host) return null;
-  const processFields = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at];
+  const processIdentity = hasProcessIdentity(meta);
   if (validPid(meta) && platform === "darwin") {
     const expectedStart = darwinStartIdentity(meta);
     if (expectedStart !== null) {
@@ -97,17 +133,17 @@ export async function endpointIsLive(meta, { platform = process.platform, read =
   }
   // A partial or unsupported process identity must not be replaced by weaker
   // pane evidence. Pane checks are only for legacy records with no identity.
-  if (processFields.some((value) => value !== undefined && value !== null && value !== "")) return null;
-  if (meta.backend !== "herdr" && meta.backend !== "tmux") return null;
+  if (processIdentity) return null;
+  const backend = paneBackend(meta);
+  if (!backend) return null;
   const options = { encoding: "utf8", timeout: 1500, maxBuffer: 64 * 1024 };
-  if (meta.backend === "herdr") return herdrPaneIsLive(meta, run, options);
+  if (backend === "herdr") return herdrPaneIsLive(meta, run, options);
   return tmuxWindowIsLive(meta, run, options);
 }
 
 export function executionFingerprint(meta, endpointLive) {
   if (endpointLive !== true) return null;
-  const processFields = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at];
-  if (processFields.some((value) => value !== undefined && value !== null && value !== "")) {
+  if (hasProcessIdentity(meta)) {
     if (!validPid(meta)) return null;
     let identity = meta.worker_start_ticks;
     if (!identity) {
@@ -118,8 +154,9 @@ export function executionFingerprint(meta, endpointLive) {
     if (meta.worker_start_ticks && !/^[a-f0-9-]{36}$/.test(meta.worker_boot_id || "")) return null;
     return fingerprint("execution.v1", meta.worker_boot_id || null, meta.worker_pid, identity);
   }
-  if (meta.backend === "herdr" && meta.herdr_session && meta.herdr_pane_id) return fingerprint("execution.pane.v1", meta.backend, meta.herdr_session, meta.herdr_pane_id);
-  if (meta.backend === "tmux" && meta.window) return fingerprint("execution.pane.v1", meta.backend, meta.window);
+  const backend = paneBackend(meta);
+  if (backend === "herdr" && meta.herdr_session && meta.herdr_pane_id) return fingerprint("execution.pane.v1", backend, meta.herdr_session, meta.herdr_pane_id);
+  if (backend === "tmux" && meta.window) return fingerprint("execution.pane.v1", backend, meta.window);
   return null;
 }
 
@@ -151,8 +188,7 @@ async function herdrPaneIsLive(meta, run, options) {
   catch { return null; }
   const info = processReply.result?.process_info;
   if (processReply.result?.type !== "pane_process_info" || info?.pane_id !== pane || !Number.isSafeInteger(info.shell_pid) || !Array.isArray(info.foreground_processes) || !info.foreground_processes.length) return null;
-  const shells = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish", "nu"]);
-  const isShell = (value) => shells.has(path.basename(String(value || "")).replace(/^-/, ""));
+  const isShell = (value) => SHELL_NAMES.has(path.basename(String(value || "")).replace(/^-/, ""));
   let sawShellOnly = false;
   for (const process of info.foreground_processes) {
     if (process.pid === info.shell_pid) { sawShellOnly = true; continue; }
@@ -170,8 +206,13 @@ async function tmuxWindowIsLive(meta, run, options) {
   const [session, window] = target.split(":");
   if (!session || !window) return null;
   try {
-    const { stdout } = await run("tmux", ["list-windows", "-t", `=${session}`, "-F", "#{window_name}"], options);
-    return stdout.split(/\r?\n/).some((line) => line === window);
+    const { stdout } = await run("tmux", ["list-windows", "-t", `=${session}`, "-F", "#{window_id}\t#{window_name}"], options);
+    const match = stdout.split(/\r?\n/).map((line) => line.split("\t")).find(([id, name]) => /^@\d+$/.test(id || "") && name === window);
+    if (!match) return false;
+    const panes = await run("tmux", ["list-panes", "-t", match[0], "-F", "#{pane_current_command}"], options);
+    const commands = panes.stdout.split(/\r?\n/).filter(Boolean);
+    if (!commands.length) return null;
+    return commands.some((command) => !SHELL_NAMES.has(path.basename(command).replace(/^-/, "")));
   } catch { return null; }
 }
 
@@ -258,8 +299,8 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     if (status === "newly-done") status = completionAttention;
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
-      lane, theme, status, sourceState: record.state, livenessEvidence: record.livenessEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
-      endpointEvidence: record.livenessEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
+      lane, theme, status, sourceState: record.state,
+      endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
       retained: Boolean(record.retained), pendingIssues: record.pendingIssues || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
       unboundCommit: Boolean(record.unboundCommit && !bound),
