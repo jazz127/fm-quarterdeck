@@ -4,6 +4,19 @@ Firstmate Quarterdeck is a web dashboard for [kunchenguid/firstmate](https://git
 
 **A configured Firstmate installation is required for real operation.** Quarterdeck reads Firstmate's private home and uses its file and inbox contracts; this repository does not include Firstmate's agent orchestration or bootstrap it. The two repositories are installed separately. Without a Firstmate home, Quarterdeck can serve a limited synthetic preview and run offline tests, but that is not a functioning Firstmate fleet.
 
+## Feature maturity
+
+| Surface | Status | Note |
+|---|---|---|
+| Overview and Work Split | Experimental | Early-stage experience; still taking shape. |
+| Preferences | Experimental | Early-stage experience; still taking shape. |
+| Fleet Chats | Mature | Core experience is established; polish is ongoing. |
+| Expenses | Working | Core functionality is available and continuing to evolve. |
+| Quota page | Working | Useful and operational, with further refinement ahead. |
+| Sidebar quota cards | Mature | Established, polished quota summaries at a glance. |
+
+**Status guide:** Mature is established; Working is functional but still evolving; Experimental is early-stage.
+
 ## Prerequisites and setup
 
 1. Set up [Firstmate using its upstream instructions](https://github.com/kunchenguid/firstmate#quick-start), including a supported agent harness and the tools for your chosen backend. Initialize the home there before pairing Quarterdeck; cloning either repository alone does not create an operational fleet.
