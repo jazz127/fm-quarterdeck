@@ -68,6 +68,7 @@ function darwinStartIdentity(meta) {
 }
 
 export async function endpointIsLive(meta, { platform = process.platform, read = readFile, run = exec } = {}) {
+  if (meta.remote_host) return null;
   const processFields = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at];
   if (validPid(meta) && platform === "darwin") {
     const expectedStart = darwinStartIdentity(meta);
@@ -93,7 +94,7 @@ export async function endpointIsLive(meta, { platform = process.platform, read =
   // A partial or unsupported process identity must not be replaced by weaker
   // pane evidence. Pane checks are only for legacy records with no identity.
   if (processFields.some((value) => value !== undefined && value !== null && value !== "")) return null;
-  if (meta.remote_host || (meta.backend !== "herdr" && meta.backend !== "tmux")) return null;
+  if (meta.backend !== "herdr" && meta.backend !== "tmux") return null;
   const options = { encoding: "utf8", timeout: 1500, maxBuffer: 64 * 1024 };
   if (meta.backend === "herdr") return herdrPaneIsLive(meta, run, options);
   return tmuxWindowIsLive(meta, run, options);
@@ -159,7 +160,7 @@ async function tmuxWindowIsLive(meta, run, options) {
   const [session, window] = target.split(":");
   if (!session || !window) return null;
   try {
-    const { stdout } = await run("tmux", ["list-windows", "-t", session, "-F", "#{window_name}"], options);
+    const { stdout } = await run("tmux", ["list-windows", "-t", `=${session}`, "-F", "#{window_name}"], options);
     return stdout.split(/\r?\n/).some((line) => line === window);
   } catch { return null; }
 }

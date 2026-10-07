@@ -108,15 +108,22 @@ test("genuine-active review threshold and Linux liveness retain exact incarnatio
   assert.equal(shared.activeReviewRequired, false, "one endpoint copied into nine slices is not nine concurrent workers");
 });
 
-test("macOS liveness matches recorded process start identity and distinguishes dead and reused PIDs", async () => {
-  const pid = "76114", lstart = "Sun Oct  4 02:33:10 2026", identity = new Date(Date.parse(lstart)).toISOString();
+test("macOS liveness matches recorded process start identity and distinguishes dead and reused PIDs", async (context) => {
+  const originalTimezone = process.env.TZ;
+  process.env.TZ = "Australia/Brisbane";
+  context.after(() => {
+    if (originalTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimezone;
+  });
+  const pid = "76114", lstart = "Sun Oct  4 02:33:10 2026", identity = "2026-10-03T16:33:10.000Z";
   const meta = { worker_pid: pid, worker_start_identity: identity };
   const ps = async (command, args, options) => {
     assert.equal(command, "ps"); assert.equal(options.timeout, 2500);
     assert.deepEqual(args, ["-o", "lstart=", "-o", "stat=", "-p", pid]);
     return { stdout: `${lstart} S\n` };
   };
-  assert.equal(await endpointIsLive(meta, { platform: "darwin", run: ps }), true);
+  assert.equal(await endpointIsLive(meta, { platform: "darwin", run: ps }), true, "Brisbane ps time is UTC+10 and matches the recorded absolute instant");
+  assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2026-10-04T02:33:10.000Z" }, { platform: "darwin", run: ps }), false, "interpreting the local ps timestamp as UTC must not match");
   assert.equal(await endpointIsLive({ ...meta, worker_start_identity: "2020-01-01T00:00:00Z" }, { platform: "darwin", run: ps }), false, "a reused PID with another start time is not the same incarnation");
   assert.equal(await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: "" }) }), false);
   const dead = async () => { const error = new Error("not found"); error.code = "ESRCH"; throw error; };
@@ -127,6 +134,31 @@ test("macOS liveness matches recorded process start identity and distinguishes d
   assert.equal(await endpointIsLive(withPane, { platform: "darwin", run: async (...args) => { if (args[0] === "ps") return ps(...args); paneFallbackCalls++; return { stdout: "" }; } }), true);
   assert.equal(paneFallbackCalls, 0, "process identity remains preferred to pane fallback");
   assert.equal(executionFingerprint(meta, true), fingerprint("execution.v1", null, pid, identity));
+});
+
+test("remote process and pane records stay unknown without local probes or active evidence", async () => {
+  const records = [
+    { platform: "linux", meta: { worker_pid: "76114", worker_start_ticks: "4242", worker_boot_id: "a".repeat(36) } },
+    { platform: "darwin", meta: { worker_pid: "76114", worker_start_identity: "2026-10-03T16:33:10.000Z" } },
+    { platform: "darwin", meta: { worker_pid: "76114", worker_started_at: "2026-10-03T16:33:10.000Z" } },
+    { platform: "linux", meta: { backend: "herdr", herdr_session: "default", herdr_pane_id: "w2T:p2" } },
+    { platform: "darwin", meta: { backend: "tmux", window: "default:worker" } }
+  ];
+  for (const { platform, meta } of records) {
+    let probes = 0;
+    const probe = async () => { probes++; throw new Error("Local endpoint unavailable"); };
+    const remote = { ...meta, remote_host: "crew-host" };
+    const endpointLive = await endpointIsLive(remote, { platform, read: probe, run: probe });
+    assert.equal(endpointLive, null);
+    assert.equal(probes, 0, `${platform} remote records never inspect local endpoints`);
+    const execution = executionFingerprint(remote, endpointLive);
+    assert.equal(execution, null);
+    const model = await projectWork([record({ state: "working", inFlight: true, endpointLive, executionFingerprint: execution })], emptyAgentState());
+    assert.equal(model.items[0].status, "unknown");
+    assert.equal(model.items[0].livenessEvidence, "liveness unknown");
+    assert.equal(model.items[0].endpointEvidence, "liveness unknown");
+    assert.equal(model.activeWorkerCount, 0);
+  }
 });
 
 test("legacy pane liveness uses exact read-only backend checks and leaves uncertain endpoints unknown", async () => {
@@ -169,13 +201,26 @@ test("legacy pane liveness uses exact read-only backend checks and leaves uncert
   const tmuxMeta = { backend: "tmux", window: "default:worker" };
   const tmuxRun = async (command, args, options) => {
     assert.equal(command, "tmux"); assert.equal(options.timeout, 1500);
-    assert.deepEqual(args, ["list-windows", "-t", "default", "-F", "#{window_name}"]);
+    assert.deepEqual(args, ["list-windows", "-t", "=default", "-F", "#{window_name}"]);
     return { stdout: "other\nworker\n" };
   };
   assert.equal(await endpointIsLive(tmuxMeta, { run: tmuxRun }), true);
   assert.equal(await endpointIsLive(tmuxMeta, { run: async () => ({ stdout: "other\n" }) }), false);
+  assert.equal(await endpointIsLive(tmuxMeta, { run: async () => ({ stdout: "worker-backup\nWorker\n" }) }), false, "the recorded window name must match exactly");
   assert.equal(await endpointIsLive(tmuxMeta, { run: async () => { throw new Error("tmux unavailable"); } }), null);
   assert.equal(await endpointIsLive({ backend: "tmux", window: "malformed" }, { run: tmuxRun }), null);
+});
+
+test("tmux pane fallback cannot borrow a matching window from a prefix or glob session", async () => {
+  for (const session of ["default", "default*"]) {
+    const run = async (command, args) => {
+      assert.equal(command, "tmux");
+      if (["default", "default*", "=default-backup"].includes(args[2])) return { stdout: "worker\n" };
+      throw new Error("No exact session exists; only default-backup is present");
+    };
+    assert.equal(await endpointIsLive({ backend: "tmux", window: `${session}:worker` }, { run }), null, "an absent exact session cannot prove liveness");
+    assert.equal(await endpointIsLive({ backend: "tmux", window: "default-backup:worker" }, { run }), true, "the exact surviving session still proves its own window is live");
+  }
 });
 
 test("pane execution fingerprints are stable and shared panes count once", async () => {
