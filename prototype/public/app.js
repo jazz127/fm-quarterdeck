@@ -45,6 +45,8 @@ const retainedSessions = new Set();
 const retainedDisk = new Set();
 let pendingLanesRefresh = false;
 let lastFeedFingerprint = "";
+// Tab-local disclosure choices, scoped to the current fleet selection.
+const mixedLaneExpansion = new Map();
 let lastPageAnchor = "";
 let preservePageAnchor = false;
 let feedLaneOverrideId = null;
@@ -267,10 +269,13 @@ function messagesForSelection() {
       const fingerprint = [message.occurredAt, message.source, message.author, message.text].join("\n");
       const ordinal = occurrences.get(fingerprint) || 0;
       occurrences.set(fingerprint, ordinal + 1);
-      const key = message.recordId ? `record:${message.recordId}` : `quoted:${fingerprint}:${ordinal}`;
+      const mixed = message.mixedLaneMessage;
+      const recordId = mixed?.recordId || message.recordId;
+      const key = recordId ? `record:${recordId}` : `quoted:${fingerprint}:${ordinal}`;
       const existing = merged.get(key);
-      if (existing) existing.laneNames.push(lane.name);
-      else merged.set(key, { ...message, laneNames: [lane.name] });
+      if (existing) {
+        if (!existing.laneNames.includes(lane.name)) existing.laneNames.push(lane.name);
+      } else merged.set(key, { ...message, recordId, text: mixed?.text || message.text, laneNames: [lane.name] });
     }
   }
   const query = transcriptQuery.trim().toLocaleLowerCase();
@@ -284,6 +289,22 @@ const { sync: syncBulkControls, bindToggle: bindBulkToggle } = window.bulkContro
 const filterView = window.filterView;
 const laneBulkNodes = () => ({ toggle: $("#lane-bulk-toggle") });
 const kindBulkNodes = () => ({ toggle: $("#kinds-bulk-toggle") });
+function renderMixedLaneContent(message) {
+  const selected = new Set(selectedLanes().map((lane) => lane.id));
+  const unfiltered = laneSelection().all && laneStatusFilter === "all" && !feedLaneOverrideId;
+  const scope = unfiltered ? "All" : [...selected].sort().join(",");
+  return message.mixedLaneMessage.blocks.map((block, index) => {
+    const key = JSON.stringify([message.recordId, scope, index]);
+    const expanded = mixedLaneExpansion.get(key) ?? (unfiltered || selected.has(block.projectId));
+    const body = block.text.replace(/^\[fm-lane [^\]\r\n]+\]\r?\n/, "").replace(/\r?\n\[end [^\]\r\n]+\]$/, "");
+    const preview = body.replace(/\s+/g, " ").trim().slice(0, 80);
+    const lines = body.split(/\r?\n/).length;
+    const content = messageFormat === "markdown" ? renderMarkdown(body) : escapeHtml(body);
+    const id = `mixed-lane-${reviewId(key)}`;
+    return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="${expanded}" aria-controls="${id}"><span class="mixed-lane-chevron" aria-hidden="true">${expanded ? "▾" : "▸"}</span>[fm-lane <strong>${escapeHtml(block.name)}</strong>]</button><span class="mixed-lane-summary"${expanded ? " hidden" : ""}><span class="mixed-lane-preview">${escapeHtml(preview)}</span><small>${lines} ${lines === 1 ? "line" : "lines"}</small></span></div><div id="${id}" class="mixed-lane-content"${expanded ? "" : " hidden"}>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
+  }).join("");
+}
+
 function renderMessageTypeFilters() {
   filterView.renderKindFilters({
     types: MESSAGE_TYPES,
@@ -457,7 +478,7 @@ function renderFeed() {
     ? { type: "record", recordId: message.recordId }
     : { type: "quote", time: message.time, text: message.text, lanes: message.laneNames });
   // Fingerprint the bounded page before Markdown rendering or DOM work.
-  const fingerprint = JSON.stringify([pageMessages, messageFormat, transcriptQuery, emptyMessage, start, showingAllLive]);
+  const fingerprint = JSON.stringify([pageMessages, messageFormat, transcriptQuery, emptyMessage, start, showingAllLive, laneSelection().all, laneStatusFilter, feedLaneOverrideId]);
   if (fingerprint !== lastFeedFingerprint) {
   const feedHtml = messages.length ? pageMessages.map((message, index, page) => {
     const kind = message.kind || "conversation";
@@ -469,7 +490,7 @@ function renderFeed() {
       ? `<span class="avatar-status">${escapeHtml(statusIcon(message.state))}</span>`
       : (messageTypeSvg(typeId) || `<span class="avatar-mono">${escapeHtml(message.author.slice(0, 1).toUpperCase())}</span>`);
     const rawOrRendered = kind !== "tools" && messageFormat === "markdown" ? renderMarkdown(message.text) : escapeHtml(message.text);
-    const content = highlightSearchMatches(rawOrRendered, transcriptQuery);
+    const content = message.mixedLaneMessage ? renderMixedLaneContent(message) : highlightSearchMatches(rawOrRendered, transcriptQuery);
     const compact = kind === "thinking" || kind === "tools";
     const preview = highlightSearchMatches(escapeHtml(String(message.text).replace(/\s+/g, " ").trim().slice(0, 120)), transcriptQuery);
     const metadata = `<strong>${escapeHtml(message.author)}</strong><span class="message-origin origin-${escapeHtml(typeId)}">${escapeHtml(messageTypeLabel(typeId))}</span>${kind === "crew" ? `<span class="message-state">${escapeHtml(stateLabel(message.state))}</span>` : ""}<span class="message-lane">${escapeHtml(laneLabel)}</span><time datetime="${escapeHtml(message.occurredAt)}">${escapeHtml(message.time)}</time>`;
@@ -1915,6 +1936,15 @@ function clearSearch() {
 }
 $("#transcript-search-clear").addEventListener("click", clearSearch);
 $("#messages").addEventListener("click", (event) => {
+  const toggle = event.target?.closest?.("button[data-mixed-lane-key]");
+  if (toggle) {
+    const expanded = toggle.getAttribute("aria-expanded") !== "true";
+    mixedLaneExpansion.set(toggle.dataset.mixedLaneKey, expanded);
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.querySelector(".mixed-lane-chevron").textContent = expanded ? "▾" : "▸";
+    toggle.parentElement.querySelector(".mixed-lane-summary").hidden = expanded;
+    document.getElementById(toggle.getAttribute("aria-controls")).hidden = !expanded;
+  }
   if (event.target?.id === "search-empty-clear" || event.target?.closest?.("#search-empty-clear")) {
     clearSearch();
   }

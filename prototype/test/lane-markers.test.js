@@ -6,6 +6,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { createServer } from "../server.js";
 import { readConversationTranscript } from "../transcript.js";
+import { claudeProjectDirectory } from "../claude-transcript.js";
 
 const mixed = "[fm-lane Example Store]\nSynthetic store update.\n\nSynthetic PR: https://github.com/example/store/pull/7\n[end Example Store]\n\n[fm-lane fm-quarterdeck]\nSynthetic Quarterdeck update.\n[end fm-quarterdeck]";
 const wrapped = "[fm-lane Example Store]\nSynthetic launch update.\n\nAnother **Markdown** paragraph.\n\nSynthetic PR: https://github.com/example/store/pull/42\n[end Example Store]";
@@ -63,6 +64,54 @@ test("canonical fm-lanes examples survive transcript ingestion and safe render p
   assert.match(vm.runInContext("renderMarkdown(block)", context), /&lt;img src=x onerror=alert\(1\)&gt;/);
   const original = await readConversationTranscript(home, ({ text, ...rest }) => ({ text, ...rest }));
   assert.ok(original.messages.some((message) => message.text === example.trimEnd()));
+});
+
+test("Claude primary multi-block theme labels resolve to registered parents, longest first", async (t) => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "fm-claude-themed-lanes-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const home = path.join(scratch, "home"), config = path.join(scratch, "claude");
+  await mkdir(path.join(home, "data"), { recursive: true });
+  await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Example-Store - Synthetic parent\n- Example-Store-Tools - Synthetic nested registered parent\n- fm-quarterdeck - Current product\n- fm-AgentOS - Historical product\n");
+  await writeFile(path.join(home, "state/.lock-session"), "primary-fixture\n");
+  const directory = claudeProjectDirectory(config, home);
+  await mkdir(directory, { recursive: true });
+  const block = (name) => `[fm-lane ${name}]\nSynthetic ${name} update.\n[end ${name}]`;
+  const text = [block("General"), block("Example-Store-UI"), block("Example-Store-Tools-CLI"), block("fm-quarterdeck-UI")].join("\n\n");
+  const exact = [block("Example-Store-Tools"), block("General")].join("\n\n");
+  const unknown = [block("Unregistered-UI"), block("General")].join("\n\n");
+  const single = "[fm-lane Example-Store-UI]\nExample-Store-Tools is mentioned here only as context.\n[end Example-Store-UI]";
+  const productSingle = "[fm-lane fm-quarterdeck-UI]\nExample-Store is mentioned here only as context.\n[end fm-quarterdeck-UI]";
+  const ambiguousAlias = [block("Quarterdeck-UI"), block("General")].join("\n\n");
+  const malformed = text.replace("[end Example-Store-UI]", "[end Wrong]");
+  await writeFile(path.join(directory, "primary-fixture.jsonl"), [text, exact, unknown, single, malformed, productSingle, ambiguousAlias].map((text, index) => JSON.stringify({
+    type: "assistant", uuid: `fixture-${index}`, sessionId: "primary-fixture", timestamp: `2030-01-01T12:00:0${index}Z`,
+    message: { role: "assistant", model: "fixture-model", content: [{ type: "text", text }] },
+  })).join("\n") + "\n");
+  const server = createServer({ FM_HOME: home, CLAUDE_CONFIG_DIR: config });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes`);
+  assert.equal(response.status, 200);
+  const { lanes } = await response.json();
+  const messages = (id) => lanes.find((lane) => lane.id === id).messages;
+  const parent = messages("example-store").find((m) => m.mixedLaneMessage?.text === text);
+  assert.ok(parent, "the primary Claude reply has display context after parent-fleet filtering");
+  assert.equal(parent.transcriptOrigin, "main Claude");
+  assert.match(parent.mixedLaneMessage.recordId, /^claude-main-session\/primary-fixture.jsonl@\d+:0$/);
+  assert.deepEqual(parent.mixedLaneMessage.blocks.map(({ projectId }) => projectId), ["general", "example-store", "example-store-tools", "fm-quarterdeck"]);
+  assert.equal(parent.text, block("Example-Store-UI"));
+  assert.equal(messages("example-store-tools").find((m) => m.mixedLaneMessage?.text === text).text, block("Example-Store-Tools-CLI"));
+  assert.equal(messages("example-store-tools").find((m) => m.mixedLaneMessage?.text === exact).text, block("Example-Store-Tools"), "exact registered label wins over a shorter parent");
+  assert.ok(messages("general").some((m) => m.text === unknown && !m.mixedLaneMessage), "unknown parents retain conservative fallback");
+  assert.ok(messages("general").some((m) => m.text === malformed && !m.mixedLaneMessage), "malformed blocks remain ordinary text");
+  assert.ok(messages("example-store").some((m) => m.text === single && !m.mixedLaneMessage), "single-lane themes route to their declared parent without acquiring disclosures");
+  assert.ok(!messages("example-store-tools").some((m) => m.text === single), "body mentions cannot override a single-lane theme envelope");
+  assert.ok(!messages("general").some((m) => m.text === single || m.text === productSingle), "valid single theme blocks do not leak to General");
+  assert.ok(messages("fm-quarterdeck").some((m) => m.text === productSingle), "the current registered product ID outranks historical aliases");
+  assert.ok(!messages("example-store").some((m) => m.text === productSingle), "an unrelated mentioned project cannot receive the current product's single-theme reply");
+  assert.ok(!messages("fm-agentos").some((m) => m.text === productSingle || m.mixedLaneMessage?.text === text), "historical aliases cannot claim the current registered product ID");
+  assert.ok(messages("general").some((m) => m.text === ambiguousAlias && !m.mixedLaneMessage), "genuinely shared aliases remain ambiguous rather than guessed");
 });
 
 test("explicit transcript lane wins over text, file name and General; lane filter excludes the turn", async (t) => {
@@ -150,28 +199,28 @@ test("explicit transcript lane wins over text, file name and General; lane filte
   const selection = () => vm.runInContext("messagesForSelection()", context);
   assert.ok(!selection().some((message) => message.text === wrapped), "General + Alpha must hide unchecked Example Store");
   assert.ok(!selection().some((message) => message.text === agentAlias || message.text === lavishAlias), "General never contains either deselected block");
-  context.selectedLaneIds = new Set(["general", "fm-quarterdeck"]);
-  assert.ok(selection().some((message) => message.text === agentAlias));
-  assert.ok(!selection().some((message) => message.text === lavishAlias || message.text === visibleShape), "Lavish remains hidden when deselected");
-  context.selectedLaneIds = new Set(["general", "lavish-axi"]);
-  assert.ok(selection().some((message) => message.text === lavishAlias));
-  assert.ok(!selection().some((message) => message.text === agentAlias || message.text === visibleShape), "Quarterdeck remains hidden when deselected");
-  context.selectedLaneIds = new Set(["general", "fm-quarterdeck", "lavish-axi"]);
-  assert.deepEqual([...selection().filter((message) => [agentAlias, lavishAlias].includes(message.text)).map((message) => message.text)], [agentAlias, lavishAlias]);
-  context.selectedLaneIds = new Set(["fm-quarterdeck", "lavish-axi"]);
-  assert.ok(!selection().some((message) => message.text === generalBlock), "deselecting General hides its own block");
+  assert.equal(store.mixedLaneMessage.text, mixed);
+  assert.deepEqual(store.mixedLaneMessage.blocks.map(({ projectId }) => projectId), ["example-store", "fm-quarterdeck"]);
+  assert.deepEqual(store.mixedLaneMessage, agent.mixedLaneMessage, "projections carry the same exact display context");
+  for (const ids of [["general", "fm-quarterdeck"], ["general", "lavish-axi"], ["general", "fm-quarterdeck", "lavish-axi"]]) {
+    context.selectedLaneIds = new Set(ids);
+    const replies = selection().filter((message) => message.text === visibleShape);
+    assert.equal(replies.length, 1, "selected projections merge into one original message");
+    assert.equal(replies[0].recordId, agentEntry.mixedLaneMessage.recordId);
+    assert.deepEqual([...replies[0].laneNames], ids.filter((id) => id !== "general"));
+  }
   context.selectedLaneIds = new Set(["general"]);
-  assert.ok(selection().some((message) => message.text === generalBlock));
-  assert.ok(!selection().some((message) => message.text === agentAlias || message.text === lavishAlias));
+  assert.ok(selection().some((message) => message.text === generalShape));
+  assert.ok(!selection().some((message) => message.text === visibleShape), "unselected whole messages stay excluded");
   context.selectedLaneIds = new Set(["alpha", "general", "fm-quarterdeck"]);
-  assert.ok(selection().some((message) => message.text === agentBlock));
-  assert.ok(!selection().some((message) => message.text.includes("Synthetic store update.")), "unchecking Example Store hides its block even if Quarterdeck remains selected");
+  assert.ok(selection().some((message) => message.text === mixed), "unchecked sibling context remains available without changing routing");
   context.selectedLaneIds = new Set(["example-store"]);
   const selected = selection().find((message) => message.text === wrapped);
   assert.ok(selected);
   assert.deepEqual([...selected.laneNames], ["Example Store"]);
   assert.equal(selected.kind, "conversation");
   assert.match(selected.text, /\*\*Markdown\*\* paragraph\.\n\nSynthetic PR: https:\/\/github.com\/example\/store\/pull\/42/);
-  assert.ok(selection().some((message) => message.text === storeBlock));
+  assert.ok(selection().some((message) => message.text === mixed));
   assert.ok(!selection().some((message) => message.text === agentBlock));
+  assert.ok(!byId("example-store").find((message) => message.text === wrapped).mixedLaneMessage, "single-block replies keep their existing shape");
 });
