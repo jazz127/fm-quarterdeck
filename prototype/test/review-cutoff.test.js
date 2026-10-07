@@ -11,7 +11,7 @@ function harness() {
   const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const posts = [];
   const waiting = [];
-  let mode = "success", uuid = 0;
+  let mode = "success", configUp = true, uuid = 0;
   const version = "e21fb8d5c854d8b19a6721e911b31628aac96cdd";
   function page() {
     const nodes = new Map(), documentListeners = new Map(), viewportVars = new Map();
@@ -48,6 +48,7 @@ function harness() {
             : { ok: true, json: async () => ({ receiptId: `local:${body.batchId}`, delivery: "local" }) };
         }
         if (url.includes("/status")) return { ok: true, json: async () => ({ receiptId: "ignored", state: "accepted" }) };
+        if (!configUp) return { ok: false, status: 502, json: async () => ({}) };
         return { ok: true, json: async () => ({ ready: true, version, delivery: "local", sessionId: "" }) };
       },
     });
@@ -74,13 +75,14 @@ function harness() {
       }
       return key;
     };
-    return { element, context, q, send, state, body, visualViewport, viewportVars, keydown, setDesktop: (value) => { desktop = value; vm.runInContext("syncReviewScrollLock()", context); } };
+    const dispatch = (type) => { for (const listener of documentListeners.get(type) || []) listener.fn({ type }); };
+    return { element, context, q, send, state, body, visualViewport, viewportVars, keydown, dispatch, setDesktop: (value) => { desktop = value; vm.runInContext("syncReviewScrollLock()", context); } };
   }
   const release = (failure = false) => {
     const body = posts.at(-1);
     waiting.shift()({ ok: !failure, status: failure ? 502 : 200, json: async () => failure ? { error: "disk error" } : { receiptId: `local:${body.batchId}`, delivery: "local" } });
   };
-  return { page, posts, data, release, setMode: (value) => { mode = value; } };
+  return { page, posts, data, release, setMode: (value) => { mode = value; }, setConfigUp: (value) => { configUp = value; } };
 }
 
 test("open help consumes Escape before annotation, picking or review", async () => {
@@ -632,4 +634,25 @@ test("mobile review close overlay regression: z-index 75 overtakes shell level-7
   // In corrected overlay state (panel z-index is 75, overtaking lane-list 70):
   const fixedWinner = simulateHitTest(75);
   assert.equal(fixedWinner.id, "review-close", "With z-index 75, Close button overtakes app shell and wins hit testing");
+});
+
+test("phone composer re-enables Send when an unreachable server returns", async () => {
+  const h = harness();
+  h.setConfigUp(false);
+  const p = h.page(); await tick();
+  p.setDesktop(false);
+  p.element("review-panel-toggle").click(); await tick();
+  p.element("review-message").value = "Synthetic phone message";
+  p.element("review-message").listeners.input();
+  assert.equal(p.element("review-send").disabled, true, "unreachable server cannot accept Send");
+  assert.equal(p.element("review-queue").disabled, false, "Queue stays local");
+  assert.match(p.element("review-state").textContent, /server down or restarting/);
+  h.setConfigUp(true);
+  p.dispatch("visibilitychange"); await tick(); await tick();
+  assert.equal(p.element("review-send").disabled, false, "tab return re-reads configuration");
+  assert.equal(p.element("review-state").textContent, "Review delivery reconnected.");
+  p.send(); await tick(); await tick();
+  assert.equal(h.posts.length, 1);
+  assert.deepEqual(h.posts[0].entries.map((entry) => entry.text), ["Synthetic phone message"]);
+  assert.equal(p.element("review-message").value, "");
 });

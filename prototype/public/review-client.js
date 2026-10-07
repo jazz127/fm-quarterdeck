@@ -498,6 +498,7 @@ function useCurrentVersion(next) {
   el("review-state").textContent = "Preview updated. Check unsent annotation targets. Unconfirmed deliveries retain their original IDs; retry to reconcile receipts.";
   return true;
 }
+const UNAVAILABLE = "Review delivery unavailable (Quarterdeck server down or restarting). Send resumes automatically when it is back; notes remain queued.";
 async function loadConfig() {
   try {
     const response = await fetch("/api/review", { cache: "no-store" });
@@ -506,11 +507,20 @@ async function loadConfig() {
     useCurrentVersion(next);
     showAwaitingReview(next.awaitingReview);
   } catch { config = { ready: false, version: "unknown", sessionId: "", delivery: "local" }; showAwaitingReview(null); }
-  if (!config.ready) el("review-state").textContent = "Review delivery unavailable. Notes remain queued.";
+  if (!config.ready) el("review-state").textContent = UNAVAILABLE;
+  else if (el("review-state").textContent === UNAVAILABLE) el("review-state").textContent = "Review delivery reconnected.";
   update();
-  void refreshStatuses();
+  // Status reads would fail too; keep the unavailable reason visible instead.
+  if (config.ready) void refreshStatuses();
 }
-if (typeof setInterval === "function") setInterval(() => { if (sent.some((batch) => !["completed", "failed", "replied"].includes(batch.state))) void refreshStatuses(); }, 5000);
+// Recovery re-reads run one at a time: while the open composer cannot send, and on tab return.
+let recheck = null;
+function recheckConfig() { recheck ||= loadConfig().finally(() => { recheck = null; }); }
+if (typeof setInterval === "function") setInterval(() => {
+  if (!config.ready && !el("review-panel").hidden) recheckConfig();
+  else if (config.ready && sent.some((batch) => !["completed", "failed", "replied"].includes(batch.state))) void refreshStatuses();
+}, 5000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "hidden") recheckConfig(); });
 // Keep one composer and its draft across layout switches. Phones retain the in-pane row.
 const desktopComposer = window.matchMedia?.("(min-width: 721px)");
 function resizeMessage() {

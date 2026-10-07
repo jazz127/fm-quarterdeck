@@ -204,7 +204,7 @@ try {
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
   assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
   await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
-  let loseNext = true, newConfig = false, eventError;
+  let loseNext = true, newConfig = false, serverDown = false, eventError;
   // Board rendering is not review readiness: loadConfig() is an independent
   // fetch. Hold its response to force the ordering that used to flake in CI.
   let holdConfig = true;
@@ -213,7 +213,9 @@ try {
     if (event.method !== "Fetch.requestPaused") return;
     const { requestId, request } = event.params;
     let action;
-    if (request.method === "GET" && holdConfig) {
+    if (request.method === "GET" && serverDown) {
+      action = command("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" });
+    } else if (request.method === "GET" && holdConfig) {
       holdConfig = false;
       configPaused.resolve(requestId);
       return;
@@ -265,6 +267,51 @@ try {
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return !s.inFlight && s.retryBatches.length === 0 && s.sent.length === 1; })()");
   assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent[0].id"), delayedId);
   assert.equal(deliveries, 1, "conversion reconciles a delayed original instead of duplicate delivery");
+  // Phone send through real touch input: type and send, then keep the open composer
+  // usable across an unreachable server without reloading the tab.
+  newConfig = false;
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await command("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
+  await reload();
+  await until("document.querySelector('.mobile-dock #review-panel-toggle') && document.querySelector('#review-context')?.textContent.includes('Version')");
+  const tap = async (selector) => {
+    const point = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+      return { x, y, hit: Boolean(document.elementFromPoint(x, y)?.closest(${JSON.stringify(selector)})) }; })()`);
+    assert.ok(point.hit, `${selector} receives the phone tap`);
+    await command("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+    await command("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  const phoneDraft = "JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1') || '{}')";
+  await tap(".mobile-dock #review-panel-toggle");
+  await until("!document.querySelector('#review-panel').hidden && document.querySelector('#review-panel').contains(document.querySelector('#review-send'))");
+  await tap("#review-message");
+  await command("Input.insertText", { text: "Synthetic phone message" });
+  await until("!document.querySelector('#review-send').disabled");
+  await tap("#review-send");
+  await until(`${phoneDraft}.sent?.length === 1 && document.querySelector('#review-message').value === ''`);
+  assert.equal(deliveries, 2, "phone Send delivers the typed message");
+  assert.deepEqual(await evaluate(`${phoneDraft}.sent[0].entries.map((entry) => entry.text)`), ["Synthetic phone message"]);
+  serverDown = true;
+  await tap("#review-close");
+  await tap(".mobile-dock #review-panel-toggle");
+  await until("document.querySelector('#review-send').disabled && document.querySelector('#review-state').textContent.includes('server down or restarting')");
+  await tap("#review-message");
+  await command("Input.insertText", { text: "Synthetic offline phone note" });
+  assert.equal(await evaluate("document.querySelector('#review-send').disabled"), true, "Send stays greyed while the server is unreachable");
+  await tap("#review-queue");
+  await until(`${phoneDraft}.queue?.length === 1`);
+  serverDown = false;
+  // Returning to a backgrounded phone tab re-reads review configuration.
+  await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+  await until("!document.querySelector('#review-send').disabled && !document.querySelector('#review-state').textContent.includes('server down')");
+  await tap("#review-send");
+  await until(`${phoneDraft}.sent?.length === 2 && ${phoneDraft}.queue.length === 0`);
+  assert.equal(deliveries, 3, "queued phone note sends once the server is back");
+  await tap("#review-close");
+  await command("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 844, deviceScaleFactor: 1, mobile: false });
+  console.log("PASS: phone 390×844 touch type-and-send; unreachable server greys Send with a reason, Queue stays local, tab return reconnects and sends");
   await command("Fetch.disable");
   if (eventError) throw eventError;
   // Exercise history through actual controls: six older-page clicks retain 60 IDs.
