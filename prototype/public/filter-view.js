@@ -8,11 +8,15 @@ window.filterView = (() => {
   }
 
   function kindFiltersHtml(types, selectedIds, escapeHtml) {
-    return types.map((type) => `
+    return types.map((type) => {
+      const singular = ({ captain: "captain", conversation: "Firstmate reply", supervision: "supervision outcome", thinking: "thinking", steer: "steer", crew: "crew status", branch: "crew reply", tools: "tool", harness: "harness" })[type.id] || type.label;
+      const arrows = [[-1, "Previous", "↑"], [1, "Next", "↓"]].map(([step, label, arrow]) => `<button class="kind-message-jump" type="button" data-kind-jump="${escapeHtml(type.id)}" data-kind-step="${step}" aria-label="${escapeHtml(`${label} ${singular} message`)}" title="${escapeHtml(`${label} ${singular} message in loaded history`)}" disabled><span aria-hidden="true">${arrow}</span></button>`).join("");
+      return `<div class="message-type-row">
     <label class="message-type-option" title="${escapeHtml(type.label)}">
       <input type="checkbox" value="${escapeHtml(type.id)}" aria-label="${escapeHtml(type.label)}" ${selectedIds.has(type.id) ? "checked" : ""}>
       ${kindGlyph(type, escapeHtml)}<span class="message-kind-label">${escapeHtml(type.label)}</span>
-    </label>`).join("");
+    </label><div class="kind-message-jumps" role="group" aria-label="${escapeHtml(type.label)} navigation">${arrows}</div></div>`;
+    }).join("");
   }
 
   function syncKindsBulk({ types, selectedIds, syncBulk, nodes }) {

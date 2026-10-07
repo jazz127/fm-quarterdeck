@@ -47,6 +47,268 @@ let pendingLanesRefresh = false;
 let lastFeedFingerprint = "";
 // Tab-local disclosure choices, scoped to the current fleet selection.
 const mixedLaneExpansion = new Map();
+// Local reading checkpoints are saved only when leaving a rendered view, not
+// on refresh or every scroll (which would chase the position we're returning to).
+const LAST_VIEWED_KEY = "fm-agentos-last-viewed.v1";
+const lastViewed = new Map();
+try {
+  const saved = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "[]");
+  if (Array.isArray(saved)) for (const entry of saved.slice(-60)) {
+    if (Array.isArray(entry) && entry.length === 2 && entry.every((value) => typeof value === "string") && entry[0].length <= 4000 && entry[1].length <= 400) lastViewed.set(...entry);
+  }
+} catch { /* Reading checkpoints remain tab-local if storage is unavailable. */ }
+let renderedReadingScope = "";
+let lastViewedIndex = -1;
+let pendingLastViewedJump = "";
+let lastViewedHighlightTimer = null;
+function readingScope() {
+  const selection = laneSelection();
+  return JSON.stringify([selection.all ? "all" : selection.checked.map(({ id }) => id).sort(), laneStatusFilter, feedLaneOverrideId,
+    [...selectedMessageTypes].sort(), selectedSessionId, selectedTranscriptSession, transcriptQuery.trim().toLocaleLowerCase()]);
+}
+function captureLastViewed() {
+  if (!renderedReadingScope || !$("#conversations-view").classList.contains("active")) return;
+  const feed = $("#messages"), bounds = feed.getBoundingClientRect();
+  if (bounds.height <= 0) return;
+  const visible = [...feed.querySelectorAll("article.message")].filter((node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+  });
+  const fullyVisible = visible.filter((node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+  });
+  // A reply taller than the pane still needs a usable checkpoint.
+  const checkpoint = fullyVisible.at(-1) || visible[0];
+  const key = checkpoint?.dataset.recordKey;
+  if (!key) return;
+  lastViewedIndex = Number(checkpoint.dataset.recordIndex);
+  lastViewed.delete(renderedReadingScope);
+  lastViewed.set(renderedReadingScope, key);
+  while (lastViewed.size > 60) lastViewed.delete(lastViewed.keys().next().value);
+  try { localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify([...lastViewed])); } catch {}
+  updateLastViewedControl();
+}
+function updateLastViewedControl() {
+  const feed = $("#messages"), bounds = feed.getBoundingClientRect();
+  const first = [...feed.querySelectorAll("article.message")].find((node) => { const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top; });
+  const available = lastViewedIndex >= 0 && (lastViewedIndex < transcriptPage * TRANSCRIPT_PAGE_SIZE || (first && lastViewedIndex < Number(first.dataset.recordIndex)));
+  const button = $("#jump-to-last-viewed");
+  if (!button) return;
+  button.disabled = !available;
+  const hint = $("#reading-position-help");
+  if (hint) hint.classList.toggle("sr-only", lastViewedIndex >= 0);
+  button.title = lastViewedIndex < 0
+    ? "A reading position is saved when you leave Fleet Chats or switch away from this browser tab."
+    : available ? "Return to the message you last viewed in this fleet/filter view." : "Your last viewed message is already at or ahead of this position. Scroll forward to return to it.";
+}
+const COMPACT_VIEWS_KEY = "fm-agentos-compact-views.v1";
+const compactViews = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem(COMPACT_VIEWS_KEY) || "[]");
+  if (Array.isArray(saved)) for (const scope of saved.slice(-60)) if (typeof scope === "string" && scope.length <= 4000) compactViews.add(scope);
+} catch { /* Compact mode remains usable in this tab without browser storage. */ }
+let pendingMessageAnchor = null;
+let expandedMessageTarget = null;
+function clearExpandedMessageTarget() {
+  expandedMessageTarget = null;
+  for (const node of $("#messages").querySelectorAll(".compact-expansion-target")) node.classList.remove("compact-expansion-target");
+}
+function syncExpandedMessageTarget() {
+  if (expandedMessageTarget && (expandedMessageTarget.scope !== renderedReadingScope || compactViews.has(renderedReadingScope))) clearExpandedMessageTarget();
+  for (const node of $("#messages").querySelectorAll("article.message")) node.classList?.toggle("compact-expansion-target", Boolean(expandedMessageTarget && node.dataset.recordKey === expandedMessageTarget.key));
+}
+const expandedFullViews = new Set();
+const fullDetailChoices = new Map();
+function messageRecordKey(message) { return message.recordId || reviewId([message.source, message.occurredAt, message.text].join("\n")); }
+function compactPreview(text) {
+  const value = String(text || "");
+  const envelope = value.match(/^\[fm-lane ([^\]\r\n]+)\]\r?\n([\s\S]*)\r?\n\[end \1\]\s*$/);
+  return (envelope ? envelope[2] : value).replace(/\s+/g, " ").trim().slice(0, 120);
+}
+function compactMetadata(message) {
+  const date = new Date(message.occurredAt || "");
+  const time = message.time || (Number.isFinite(date.getTime()) ? date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }) : "Time unknown");
+  const type = messageTypeId(message);
+  const label = ({ conversation: "Reply", supervision: "Outcome", branch: "Crew reply", crew: "Crew status" })[type] || messageTypeLabel(type);
+  return `<time class="compact-clock" datetime="${escapeHtml(message.occurredAt || "")}" title="${escapeHtml(message.time || message.occurredAt || "Time unknown")}">${escapeHtml(time)}</time><span class="compact-sender" title="${escapeHtml(message.author)}">${escapeHtml(message.author)}</span><span class="compact-kind" title="${escapeHtml(messageTypeLabel(type))}">${escapeHtml(label)}</span>`;
+}
+function expandFullRecords(messages, all = false) {
+  if (all) expandedFullViews.add(renderedReadingScope);
+  const selected = new Set(selectedLanes().map((lane) => lane.id));
+  const scope = laneSelection().all && laneStatusFilter === "all" && !feedLaneOverrideId ? "All" : [...selected].sort().join(",");
+  for (const message of messages) {
+    message.mixedLaneMessage?.blocks.forEach((_, index) => mixedLaneExpansion.set(JSON.stringify([message.recordId, scope, index]), true));
+    const key = JSON.stringify([renderedReadingScope, messageRecordKey(message)]);
+    if (all) fullDetailChoices.delete(key);
+    else fullDetailChoices.set(key, true);
+  }
+}
+function changeCompactMode(compact, clickedLine = null) {
+  const feed = $("#messages"), bounds = feed.getBoundingClientRect();
+  const visible = [...feed.querySelectorAll("article.message")].filter((node) => { const r = node.getBoundingClientRect(); return r.height > 0 && r.bottom > bounds.top && r.top < bounds.bottom; });
+  const target = clickedLine?.closest("article.message") || visible.find((node) => node.getBoundingClientRect().top >= bounds.top) || visible[0];
+  if (target) pendingMessageAnchor = { key: target.dataset.recordKey, laneKey: clickedLine?.dataset.mixedLaneKey, focus: Boolean(clickedLine),
+    offset: (clickedLine || target).getBoundingClientRect().top - bounds.top };
+  compactViews.delete(renderedReadingScope);
+  if (compact) compactViews.add(renderedReadingScope);
+  while (compactViews.size > 60) compactViews.delete(compactViews.values().next().value);
+  try { localStorage.setItem(COMPACT_VIEWS_KEY, JSON.stringify([...compactViews])); } catch {}
+  if (!compact && clickedLine) {
+    expandFullRecords(messagesForSelection(), true);
+    if (target) expandedMessageTarget = { scope: renderedReadingScope, key: target.dataset.recordKey };
+  }
+  renderFeed();
+  pendingMessageAnchor = null;
+  if (!compact && clickedLine) $("#sr-announcer").textContent = "Expanded all messages. The selected message is outlined until you click elsewhere.";
+}
+function updateLatestControl(atBottom) {
+  const button = $("#jump-to-latest");
+  if (button) button.disabled = atBottom && transcriptPage === previousPageCount - 1;
+}
+// Numeric indices cover loaded history, not just the bounded rendered page.
+const kindRecordIndices = new Map();
+const kindJumpTargets = new Map();
+let pendingKindJump = null;
+function kindJumpIndex(indices, cursor, step) {
+  let low = 0, high = indices.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (step < 0 ? indices[mid] < cursor : indices[mid] <= cursor) low = mid + 1;
+    else high = mid;
+  }
+  return indices[step < 0 ? low - 1 : low] ?? -1;
+}
+function kindJumpScope() {
+  const parts = JSON.parse(readingScope());
+  // Default native-thinking detection may change as older records arrive; an
+  // explicit kind preference must still cancel any superseded navigation.
+  try {
+    if (localStorage.getItem(MESSAGE_TYPES_KEY) === null && localStorage.getItem(MESSAGE_TYPES_LEGACY_KEY) === null) parts[3] = parts[3].filter(id => id !== "thinking");
+  } catch {}
+  return JSON.stringify(parts);
+}
+function currentReadingRecord() {
+  const feed = $("#messages"), bounds = feed.getBoundingClientRect();
+  return [...feed.querySelectorAll("article.message")].find(node => {
+    const r = node.getBoundingClientRect();
+    return r.height > 0 && r.bottom > bounds.top && r.top < bounds.bottom;
+  });
+}
+function canLoadEarlierKind(kind) {
+  return selectedMessageTypes.has(kind) && selectedLanes().length > 0 && transcriptCoverage.expandable &&
+    (transcriptCoverage.windowBytes || transcriptWindowBytes) < 8 * 1024 * 1024;
+}
+function updateKindNavigation() {
+  if (pendingKindJump && (pendingKindJump.scope !== kindJumpScope() || $(".workspace").dataset.view !== "conversations")) pendingKindJump = null;
+  const first = currentReadingRecord();
+  const cursor = first ? Number(first.dataset.recordIndex) : (transcriptPage || 0) * TRANSCRIPT_PAGE_SIZE - 1;
+  kindJumpTargets.clear();
+  for (const type of MESSAGE_TYPES) {
+    const indices = kindRecordIndices.get(type.id) || [];
+    kindJumpTargets.set(type.id, { previous: kindJumpIndex(indices, cursor, -1), next: kindJumpIndex(indices, cursor, 1) });
+  }
+  for (const button of $("#message-type-filters").querySelectorAll("button[data-kind-jump]")) {
+    const kind = button.dataset.kindJump, previous = Number(button.dataset.kindStep) < 0;
+    const index = kindJumpTargets.get(kind)?.[previous ? "previous" : "next"] ?? -1;
+    button.disabled = Boolean(pendingKindJump) || !selectedMessageTypes.has(kind) || (index < 0 && !(previous && canLoadEarlierKind(kind)));
+    button.setAttribute("aria-busy", String(Boolean(pendingKindJump)));
+    button.title = pendingKindJump ? "Loading earlier history…" : !selectedMessageTypes.has(kind)
+      ? "Enable this message kind to navigate its records."
+      : index >= 0 ? `${button.getAttribute("aria-label")} in loaded history.`
+      : previous && canLoadEarlierKind(kind) ? "Load earlier records on demand to find this kind (up to 8 MiB/source)."
+      : "No matching message in this direction in loaded history. Older sessions can be loaded separately.";
+  }
+}
+function revealRecord(target) {
+  // An identical page retains its DOM. Synchronize the destination explicitly
+  // so cached fingerprints cannot leave a manually collapsed lane hidden.
+  for (const toggle of target.querySelectorAll("button[data-mixed-lane-key]")) {
+    mixedLaneExpansion.set(toggle.dataset.mixedLaneKey, true);
+    toggle.setAttribute("aria-expanded", "true");
+    const chevron = toggle.querySelector(".mixed-lane-chevron");
+    if (chevron) chevron.textContent = "▾";
+    const summary = toggle.parentElement.querySelector(".mixed-lane-summary");
+    if (summary) summary.hidden = true;
+    const body = document.getElementById(toggle.getAttribute("aria-controls"));
+    if (body) body.hidden = false;
+  }
+  for (const detail of target.querySelectorAll("details")) detail.open = true;
+}
+function navigateToRecord(index, { expand = false, announcement = "Returned to your last viewed message." } = {}) {
+  const messages = messagesForSelection(), message = messages[index];
+  if (!message) return;
+  const key = messageRecordKey(message);
+  pendingLastViewedJump = key;
+  pendingMessageAnchor = null;
+  transcriptPage = Math.floor(index / TRANSCRIPT_PAGE_SIZE);
+  preservePageAnchor = false;
+  if (expand) {
+    const wasCompact = compactViews.delete(renderedReadingScope);
+    if (wasCompact) {
+      try { localStorage.setItem(COMPACT_VIEWS_KEY, JSON.stringify([...compactViews])); } catch {}
+    }
+    expandFullRecords(wasCompact ? messages : [message], wasCompact);
+    if (compactChatFilters?.matches) { setLaneFiltersExpanded(false); closeOpenPopovers(); }
+  }
+  renderFeed();
+  pendingLastViewedJump = "";
+  const feed = $("#messages");
+  const target = [...feed.querySelectorAll("article.message")].find(node => node.dataset.recordKey === key);
+  if (!target) return;
+  if (expand) revealRecord(target);
+  feed.scrollTop += target.getBoundingClientRect().top - feed.getBoundingClientRect().top - 12;
+  feed.querySelectorAll(".last-viewed-highlight").forEach(node => node.classList.remove("last-viewed-highlight"));
+  clearTimeout(lastViewedHighlightTimer);
+  target.classList.add("last-viewed-highlight");
+  lastViewedHighlightTimer = setTimeout(() => target.classList.remove("last-viewed-highlight"), 1800);
+  target.setAttribute("tabindex", "-1");
+  target.focus({ preventScroll: true });
+  $("#sr-announcer").textContent = announcement;
+  updateLastViewedControl();
+  updateKindNavigation();
+  updateLatestControl(feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60);
+}
+function loadEarlierKindWindow() {
+  const pending = pendingKindJump;
+  const next = Math.min(8 * 1024 * 1024, (transcriptCoverage.windowBytes || transcriptWindowBytes) * 2);
+  if (!pending || next <= pending.requestedWindow || !canLoadEarlierKind(pending.kind)) {
+    pendingKindJump = null;
+    updateKindNavigation();
+    $("#sr-announcer").textContent = pending && canLoadEarlierKind(pending.kind) && next <= pending.requestedWindow
+      ? "Older history did not advance. Use Refresh or Load more records to retry."
+      : "No earlier matching message in the bounded loaded history. Load older sessions separately if needed.";
+    return;
+  }
+  pending.requestedWindow = transcriptWindowBytes = next;
+  $("#transcript-load-more").disabled = true;
+  $("#transcript-load-more").textContent = "Loading more records…";
+  $("#sr-announcer").textContent = "Loading earlier history to find this message kind…";
+  updateKindNavigation();
+  requestLanes();
+}
+function resumeKindJump() {
+  const pending = pendingKindJump;
+  if (!pending) return;
+  if (pending.scope !== kindJumpScope() || $(".workspace").dataset.view !== "conversations") { pendingKindJump = null; updateKindNavigation(); return; }
+  const messages = messagesForSelection();
+  const anchor = pending.anchorKey ? messages.findIndex(message => messageRecordKey(message) === pending.anchorKey) : messages.length;
+  if (anchor < 0) { pendingKindJump = null; updateKindNavigation(); $("#sr-announcer").textContent = "The reading anchor is no longer loaded. Choose a current message to navigate."; return; }
+  const index = kindJumpIndex(kindRecordIndices.get(pending.kind) || [], anchor, -1);
+  if (index < 0) { loadEarlierKindWindow(); return; }
+  pendingKindJump = null;
+  navigateToRecord(index, { expand: true, announcement: pending.announcement });
+}
+function jumpToKind(kind, step, announcement = `${step < 0 ? "Previous" : "Next"} ${messageTypeLabel(kind)} message.`) {
+  updateKindNavigation();
+  if (pendingKindJump || !selectedMessageTypes.has(kind) || !MESSAGE_TYPES.some(type => type.id === kind) || ![-1, 1].includes(step)) return;
+  const index = kindJumpTargets.get(kind)?.[step < 0 ? "previous" : "next"] ?? -1;
+  if (index >= 0) { navigateToRecord(index, { expand: true, announcement }); return; }
+  if (step < 0 && canLoadEarlierKind(kind)) {
+    pendingKindJump = { kind, scope: kindJumpScope(), anchorKey: currentReadingRecord()?.dataset.recordKey || "", requestedWindow: 0, announcement };
+    loadEarlierKindWindow();
+  }
+}
 let lastPageAnchor = "";
 let preservePageAnchor = false;
 let feedLaneOverrideId = null;
@@ -297,12 +559,14 @@ function renderMixedLaneContent(message) {
   const scope = unfiltered ? "All" : [...selected].sort().join(",");
   return message.mixedLaneMessage.blocks.map((block, index) => {
     const key = JSON.stringify([message.recordId, scope, index]);
-    const expanded = mixedLaneExpansion.get(key) ?? (unfiltered || selected.has(block.projectId));
+    const compact = compactViews.has(renderedReadingScope);
+    const expanded = !compact && (mixedLaneExpansion.get(key) ?? (unfiltered || selected.has(block.projectId)));
     const body = block.text.replace(/^\[fm-lane [^\]\r\n]+\]\r?\n/, "").replace(/\r?\n\[end [^\]\r\n]+\]$/, "");
     const preview = body.replace(/\s+/g, " ").trim().slice(0, 80);
     const lines = body.split(/\r?\n/).length;
     const content = messageFormat === "markdown" ? renderMarkdown(body) : escapeHtml(body);
     const id = `mixed-lane-${reviewId(key)}`;
+    if (compact) return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle message-compact-line" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="false" aria-controls="${id}" title="Expand all messages here">${compactMetadata(message)}<strong class="compact-lane">${escapeHtml(block.name)}</strong><span class="compact-line-preview">${escapeHtml(preview)}</span></button></div><div id="${id}" class="mixed-lane-content" hidden>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
     return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="${expanded}" aria-controls="${id}"><span class="mixed-lane-chevron" aria-hidden="true">${expanded ? "▾" : "▸"}</span>[fm-lane <strong>${escapeHtml(block.name)}</strong>]</button><span class="mixed-lane-summary"${expanded ? " hidden" : ""}><span class="mixed-lane-preview">${escapeHtml(preview)}</span><small>${lines} ${lines === 1 ? "line" : "lines"}</small></span></div><div id="${id}" class="mixed-lane-content"${expanded ? "" : " hidden"}>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
   }).join("");
 }
@@ -316,6 +580,7 @@ function renderMessageTypeFilters() {
     root: $("#message-type-filters"),
     nodes: kindBulkNodes(),
   });
+  updateKindNavigation();
 }
 function syncLaneBulkControls() {
   const selection = laneSelection();
@@ -397,6 +662,7 @@ function renderSessionHistory(visibleLanes) {
 }
 
 function renderLanesLoading() {
+  $("#message-compact-toggle").disabled = true;
   $("#conversation-title").textContent = "Loading Fleet Chats…";
   $("#conversation-status").textContent = "loading";
   $("#conversation-subtext").textContent = "Reading recent records · older history remains available on demand";
@@ -409,10 +675,17 @@ function renderLanesLoading() {
 }
 
 function renderFeed() {
-  if (!hasLoadedLanes && !lanes.length) {
+  if (!lanes.length && (!hasLoadedLanes || lanesLoadError)) {
     if (!lanesLoadError) renderLanesLoading();
     return;
   }
+  const nextReadingScope = readingScope();
+  if (renderedReadingScope && renderedReadingScope !== nextReadingScope) captureLastViewed();
+  renderedReadingScope = nextReadingScope;
+  const dense = compactViews.has(renderedReadingScope);
+  $("#message-compact-toggle").disabled = false;
+  $("#messages").classList.toggle("is-compact", dense);
+  $("#message-compact-toggle")?.setAttribute("aria-pressed", String(dense));
   const visibleLanes = selectedLanes();
   const selection = laneSelection();
   const showingAllLive = selection.all && laneStatusFilter === "all" && !feedLaneOverrideId;
@@ -443,15 +716,21 @@ function renderFeed() {
   }
 
   const messages = messagesForSelection();
+  kindRecordIndices.clear();
+  messages.forEach((message, index) => {
+    const kind = messageTypeId(message);
+    if (!kindRecordIndices.has(kind)) kindRecordIndices.set(kind, []);
+    kindRecordIndices.get(kind).push(index);
+  });
   const feedSelection = JSON.stringify([visibleLanes.map((lane) => lane.id), [...selectedMessageTypes], selectedSessionId, selectedTranscriptSession]);
   const selectionChanged = feedSelection !== transcriptSelection;
   if (selectionChanged) transcriptPage = null;
   transcriptSelection = feedSelection;
-  const recordKey = (message) => message.recordId || reviewId([message.source, message.occurredAt, message.text].join("\n"));
+  const recordKey = messageRecordKey;
   const pageCount = Math.max(1, Math.ceil(messages.length / TRANSCRIPT_PAGE_SIZE));
   const feedBefore = $("#messages");
-  const followingLatest = transcriptPage === null || (previousPageCount !== null && transcriptPage === previousPageCount - 1 &&
-    feedBefore.scrollHeight - feedBefore.scrollTop - feedBefore.clientHeight < 60);
+  const followingLatest = !pendingLastViewedJump && !pendingMessageAnchor && (transcriptPage === null || (previousPageCount !== null && transcriptPage === previousPageCount - 1 &&
+    feedBefore.scrollHeight - feedBefore.scrollTop - feedBefore.clientHeight < 60));
   transcriptPage = followingLatest ? pageCount - 1 : Math.min(transcriptPage, pageCount - 1);
   if (preservePageAnchor && !selectionChanged && !followingLatest && lastPageAnchor) {
     const index = messages.findIndex((message) => recordKey(message) === lastPageAnchor);
@@ -472,12 +751,11 @@ function renderFeed() {
   $("#transcript-newer").disabled = transcriptPage === pageCount - 1;
 
   const messagesEl = $("#messages");
-  const jumpBtn = $("#jump-to-latest");
   const clientHeight = Number(messagesEl.clientHeight || 0);
   const scrollHeight = Number(messagesEl.scrollHeight || 0);
   const scrollTop = Number(messagesEl.scrollTop || 0);
   const distanceFromBottom = clientHeight > 0 ? (scrollHeight - scrollTop - clientHeight) : 0;
-  const wasAtBottom = !hasRenderedFeed || selectionChanged || (followingLatest && distanceFromBottom < 60);
+  const wasAtBottom = !pendingLastViewedJump && !pendingMessageAnchor && (!hasRenderedFeed || selectionChanged || (followingLatest && distanceFromBottom < 60));
 
   const trimmedQuery = transcriptQuery.trim();
   const noLaneMessage = !selection.checked.length && !feedLaneOverrideId
@@ -496,9 +774,9 @@ function renderFeed() {
     ? { type: "record", recordId: message.recordId }
     : { type: "quote", time: message.time, text: message.text, lanes: message.laneNames });
   // Fingerprint the bounded page before Markdown rendering or DOM work.
-  const fingerprint = JSON.stringify([pageMessages, messageFormat, transcriptQuery, emptyMessage, start, showingAllLive, laneSelection().all, laneStatusFilter, feedLaneOverrideId]);
+  const fingerprint = JSON.stringify([pageMessages, messageFormat, transcriptQuery, emptyMessage, start, showingAllLive, laneSelection().all, laneStatusFilter, feedLaneOverrideId, dense]);
   if (fingerprint !== lastFeedFingerprint) {
-  const feedHtml = messages.length ? pageMessages.map((message, index, page) => {
+  const messageHtml = pageMessages.map((message, index, page) => {
     const kind = message.kind || "conversation";
     const laneLabel = showingAllLive && message.laneNames.length === visibleLanes.length && visibleLanes.length > 1
       ? "All fleets"
@@ -509,19 +787,22 @@ function renderFeed() {
       : (messageTypeSvg(typeId) || `<span class="avatar-mono">${escapeHtml(message.author.slice(0, 1).toUpperCase())}</span>`);
     const rawOrRendered = kind !== "tools" && messageFormat === "markdown" ? renderMarkdown(message.text) : escapeHtml(message.text);
     const content = message.mixedLaneMessage ? renderMixedLaneContent(message) : highlightSearchMatches(rawOrRendered, transcriptQuery);
-    const compact = kind === "thinking" || kind === "tools";
-    const preview = highlightSearchMatches(escapeHtml(String(message.text).replace(/\s+/g, " ").trim().slice(0, 120)), transcriptQuery);
+    const compact = (kind === "thinking" || kind === "tools") && !(dense && message.mixedLaneMessage);
+    const detailOpen = fullDetailChoices.get(JSON.stringify([renderedReadingScope, recordKey(message)])) ?? expandedFullViews.has(renderedReadingScope);
+    const preview = highlightSearchMatches(escapeHtml(dense ? compactPreview(message.text) : String(message.text).replace(/\s+/g, " ").trim().slice(0, 120)), transcriptQuery);
     const metadata = `<strong>${escapeHtml(message.author)}</strong><span class="message-origin origin-${escapeHtml(typeId)}">${escapeHtml(messageTypeLabel(typeId))}</span>${kind === "crew" ? `<span class="message-state">${escapeHtml(stateLabel(message.state))}</span>` : ""}<span class="message-lane">${escapeHtml(laneLabel)}</span><time datetime="${escapeHtml(message.occurredAt)}">${escapeHtml(message.time)}</time>`;
     const body = `<div class="message-content ${kind === "tools" ? "raw" : messageFormat}">${content}</div><small class="message-source">${escapeHtml(message.source)}${message.transcriptOrigin ? ` · ${escapeHtml(message.transcriptOrigin)}` : ""}</small>`;
     return `
       ${message.transcriptSessionId && message.transcriptSessionId !== page[index - 1]?.transcriptSessionId ? `<div class="transcript-boundary">Session · ${escapeHtml(message.transcriptSessionId)}</div>` : ""}
-      <article data-record-index="${start + index}" data-record-key="${escapeHtml(recordKey(message))}" data-lane-message-index="${index}" class="message ${compact ? "compact-record " : ""}${escapeHtml(message.role)} kind-${escapeHtml(kind)} state-${escapeHtml(message.state || "update")}">
+      <article data-record-index="${start + index}" data-record-key="${escapeHtml(recordKey(message))}" data-lane-message-index="${index}" class="message ${message.mixedLaneMessage ? "has-mixed-lanes " : ""}${compact ? "compact-record " : ""}${escapeHtml(message.role)} kind-${escapeHtml(kind)} state-${escapeHtml(message.state || "update")}">
+        ${dense && !message.mixedLaneMessage ? `<button type="button" class="message-compact-line" title="Expand all messages here">${compactMetadata(message)}<span class="compact-line-preview">${preview || "No record text"}</span></button>` : ""}
         <div class="avatar" aria-hidden="true">${avatarMark}</div>
         <div class="message-body">
-          ${compact ? `<details><summary><span class="compact-metadata">${metadata}</span><span class="compact-preview">${preview || "No record text"}</span></summary>${body}</details>` : `<header>${metadata}</header>${body}`}
+          ${compact ? `<details${detailOpen ? " open" : ""}><summary><span class="compact-metadata">${metadata}</span><span class="compact-preview">${preview || "No record text"}</span></summary>${body}</details>` : `<header>${metadata}</header>${body}`}
         </div>
       </article>`;
-  }).join("") : `<div class="empty compact">${emptyMessage}</div>`;
+  });
+  const feedHtml = messages.length ? messageHtml.join("") : `<div class="empty compact">${emptyMessage}</div>`;
   // Don't discard disclosure/annotation DOM or reset scroll for identical pages.
     const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].map((node) => node.closest("article.message").dataset.recordKey));
     const visibleAnchor = [...messagesEl.querySelectorAll("article.message")].find((node) => node.getBoundingClientRect().bottom > messagesEl.getBoundingClientRect().top);
@@ -540,11 +821,25 @@ function renderFeed() {
 
   if (wasAtBottom) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
-    if (jumpBtn) jumpBtn.classList.add("hidden");
-  } else {
-    if (jumpBtn) jumpBtn.classList.remove("hidden");
   }
+  if (pendingMessageAnchor) {
+    const target = [...messagesEl.querySelectorAll("article.message")].find((node) => node.dataset.recordKey === pendingMessageAnchor.key);
+    const line = pendingMessageAnchor.laneKey ? [...(target?.querySelectorAll(".mixed-lane-toggle") || [])].find((node) => node.dataset.mixedLaneKey === pendingMessageAnchor.laneKey) : target;
+    if (line) {
+      messagesEl.scrollTop += line.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top - pendingMessageAnchor.offset;
+      if (pendingMessageAnchor.focus) {
+        if (line === target && !line.hasAttribute("tabindex")) line.setAttribute("tabindex", "-1");
+        line.focus({ preventScroll: true });
+      }
+    }
+  }
+  updateLatestControl(messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60);
   hasRenderedFeed = true;
+  const bookmark = lastViewed.get(renderedReadingScope);
+  lastViewedIndex = bookmark ? messages.findIndex((message) => recordKey(message) === bookmark) : -1;
+  updateLastViewedControl();
+  updateKindNavigation();
+  syncExpandedMessageTarget();
 
   const announcer = $("#sr-announcer");
   if (announcer) {
@@ -620,11 +915,20 @@ function renderLanes(data) {
   preservePageAnchor = hasRenderedFeed;
   applyRoute({ isRefresh: true });
   if (selectedSessionId && lanes.some((lane) => lane.sessions.some((session) => session.id === selectedSessionId && !session.loaded))) requestLanes(true);
+  resumeKindJump();
 }
 
 function renderLanesError(message) {
+  clearExpandedMessageTarget();
   lanes = [];
   lanesLoadError = message;
+  kindRecordIndices.clear();
+  pendingKindJump = null;
+  lastViewedIndex = -1;
+  $("#message-compact-toggle").disabled = true;
+  $("#jump-to-latest").disabled = true;
+  updateLastViewedControl();
+  updateKindNavigation();
   $("#messages").setAttribute("aria-busy", "false");
   $("#transcript-window-status").hidden = true;
   $("#transcript-summary").textContent = "Transcript unavailable";
@@ -1584,6 +1888,7 @@ function setContextDrawer(open) {
 }
 
 function showView(view, closedLaneId = null, { updateRoute = true } = {}) {
+  if (view !== "conversations") { captureLastViewed(); pendingKindJump = null; clearExpandedMessageTarget(); }
   feedLaneOverrideId = closedLaneId;
   document.querySelector(".workspace").dataset.view = view;
   const pageTitles = { overview: "Fleet at a glance", work: "Work split", conversations: "Fleet Chats", closed: "Closed fleets", expenses: "Expenses", quota: "Quota", preferences: "Preferences" };
@@ -1597,6 +1902,7 @@ function showView(view, closedLaneId = null, { updateRoute = true } = {}) {
   if (view !== "conversations") setContextDrawer(false);
   if (updateRoute) setRoute(view === "conversations" ? conversationRoute() : `#${view}`);
   ensureViewData(view);
+  if (view === "conversations") updateKindNavigation();
 }
 
 function navigateToLane(laneId, sessionId = "", { updateRoute = true } = {}) {
@@ -1739,7 +2045,7 @@ function syncConversationFilterLayout() {
   if (phoneChatFilters?.matches) menu?.setAttribute("open", "");
   setMobileFilterTab(mobileFilterTab);
   const actions = $(".feed-actions");
-  const actionDestination = roomyChatHeader?.matches ? $(".conversation-head") : $(".conversation-feed");
+  const actionDestination = roomyChatHeader?.matches ? $(".conversation-header-controls") : $(".conversation-feed");
   if (actionDestination?.insertBefore && actions?.parentElement !== actionDestination) {
     const before = $(roomyChatHeader?.matches ? ".conversation-head-actions" : "#sr-announcer");
     actionDestination.insertBefore(actions, before?.parentElement === actionDestination ? before : null);
@@ -1976,7 +2282,20 @@ function clearSearch() {
   renderFeed();
 }
 $("#transcript-search-clear").addEventListener("click", clearSearch);
+$("#message-compact-toggle")?.addEventListener("click", () => changeCompactMode(!compactViews.has(renderedReadingScope)));
+// Capture runs before compact-line activation, so its own click cannot clear
+// the newly assigned target. Clicking within the boxed message keeps it.
+document.addEventListener("click", (event) => {
+  const article = event.target?.closest?.("article.message");
+  if (expandedMessageTarget && article?.dataset.recordKey !== expandedMessageTarget.key) clearExpandedMessageTarget();
+}, true);
+$("#messages").addEventListener("toggle", (event) => {
+  const article = event.target?.closest?.("article.message");
+  if (article && event.target.tagName === "DETAILS") fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
+}, true);
 $("#messages").addEventListener("click", (event) => {
+  const line = event.target?.closest?.("button.message-compact-line");
+  if (line && compactViews.has(renderedReadingScope)) { changeCompactMode(false, line); return; }
   const toggle = event.target?.closest?.("button[data-mixed-lane-key]");
   if (toggle) {
     const expanded = toggle.getAttribute("aria-expanded") !== "true";
@@ -1996,14 +2315,33 @@ $("#messages").addEventListener("scroll", () => {
   const scrollHeight = Number(messagesEl.scrollHeight || 0);
   const scrollTop = Number(messagesEl.scrollTop || 0);
   const isAtBottom = clientHeight > 0 ? (scrollHeight - scrollTop - clientHeight < 60) : true;
-  const jumpBtn = $("#jump-to-latest");
-  if (jumpBtn) jumpBtn.classList.toggle("hidden", isAtBottom);
+  updateLatestControl(isAtBottom);
+  updateLastViewedControl();
+  updateKindNavigation();
+});
+$("#message-type-filters").addEventListener("click", (event) => {
+  const button = event.target?.closest?.("button[data-kind-jump]");
+  if (button && !button.disabled) jumpToKind(button.dataset.kindJump, Number(button.dataset.kindStep), `${button.getAttribute("aria-label")}.`);
+});
+window.addEventListener("blur", () => { captureLastViewed(); });
+window.addEventListener("pagehide", () => { captureLastViewed(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") captureLastViewed();
+});
+$("#jump-to-last-viewed")?.addEventListener("click", () => {
+  if (lastViewedIndex < 0) return;
+  pendingKindJump = null;
+  navigateToRecord(lastViewedIndex);
 });
 $("#jump-to-latest")?.addEventListener("click", () => {
+  pendingKindJump = null;
   const messagesEl = $("#messages");
+  transcriptPage = null;
+  preservePageAnchor = false;
+  renderFeed();
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  const jumpBtn = $("#jump-to-latest");
-  if (jumpBtn) jumpBtn.classList.add("hidden");
+  updateLatestControl(true);
+  updateLastViewedControl();
 });
 $("#sessions-load-older").addEventListener("click", () => {
   taskOlderPages = Math.min(20, taskOlderPages + 1);
@@ -2021,11 +2359,13 @@ $("#transcript-load-more").addEventListener("click", () => {
 });
 
 $("#transcript-older").addEventListener("click", () => {
+  pendingKindJump = null;
   lastPageAnchor = "";
   transcriptPage = Math.max(0, transcriptPage - 1);
   renderFeed();
 });
 $("#transcript-newer").addEventListener("click", () => {
+  pendingKindJump = null;
   lastPageAnchor = "";
   transcriptPage += 1;
   renderFeed();

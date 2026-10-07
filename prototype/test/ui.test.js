@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { quotaDom } from "./helpers/quota-dom.js";
 import { createHash } from "node:crypto";
+import { parseCss, computed, element } from './helpers/css-model.mjs';
 
 const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
@@ -202,7 +203,7 @@ test("review layout shares semantics but keeps deliberate pointer and touch affo
 
 // Exercise the actual renderer and selection functions without a browser or live home.
 // This is not a layout engine; responsive/keyboard checks remain a review obligation.
-function ui({ fetchImpl = () => new Promise(() => {}), compact = true } = {}) {
+function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage = new Map() } = {}) {
   const nodes = new Map();
   const documentListeners = new Map();
   const windowListeners = new Map();
@@ -287,7 +288,7 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true } = {}) {
   const context = vm.createContext({
     document, URL,
     window: { location: { hash: "#lanes" }, getSelection: () => document.selection, addEventListener(name, listener) { windowListeners.set(name, listener); }, matchMedia: (query) => ({ matches: query.includes("max-width") ? compact : false, addEventListener() {} }) },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem(key, value) { storage.set(key, value); } },
     // Leave initial network loading pending; tests inject only synthetic records.
     fetch: fetchImpl,
     setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -295,7 +296,8 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true } = {}) {
   });
   vm.runInContext(script, context);
   return { run: (code) => vm.runInContext(code, context), node: (id) => document.querySelector(id),
-    hashchange: (hash) => windowListeners.get("hashchange")?.({ newURL: `http://localhost/${hash}` }) };
+    hashchange: (hash) => windowListeners.get("hashchange")?.({ newURL: `http://localhost/${hash}` }),
+    windowEvent: (name) => windowListeners.get(name)?.() };
 }
 
 test("selected unloaded task and disk displace retained IDs at the sixty-ID cap; automatic retries stop", () => {
@@ -389,6 +391,276 @@ test("first load is explicit, errors survive filter rerenders, and refs hydrate 
   assert.equal(params.get("disk"), "disk");
   assert.equal(app.run("transcriptQuery"), "keep me");
   assert.equal(app.run("laneStatusFilter"), "idle");
+});
+
+test("kind index search is strict, handles gaps and empty lists, and crosses rendered pages", () => {
+  const app = ui();
+  for (const [cursor, previous, next] of [[0,-1,20],[20,0,200],[199,20,200],[200,20,440],[450,440,-1]]) {
+    assert.equal(app.run(`kindJumpIndex([0,20,200,440], ${cursor}, -1)`), previous);
+    assert.equal(app.run(`kindJumpIndex([0,20,200,440], ${cursor}, 1)`), next);
+  }
+  assert.equal(app.run('kindJumpIndex([], 0, -1)'), -1);
+  assert.equal(app.run('kindJumpIndex([], 0, 1)'), -1);
+  seed(app, [lane('alpha', Array.from({length:451}, (_, i) => record({recordId:`r${i}`, role:i%20===0?'captain':'firstmate', occurredAt:new Date(Date.UTC(2030,0,1,12,i)).toISOString()})))]);
+  app.run('renderFeed(); transcriptPage=1; renderFeed()');
+  const feed = app.node('#messages');
+  feed.clientHeight=100; feed.scrollHeight=1000; feed.scrollTop=900;
+  const target = index => {
+    const node = app.node(`#kind-target-${index}`);
+    node.dataset={recordKey:`r${index}`,recordIndex:String(index)};
+    node.getBoundingClientRect=()=>({top:500-feed.scrollTop,bottom:540-feed.scrollTop,height:40});
+    return node;
+  };
+  const r180=target(180), r200=target(200);
+  const current={dataset:{recordKey:'r220',recordIndex:'220'},getBoundingClientRect:()=>({top:0,bottom:40,height:40})};
+  feed.querySelectorAll=selector=>selector==='article.message'?(app.run('transcriptPage')===0?[r180]:[r200,current]):[];
+  app.run('updateKindNavigation()');
+  assert.equal(app.run('kindJumpTargets.get("captain").previous'),200);
+  assert.equal(app.run('kindJumpTargets.get("captain").next'),240);
+  app.run('jumpToKind("captain", -1)');
+  assert.equal(r200.getBoundingClientRect().top,12);
+  assert.equal(r200.classList.contains('last-viewed-highlight'),true);
+  app.run('changeCompactMode(true); jumpToKind("captain", -1)');
+  assert.equal(app.run('transcriptPage'),0,'previous jumps to an older loaded page');
+  assert.equal(r180.getBoundingClientRect().top,12);
+  assert.equal(app.node('#messages').classList.contains('is-compact'),false,'kind jumps reveal full messages');
+  app.run('jumpToKind("captain", 1)');
+  assert.equal(app.run('transcriptPage'),1);
+  assert.equal(app.run('messagesForSelection().length'),451);
+  app.run('selectedMessageTypes.delete("captain"); renderFeed()');
+  assert.equal(app.run('kindJumpTargets.get("captain").previous'),-1);
+  app.run('clearTimeout(lastViewedHighlightTimer)');
+});
+
+test("same-page record navigation explicitly reveals cached lanes and native details", () => {
+  const app=ui(), feed=app.node('#messages');
+  seed(app,[lane('alpha',[record({recordId:'mixed',mixedLaneMessage:{recordId:'mixed',blocks:[{projectId:'alpha',name:'Alpha',text:'Alpha body'},{projectId:'beta',name:'Beta',text:'Beta body'}]}})])]);
+  app.run('allLanesSelected=false; selectedLaneIds=new Set(["alpha"]); renderFeed(); document.getElementById=id=>document.querySelector("#"+id)');
+  const before=feed.innerHTML, node=app.node('#kind-cached-target'), toggle=app.node('#kind-cached-toggle');
+  const chevron={textContent:'▸'}, summary={hidden:false}, detail={open:false}, body=app.node('#kind-cached-body');
+  body.hidden=true;
+  toggle.dataset.mixedLaneKey='["mixed","alpha",1]';
+  toggle.setAttribute('aria-expanded','false'); toggle.setAttribute('aria-controls','kind-cached-body');
+  toggle.querySelector=()=>chevron; toggle.parentElement={querySelector:()=>summary};
+  node.dataset={recordKey:'mixed',recordIndex:'0'};
+  node.getBoundingClientRect=()=>({top:500-feed.scrollTop,bottom:540-feed.scrollTop,height:40});
+  node.querySelectorAll=selector=>selector==='details'?[detail]:[toggle];
+  feed.querySelectorAll=selector=>selector==='article.message'?[node]:[];
+  app.run('navigateToRecord(0,{expand:true})');
+  assert.equal(feed.innerHTML,before,'unchanged fingerprint retains message DOM');
+  assert.equal(toggle.getAttribute('aria-expanded'),'true');
+  assert.equal(chevron.textContent,'▾'); assert.equal(summary.hidden,true);
+  assert.equal(body.hidden,false); assert.equal(detail.open,true);
+  assert.equal(node.getBoundingClientRect().top,12);
+  app.run('clearTimeout(lastViewedHighlightTimer)');
+});
+
+function kindHistoryFixture() {
+  const app=ui(), feed=app.node('#messages');
+  const anchor=record({recordId:'anchor'}), newer=record({recordId:'newer',role:'captain',occurredAt:'2026-03-01T12:00:00.000Z'});
+  seed(app,[lane('alpha',[anchor,newer])]);
+  app.run('renderFeed(); transcriptCoverage={sessions:[],warnings:[],expandable:true,windowBytes:1024*1024}');
+  const current=app.node('#kind-history-anchor'), older=app.node('#kind-history-older');
+  current.dataset={recordKey:'anchor',get recordIndex(){return String(app.run('messagesForSelection().findIndex(m=>m.recordId==="anchor")'));}};
+  current.getBoundingClientRect=()=>({top:0,bottom:40,height:40});
+  older.dataset={recordKey:'older',recordIndex:'0'};
+  older.getBoundingClientRect=()=>({top:500-feed.scrollTop,bottom:540-feed.scrollTop,height:40});
+  feed.clientHeight=100;
+  feed.querySelectorAll=selector=>selector==='article.message'?(app.run('messagesForSelection().some(m=>m.recordId==="older")')?[older,current]:[current]):[];
+  const previous=app.node('#kind-history-previous');
+  previous.dataset={kindJump:'captain',kindStep:'-1'}; previous.setAttribute('aria-label','Previous captain message');
+  app.node('#message-type-filters').querySelectorAll=()=>[previous];
+  app.run('updateKindNavigation()');
+  const respond=(records,windowMiB,expandable)=>app.run(`renderLanes(${JSON.stringify({lanes:[lane('alpha',records)],transcript:{sessions:[],warnings:[],windowBytes:windowMiB*1024*1024,expandable}})})`);
+  return {app,anchor,newer,older,previous,respond};
+}
+
+test("previous-kind demand widens the bounded source window and follows a stable anchor despite default thinking detection", () => {
+  const {app,anchor,newer,older,previous,respond}=kindHistoryFixture();
+  assert.equal(previous.disabled,false,'unloaded earlier history remains discoverable');
+  app.run('jumpToKind("captain",-1)');
+  assert.equal(app.run('transcriptWindowBytes'),2*1024*1024);
+  assert.equal(app.run('pendingKindJump.anchorKey'),'anchor');
+  assert.equal(previous.disabled,true,'one navigation intent owns the pending read');
+  respond([record({recordId:'older',role:'captain',occurredAt:'2026-01-01T12:00:00.000Z'}),record({recordId:'thought',kind:'thinking',occurredAt:'2026-01-15T12:00:00.000Z'}),anchor,newer],2,false);
+  assert.equal(app.run('selectedMessageTypes.has("thinking")'),true);
+  assert.equal(app.run('pendingKindJump'),null);
+  assert.equal(older.getBoundingClientRect().top,12);
+  assert.equal(older.classList.contains('last-viewed-highlight'),true);
+  assert.equal(app.run('transcriptWindowBytes'),2*1024*1024,'stop as soon as a match is found');
+  app.run('clearTimeout(lastViewedHighlightTimer)');
+});
+
+test("kind history expansion stops at eight MiB, cancels superseded filters/views, and survives unavailable history", () => {
+  const {app,anchor,newer,previous,respond}=kindHistoryFixture();
+  app.run('jumpToKind("captain",-1)');
+  for (const windowMiB of [2,4,8]) respond([anchor,newer],windowMiB,windowMiB<8);
+  assert.equal(app.run('pendingKindJump'),null);
+  assert.equal(app.run('transcriptWindowBytes'),8*1024*1024);
+  assert.equal(previous.disabled,true);
+  assert.match(app.node('#sr-announcer').textContent,/No earlier matching/);
+  const stalled=kindHistoryFixture();
+  stalled.app.run('jumpToKind("captain",-1)');
+  stalled.respond([stalled.anchor,stalled.newer],1,true);
+  assert.equal(stalled.app.run('pendingKindJump'),null);
+  assert.match(stalled.app.node('#sr-announcer').textContent,/did not advance/);
+  const lost=kindHistoryFixture();
+  lost.app.run('jumpToKind("captain",-1)');
+  lost.respond([lost.newer],2,false);
+  assert.equal(lost.app.run('pendingKindJump'),null);
+  assert.match(lost.app.node('#sr-announcer').textContent,/anchor is no longer loaded/);
+  const canceled=kindHistoryFixture();
+  canceled.app.run('jumpToKind("captain",-1); transcriptQuery="different"; renderFeed()');
+  assert.equal(canceled.app.run('pendingKindJump'),null);
+  const leaving=kindHistoryFixture();
+  leaving.app.run('jumpToKind("captain",-1); showView("overview")');
+  assert.equal(leaving.app.run('pendingKindJump'),null);
+  const failed=kindHistoryFixture();
+  failed.app.run('hasLoadedLanes=true; jumpToKind("captain",-1); renderLanesError("Synthetic failure"); renderFeed()');
+  assert.equal(failed.app.run('pendingKindJump'),null);
+  assert.equal(failed.previous.disabled,true);
+  assert.equal(failed.app.node('#message-compact-toggle').disabled,true);
+  assert.match(failed.app.node('#messages').innerHTML,/Synthetic failure/);
+});
+
+test("compact mode shows timestamp/sender/kind/preview per message or lane block", () => {
+  const app = ui();
+  const blocks = ['alpha', 'beta'].map(name => ({projectId:name, name, text:`[fm-lane ${name}]\n${name} preview\n[end ${name}]`}));
+  seed(app, [lane('alpha', [record({recordId:'one',text:'[fm-lane alpha]\nMeaningful inner preview\n[end alpha]'}), record({recordId:'mixed', mixedLaneMessage:{recordId:'mixed',text:blocks.map(b=>b.text).join('\n\n'),blocks}})])]);
+  app.run('renderFeed(); changeCompactMode(true)');
+  const html = app.node('#messages').innerHTML;
+  assert.equal((html.match(/class="(?:mixed-lane-toggle )?message-compact-line"/g)||[]).length, 3);
+  assert.equal((html.match(/class="compact-clock"/g)||[]).length, 3);
+  assert.match(html, /compact-sender[^>]*>Firstmate/);
+  assert.match(html, /compact-kind[^>]*>Reply/);
+  assert.match(html, /compact-lane">beta/);
+  assert.match(html, /compact-line-preview">Meaningful inner preview/);
+  assert.equal(app.run("compactPreview('[fm-lane alpha]\\nUnmatched envelope\\n[end beta]')"), '[fm-lane alpha] Unmatched envelope [end beta]');
+  assert.doesNotMatch(html, /message-day/);
+  assert.equal(app.node('#message-compact-toggle').getAttribute('aria-pressed'), 'true');
+  assert.match(app.run("compactMetadata({author:'Unknown',kind:'tools',occurredAt:'invalid',time:'Time unknown'})"), /Time unknown/);
+});
+
+test("compact expansion marks exactly its message until an outside click, and survives refresh", () => {
+  const app=ui(), feed=app.node('#messages'), target=app.node('#boxed-message');
+  seed(app,[lane('alpha',[record({recordId:'boxed'})])]);
+  target.dataset={recordKey:'boxed',recordIndex:'0'};
+  target.closest=()=>target;
+  feed.querySelectorAll=selector=>selector==='article.message' || selector==='.compact-expansion-target' && target.classList.contains('compact-expansion-target')?[target]:[];
+  app.run('renderFeed(); changeCompactMode(true)');
+  app.node('#messages').dispatchEvent({type:'click',target:{closest:selector=>selector==='button.message-compact-line'?{dataset:{},closest:()=>target,getBoundingClientRect:()=>({top:0})}:null}});
+  assert.equal(target.classList.contains('compact-expansion-target'),true);
+  app.run('renderFeed()');
+  assert.equal(target.classList.contains('compact-expansion-target'),true);
+  app.run('document.dispatchEvent({type:"click",target:document.querySelector("#boxed-message")})');
+  assert.equal(target.classList.contains('compact-expansion-target'),true);
+  app.run('document.dispatchEvent({type:"click",target:{closest:()=>null}})');
+  assert.equal(target.classList.contains('compact-expansion-target'),false);
+  assert.equal(app.run('expandedMessageTarget'),null);
+});
+
+test("compact choices persist through reload, filters and pages without changing record counts", () => {
+  const storage = new Map(), app = ui({storage});
+  seed(app,[lane('alpha',Array.from({length:451},(_,i)=>record({recordId:`r${i}`})))]);
+  app.run('renderFeed(); changeCompactMode(true)');
+  const scope=app.run('renderedReadingScope');
+  assert.equal(ui({storage}).run(`compactViews.has(${JSON.stringify(scope)})`),true);
+  app.node('#transcript-older').dispatchEvent({type:'click'});
+  assert.equal(app.node('#messages').classList.contains('is-compact'),true);
+  assert.equal((app.node('#messages').innerHTML.match(/<article /g)||[]).length,200);
+  app.run("transcriptQuery='Readable'; renderFeed()");
+  assert.equal(app.node('#messages').classList.contains('is-compact'),false);
+  app.run("transcriptQuery=''; renderFeed()");
+  assert.equal(app.node('#messages').classList.contains('is-compact'),true);
+  app.run('changeCompactMode(false)');
+  assert.equal(app.run('compactViews.has(renderedReadingScope)'),false);
+});
+
+test("compact choices bound retention, tolerate denied storage and expand tools on line activation", () => {
+  const app=ui({storage:new Map([['fm-agentos-compact-views.v1','[null,7,"view"]']])});
+  assert.equal(app.run('compactViews.size'),1);
+  app.run("for(let i=0;i<80;i++) compactViews.add('scope-'+i); renderFeed(); changeCompactMode(true)");
+  assert.equal(app.run('compactViews.size'),60);
+  const denied=ui({storage:{get(){throw Error('denied');},set(){throw Error('denied');}}});
+  seed(denied,[lane('alpha',[record({recordId:'tool',kind:'tools'})])]);
+  denied.run("selectedMessageTypes.add('tools'); renderFeed(); changeCompactMode(true); changeCompactMode(false,{closest:()=>null,getBoundingClientRect:()=>({top:0})})");
+  assert.match(denied.node('#messages').innerHTML, /<details open>/);
+});
+
+test("last viewed checkpoints use visible durable keys, survive reload, and stay scoped to filters", () => {
+  const storage = new Map();
+  const app = ui({ storage });
+  seed(app, [lane("alpha", Array.from({ length: 4 }, (_, i) => record({ recordId: `r${i}`, text: `Reply ${i}` })))]);
+  app.run("renderFeed()");
+  app.node("#conversations-view").classList.add("active");
+  const feed = app.node("#messages");
+  let rows = [
+    { dataset: { recordKey: 'r0', recordIndex: '0' }, getBoundingClientRect: () => ({ top: -10, bottom: 20, height: 30 }) },
+    { dataset: { recordKey: 'r1', recordIndex: '1' }, getBoundingClientRect: () => ({ top: 25, bottom: 60, height: 35 }) },
+    { dataset: { recordKey: 'r2', recordIndex: '2' }, getBoundingClientRect: () => ({ top: 65, bottom: 110, height: 45 }) },
+  ];
+  feed.querySelectorAll = (selector) => selector === 'article.message' ? rows : [];
+  app.windowEvent('blur');
+  assert.equal(app.run('lastViewed.get(renderedReadingScope)'), 'r1', 'last fully visible, not clipped later reply');
+  const originalScope = app.run('renderedReadingScope');
+  assert.equal(storage.has('fm-agentos-last-viewed.v1'), true);
+  rows = [rows[2]];
+  app.run('renderFeed()');
+  assert.equal(app.run('lastViewed.get(renderedReadingScope)'), 'r1', 'refresh must not move the checkpoint');
+  assert.equal(app.node('#jump-to-last-viewed').disabled, false);
+  app.run("transcriptQuery = 'Reply'; renderFeed()");
+  assert.equal(app.run(`lastViewed.get(${JSON.stringify(originalScope)})`), 'r2', 'leaving a filter view saves its rendered position');
+  assert.equal(app.run('lastViewedIndex'), -1, 'search has its own checkpoint');
+  assert.equal(app.node('#jump-to-last-viewed').disabled, true);
+  const reload = ui({ storage });
+  assert.equal(reload.run(`lastViewed.get(${JSON.stringify(originalScope)})`), 'r2');
+  assert.equal(app.run("readingScope() === (selectedMessageTypes = new Set([...selectedMessageTypes].reverse()), readingScope())"), true, 'kind ordering is not a different view');
+  app.run("lastViewed.set(readingScope(), 'missing'); renderFeed()");
+  assert.equal(app.node('#jump-to-last-viewed').disabled, true, 'unloaded or filtered-out records are not invented');
+});
+
+test("last viewed selects the saved loaded page and anchors it rather than following latest", () => {
+  const app = ui();
+  seed(app, [lane('alpha', Array.from({ length: 451 }, (_, i) => record({ recordId: `r${i}` })))]);
+  app.run('renderFeed(); lastViewed.set(renderedReadingScope, "r5"); renderFeed()');
+  const feed = app.node('#messages');
+  feed.scrollHeight = 1000; feed.clientHeight = 100; feed.scrollTop = 900;
+  const target = app.node('#synthetic-target');
+  target.dataset = { recordKey: 'r5', recordIndex: '5' };
+  target.getBoundingClientRect = () => ({ top: 500 - feed.scrollTop, bottom: 540 - feed.scrollTop, height: 40 });
+  const latest = { dataset: { recordKey: 'r400', recordIndex: '400' }, getBoundingClientRect: () => ({ top: 0, bottom: 40, height: 40 }) };
+  feed.querySelectorAll = (selector) => selector === 'article.message' ? (app.run('transcriptPage') === 0 ? [target] : [latest]) : [];
+  app.run('updateLastViewedControl()');
+  assert.equal(app.node('#jump-to-last-viewed').disabled, false);
+  app.node('#jump-to-last-viewed').dispatchEvent({ type: 'click' });
+  assert.equal(app.run('transcriptPage'), 0);
+  assert.equal(target.getBoundingClientRect().top, 12);
+  assert.equal(target.classList.contains('last-viewed-highlight'), true);
+  assert.equal(target.getAttribute('tabindex'), '-1');
+  assert.equal(app.node('#jump-to-last-viewed').disabled, true);
+  assert.equal(app.node('#sr-announcer').textContent, 'Returned to your last viewed message.');
+  app.run('clearTimeout(lastViewedHighlightTimer)');
+});
+
+test("last viewed tolerates tall replies, empty panes, unavailable storage, and caps retention", () => {
+  const storage = { get() { throw new Error('storage denied'); }, set() { throw new Error('storage denied'); } };
+  const app = ui({ storage });
+  seed(app, [lane('alpha', [record({ recordId: 'tall' })])]);
+  app.run('renderFeed()');
+  app.node('#conversations-view').classList.add('active');
+  const feed = app.node('#messages');
+  feed.querySelectorAll = (selector) => selector === 'article.message' ? [{ dataset: { recordKey: 'tall', recordIndex: '0' }, getBoundingClientRect: () => ({ top: -50, bottom: 250, height: 300 }) }] : [];
+  app.windowEvent('pagehide');
+  assert.equal(app.run('lastViewed.get(renderedReadingScope)'), 'tall');
+  app.run("for (let i=0;i<80;i++) { renderedReadingScope = 'scope-' + i; captureLastViewed(); }");
+  assert.equal(app.run('lastViewed.size'), 60);
+  assert.equal(app.run("lastViewed.has('scope-0')"), false);
+  feed.querySelectorAll = () => [];
+  app.run("renderedReadingScope = 'empty'; captureLastViewed()");
+  assert.equal(app.run("lastViewed.has('empty')"), false);
+  app.node('#conversations-view').classList.remove('active');
+  app.run("renderedReadingScope = 'inactive'; captureLastViewed()");
+  assert.equal(app.run("lastViewed.has('inactive')"), false);
 });
 
 test("send-time chat snapshot keeps checked lanes and only viewport-visible old history", () => {
@@ -646,8 +918,8 @@ test("mixed lane replies preserve context with selected sections expanded and un
   app.run('allLanesSelected = false; selectedLaneIds = new Set(["alpha"]); renderFeed()');
   const html = app.node("#messages").innerHTML;
   assert.equal((html.match(/<article /g) || []).length, 1);
-  assert.equal((html.match(/aria-expanded="false"/g) || []).length, 2);
-  assert.equal((html.match(/aria-expanded="true"/g) || []).length, 1);
+  assert.equal((html.match(/class="mixed-lane-toggle"[^>]*aria-expanded="false"/g) || []).length, 2);
+  assert.equal((html.match(/class="mixed-lane-toggle"[^>]*aria-expanded="true"/g) || []).length, 1);
   assert.match(html, /\[fm-lane <strong>alpha-UI<\/strong>\]<\/button>/);
   assert.equal((html.match(/\[fm-lane /g) || []).length, 3, "each marker is the toggle, not repeated in its body");
   assert.match(html, /2 lines/);
@@ -655,9 +927,9 @@ test("mixed lane replies preserve context with selected sections expanded and un
   assert.match(html, /&lt;img src=x&gt;/);
   assert.equal(app.run('window.quarterdeckMessageTargets[0].recordId'), "original:1");
   app.run('allLanesSelected = true; renderFeed()');
-  assert.equal((app.node("#messages").innerHTML.match(/aria-expanded="true"/g) || []).length, 3);
+  assert.equal((app.node("#messages").innerHTML.match(/class="mixed-lane-toggle"[^>]*aria-expanded="true"/g) || []).length, 3);
   app.run('allLanesSelected = false; selectedLaneIds = new Set(["alpha", "beta"]); renderFeed()');
-  assert.equal((app.node("#messages").innerHTML.match(/aria-expanded="true"/g) || []).length, 2);
+  assert.equal((app.node("#messages").innerHTML.match(/class="mixed-lane-toggle"[^>]*aria-expanded="true"/g) || []).length, 2);
   app.run('messageFormat = "raw"; renderFeed()');
   assert.match(app.node("#messages").innerHTML, /mixed-lane-content" hidden/);
 });
@@ -1005,7 +1277,10 @@ test("desktop filter panels collapse independently without changing filter selec
   assert.match(css, /#lane-options\[data-collapsed="true"\] \.lane-rail-item/);
   assert.match(css, /#conversation-kind-panel\[data-collapsed="true"\]:is\(:hover, :focus-within\) \.kind-filter-menu/);
   assert.match(css, /#conversation-kind-panel\[data-collapsed="true"\] \.message-kind-label[\s\S]*?\.message-types-actions \{ display: none/);
-  assert.match(css, /@media \(min-width: 721px\) \{[\s\S]*?\.conversation-head:has\(> \.feed-actions\)/);
+  const header=element('header',['conversation-head']);
+  const tracks=element('div',['conversation-header-controls'],{},header);
+  assert.equal(computed(parseCss(css),tracks,1600).display,'grid');
+  assert.equal(computed(parseCss(css),tracks,1600).overflow,'visible');
   const app = ui({ compact: false });
   app.run('selectedMessageTypes = new Set(["captain"]); selectedLaneIds = new Set(["general"]);');
   app.node("#lane-panel-toggle").dispatchEvent({ type: "click" });
@@ -1172,7 +1447,7 @@ test("reading position is preserved during feed updates when scrolled up with ju
   const messagesNode = app.node("#messages");
   const jumpBtn = app.node("#jump-to-latest");
   assert.equal(messagesNode.scrollTop, 100);
-  assert.equal(jumpBtn.classList.contains("hidden"), true);
+  assert.equal(jumpBtn.disabled, true);
 
   // User scrolls up (clientHeight=50, scrollHeight=200, scrollTop=20 -> distance = 200-20-50 = 130 >= 60)
   messagesNode.clientHeight = 50;
@@ -1182,12 +1457,12 @@ test("reading position is preserved during feed updates when scrolled up with ju
   // Re-rendering feed (e.g. background refresh) preserves reading position and displays jump-to-latest button
   app.run("renderFeed();");
   assert.equal(messagesNode.scrollTop, 20);
-  assert.equal(jumpBtn.classList.contains("hidden"), false);
+  assert.equal(jumpBtn.disabled, false);
 
   // Clicking jump-to-latest scrolls to bottom and hides the button
   jumpBtn.dispatchEvent({ type: "click" });
   assert.equal(messagesNode.scrollTop, 200);
-  assert.equal(jumpBtn.classList.contains("hidden"), true);
+  assert.equal(jumpBtn.disabled, true);
 });
 
 test("search debounces input and highlights matches safely across markdown and raw text", async () => {
@@ -1415,8 +1690,8 @@ test("Phase 2.5 responsive, typography, and accessibility polish constraints", a
   assert.match(css, /::-webkit-search-cancel-button[\s\S]+-webkit-appearance: none/);
 
   // Jump to latest stays within the feed rather than overlapping mobile navigation.
-  assert.match(css, /\.jump-to-latest \{ position: absolute; bottom: var\(--space-4\);/);
-  assert.match(css, /@media \(max-width: 720px\)[\s\S]+\.jump-to-latest \{ bottom: 16px; \}/);
+  assert.match(css, /\.feed-jump-controls \{ flex: 0 0 auto; display: flex;/);
+  assert.match(css, /\.jump-to-latest \{[^}]*min-height: 44px;/);
 
   // Laptop view avoids dual scrollbars by keeping body and workspace overflow hidden
   assert.match(css, /@media \(max-width: 1200px\)[\s\S]+body \{ overflow: hidden; \}/);

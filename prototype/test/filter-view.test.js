@@ -31,6 +31,14 @@ test("filter-view builds kind and lane markup and collapsed rail", () => {
   assert.match(kindHtml, /value="captain"[^>]*checked/);
   assert.doesNotMatch(kindHtml, /value="conversation"[^>]*checked/);
   assert.match(kindHtml, /message-kind-glyph[\s\S]*message-kind-svg/);
+  assert.match(kindHtml, /aria-label="Previous captain message"/);
+  assert.match(kindHtml, /aria-label="Next Firstmate reply message"/);
+  assert.equal((kindHtml.match(/class="kind-message-jump"/g)||[]).length,4);
+  assert.match(kindHtml, /<\/label><div class="kind-message-jumps"/,'arrows are outside checkbox labels');
+  assert.match(kindHtml, /data-kind-step="-1"[^>]*disabled/);
+  const escaped=view.kindFiltersHtml([{id:'"unsafe',label:'<unsafe>'}],new Set(),escapeHtml);
+  assert.match(escaped,/data-kind-jump="&quot;unsafe"/);
+  assert.doesNotMatch(escaped,/<unsafe>/);
 
   assert.equal(view.laneShortName("Quarterdeck"), "Quar");
   assert.equal(view.laneShortName(""), "?");

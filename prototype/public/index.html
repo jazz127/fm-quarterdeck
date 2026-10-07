@@ -68,6 +68,7 @@
       <div class="main-stage">
         <section id="conversations-view" class="conversation product-view" aria-label="Live conversation stream">
           <header class="conversation-head">
+            <div class="conversation-header-controls">
             <div class="conversation-head-identity">
               <button id="conversation-filter-shortcut" class="conversation-identity" type="button" aria-controls="lane-filter-controls" aria-expanded="true" aria-label="Collapse Included fleets panel" title="Collapse Included fleets panel">
                 <span id="conversation-dot" class="project-dot"></span>
@@ -89,6 +90,7 @@
                 <button id="font-size-decrease" type="button" title="Decrease message text size" aria-label="Decrease message text size">A−</button>
                 <button id="font-size-increase" type="button" title="Increase message text size" aria-label="Increase message text size">A+</button>
               </div>
+              <button id="header-reading-options-toggle" class="header-reading-options-toggle" type="button" aria-controls="header-reading-options" aria-expanded="false" aria-label="Reading and paging options" title="Reading and paging options" hidden><span aria-hidden="true">⋯</span><span class="header-reading-options-label">Options</span></button>
               <details class="kind-filter-menu" id="kind-filter-menu">
                 <summary>Message kinds</summary>
                 <div class="kind-filter-popover">
@@ -99,7 +101,14 @@
                   </div>
                 </div>
               </details>
+              <div class="feed-jump-controls" role="group" aria-label="Message display and reading position">
+                <button id="message-compact-toggle" class="jump-to-latest" type="button" aria-pressed="false" aria-controls="messages" title="Show a single line per message, or per lane block. Click a compact line to expand all messages in place."><span aria-hidden="true">☷</span> Compact</button>
+                <button id="jump-to-last-viewed" class="jump-to-latest" type="button" aria-label="Jump to last viewed message" aria-describedby="reading-position-help" disabled>↶ Last viewed</button>
+                <button id="jump-to-latest" class="jump-to-latest" type="button" aria-label="Jump to latest message" disabled>↓ Latest</button>
+                <span id="reading-position-help" class="reading-position-help">Last viewed saves when you leave Chats or switch tabs.</span>
+              </div>
               <div class="feed-pagination" aria-label="Transcript pages"><button id="transcript-older" type="button">Older</button><span id="transcript-page"></span><button id="transcript-newer" type="button">Newer</button></div>
+            </div>
             </div>
             <div class="conversation-head-actions">
               <button id="context-toggle" class="context-toggle" type="button" aria-controls="context-rail" aria-expanded="false">Context</button>
@@ -137,7 +146,6 @@
           <div id="transcript-window-status" class="transcript-window-status" hidden><span>Recent source windows · Search covers loaded records.</span><button id="transcript-load-more" type="button">Load more records</button></div>
           <div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
           <div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true"><div class="notice" role="status">Loading Fleet Chats… Reading recent messages. Older history is available on demand.</div></div>
-          <button id="jump-to-latest" class="jump-to-latest hidden" type="button" aria-label="Jump to latest message">↓ Jump to latest</button>
           </div>
           <aside id="conversation-kind-panel" class="conversation-kind-panel" aria-label="Message kind filters"><div class="kind-panel-heading"><span>Message kinds</span><button id="kind-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="kind-filter-menu" aria-expanded="true" aria-label="Collapse Message kinds panel" title="Collapse Message kinds panel">›</button></div></aside>
           </div>
