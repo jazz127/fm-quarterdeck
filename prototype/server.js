@@ -5,7 +5,7 @@ import { createHistoryReader, HistoryLimitError } from "./history-reader.js";
 import { validateRegistry, previewPath, proxyPreview } from "./previews.js";
 import { validChatView } from "./chat-view.js";
 import { createAgentStateOwner, configuredStatePath, emptyAgentState, fingerprint } from "./agent-state.js";
-import { projectWork, endpointIsLive, verifyDurability, resolveRepositoryIdentity, foldStatusLines, safeWorkNote } from "./work-model.js";
+import { projectWork, endpointIsLive, executionFingerprint, verifyDurability, resolveRepositoryIdentity, foldStatusLines, safeWorkNote } from "./work-model.js";
 import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
@@ -597,8 +597,11 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const recordedWork = [...large, ...Object.values(tight).flat()].find((entry) => entry.id === id);
     const completionIdentity = { source: lastCompletion ? "status" : "backlog", line: lastCompletion?.line, occurrence: lastCompletion?.index, doneDate: task?.doneDate || null };
     const endpointLive = await endpointIsLive(meta);
+    const hasProcessIdentity = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at]
+      .some((value) => value !== undefined && value !== null && value !== "");
     return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive,
-      executionFingerprint: endpointLive ? fingerprint("execution.v1", meta.worker_boot_id, meta.worker_pid, meta.worker_start_ticks) : null,
+      livenessEvidence: endpointLive === true ? hasProcessIdentity ? "live process incarnation" : "live terminal pane" : endpointLive === false ? "endpoint not live" : "liveness unknown",
+      executionFingerprint: executionFingerprint(meta, endpointLive),
       retained: meta.preserved === "true" || meta.cleanup_pending === "true", workGroup: task?.workGroup || null,
       taskIntent: currentTaskIntent(task, await readBriefIntent(home, id)), chatLaneId: projects.find((entry) => entry.name === (repositoryPath ? path.basename(repositoryPath) : task?.projectName))?.id || null,
       completionIdentity,

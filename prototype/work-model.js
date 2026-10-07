@@ -58,14 +58,110 @@ export function classifyCurrent({ state, inFlight, endpointLive, queued, retaine
 }
 
 // PID alone is vulnerable to reuse. Only an exact process incarnation is live evidence.
-export async function endpointIsLive(meta) {
-  if (!/^[1-9]\d*$/.test(meta.worker_pid || "") || !/^\d+$/.test(meta.worker_start_ticks || "") || !/^[a-f0-9-]{36}$/.test(meta.worker_boot_id || "")) return null;
+function validPid(meta) { return /^[1-9]\d*$/.test(meta.worker_pid || ""); }
+
+function darwinStartIdentity(meta) {
+  const identity = meta.worker_start_identity || meta.worker_started_at;
+  if (!identity) return null;
+  const timestamp = Date.parse(identity);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null;
+}
+
+export async function endpointIsLive(meta, { platform = process.platform, read = readFile, run = exec } = {}) {
+  const processFields = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at];
+  if (validPid(meta) && platform === "darwin") {
+    const expectedStart = darwinStartIdentity(meta);
+    if (expectedStart !== null) {
+      try {
+        const { stdout } = await run("ps", ["-o", "lstart=", "-o", "stat=", "-p", meta.worker_pid], { encoding: "utf8", timeout: 2500, maxBuffer: 4096 });
+        if (!stdout.trim()) return false;
+        const match = stdout.trim().match(/^(.+?)\s+([A-Z][A-Za-z+<>-]*)$/);
+        if (!match) return null;
+        const actualStart = Date.parse(match[1]);
+        if (!Number.isFinite(actualStart)) return null;
+        return Math.floor(actualStart / 1000) === expectedStart && !/[ZX]/.test(match[2]);
+      } catch (error) { if (["ENOENT", "ESRCH"].includes(error.code)) return false; return null; }
+    }
+  } else if (validPid(meta) && platform === "linux" && /^\d+$/.test(meta.worker_start_ticks || "") && /^[a-f0-9-]{36}$/.test(meta.worker_boot_id || "")) {
+    try {
+      if ((await read("/proc/sys/kernel/random/boot_id", "utf8")).trim() !== meta.worker_boot_id) return false;
+      const proc = await read(`/proc/${meta.worker_pid}/stat`, "utf8");
+      const fields = proc.slice(proc.lastIndexOf(")") + 2).split(" ");
+      return fields[19] === meta.worker_start_ticks && !["Z", "X"].includes(fields[0]);
+    } catch (error) { if (["ENOENT", "ESRCH"].includes(error.code)) return false; return null; }
+  }
+  // A partial or unsupported process identity must not be replaced by weaker
+  // pane evidence. Pane checks are only for legacy records with no identity.
+  if (processFields.some((value) => value !== undefined && value !== null && value !== "")) return null;
+  if (meta.remote_host || (meta.backend !== "herdr" && meta.backend !== "tmux")) return null;
+  const options = { encoding: "utf8", timeout: 1500, maxBuffer: 64 * 1024 };
+  if (meta.backend === "herdr") return herdrPaneIsLive(meta, run, options);
+  return tmuxWindowIsLive(meta, run, options);
+}
+
+export function executionFingerprint(meta, endpointLive) {
+  if (endpointLive !== true) return null;
+  const processFields = [meta.worker_pid, meta.worker_start_ticks, meta.worker_boot_id, meta.worker_start_identity, meta.worker_started_at];
+  if (processFields.some((value) => value !== undefined && value !== null && value !== "")) {
+    if (!validPid(meta)) return null;
+    const identity = meta.worker_start_ticks || meta.worker_start_identity || meta.worker_started_at;
+    if (!identity || (meta.worker_start_ticks && !/^[a-f0-9-]{36}$/.test(meta.worker_boot_id || ""))) return null;
+    return fingerprint("execution.v1", meta.worker_boot_id || null, meta.worker_pid, identity);
+  }
+  if (meta.backend === "herdr" && meta.herdr_session && meta.herdr_pane_id) return fingerprint("execution.pane.v1", meta.backend, meta.herdr_session, meta.herdr_pane_id);
+  if (meta.backend === "tmux" && meta.window) return fingerprint("execution.pane.v1", meta.backend, meta.window);
+  return null;
+}
+
+function herdrErrorCode(error) {
+  for (const output of [error?.stdout, error?.stderr]) {
+    try { const code = JSON.parse(String(output || "")).error?.code; if (code) return code; } catch { /* Unstructured CLI errors are inconclusive. */ }
+  }
+  return null;
+}
+
+async function herdrPaneIsLive(meta, run, options) {
+  const { herdr_session: session, herdr_pane_id: pane } = meta;
+  if (!session || !pane) return null;
+  const herdr = (args) => run("herdr", [...args, "--session", session], options);
+  let paneReply;
+  try { paneReply = JSON.parse((await herdr(["pane", "get", pane])).stdout); }
+  catch (error) { return herdrErrorCode(error) === "pane_not_found" ? false : null; }
+  if (paneReply.error?.code === "pane_not_found") return false;
+  if (paneReply.error?.code || paneReply.result?.pane?.pane_id !== pane) return null;
+
+  let agentReply;
+  try { agentReply = JSON.parse((await herdr(["agent", "get", pane])).stdout); }
+  catch (error) { return herdrErrorCode(error) === "agent_not_found" ? false : null; }
+  if (agentReply.error?.code === "agent_not_found") return false;
+  if (agentReply.error?.code || !["working", "idle", "done", "blocked"].includes(agentReply.result?.agent?.agent_status)) return null;
+
+  let processReply;
+  try { processReply = JSON.parse((await herdr(["pane", "process-info", "--pane", pane])).stdout); }
+  catch { return null; }
+  const info = processReply.result?.process_info;
+  if (processReply.result?.type !== "pane_process_info" || info?.pane_id !== pane || !Number.isSafeInteger(info.shell_pid) || !Array.isArray(info.foreground_processes) || !info.foreground_processes.length) return null;
+  const shells = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish"]);
+  const isShell = (value) => shells.has(path.basename(String(value || "")).replace(/^-/, ""));
+  let sawShellOnly = false;
+  for (const process of info.foreground_processes) {
+    const names = [process.name, process.argv0].filter((value) => typeof value === "string" && value);
+    if (!names.length) continue;
+    if (!names.every(isShell)) return true;
+    sawShellOnly = true;
+  }
+  return sawShellOnly ? false : null;
+}
+
+async function tmuxWindowIsLive(meta, run, options) {
+  const target = meta.window;
+  if (typeof target !== "string" || !target || (target.match(/:/g) || []).length !== 1) return null;
+  const [session, window] = target.split(":");
+  if (!session || !window) return null;
   try {
-    if ((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim() !== meta.worker_boot_id) return false;
-    const proc = await readFile(`/proc/${meta.worker_pid}/stat`, "utf8");
-    const fields = proc.slice(proc.lastIndexOf(")") + 2).split(" ");
-    return fields[19] === meta.worker_start_ticks && !["Z", "X"].includes(fields[0]);
-  } catch (error) { if (["ENOENT", "ESRCH"].includes(error.code)) return false; return null; }
+    const { stdout } = await run("tmux", ["list-windows", "-t", session, "-F", "#{window_name}"], options);
+    return stdout.split(/\r?\n/).some((line) => line === window);
+  } catch { return null; }
 }
 
 // Read-only probes: no fetch, ref mutation, branch checkout or publication.
@@ -151,7 +247,8 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     if (status === "newly-done") status = completionAttention;
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
-      lane, theme, status, sourceState: record.state, endpointEvidence: record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown",
+      lane, theme, status, sourceState: record.state, livenessEvidence: record.livenessEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
+      endpointEvidence: record.livenessEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
       retained: Boolean(record.retained), pendingIssues: record.pendingIssues || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
       unboundCommit: Boolean(record.unboundCommit && !bound),

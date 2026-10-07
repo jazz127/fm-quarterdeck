@@ -52,12 +52,12 @@ A writer crash before rename leaves the previous complete document. An abandoned
 
 ## Current execution versus pressure
 
-- **Active** requires in-flight authoritative work, an executing state, and verified live process-incarnation evidence. Optional recorded `worker_pid`, `worker_start_ticks`, and `worker_boot_id` must match fresh Linux `/proc` evidence. Missing/unsupported liveness is **Unknown evidence**, not Active. No source files or metadata fields are created by this adapter.
+- **Active** requires in-flight authoritative work, an executing state, and positive endpoint evidence. Linux `worker_pid`, `worker_start_ticks`, and `worker_boot_id` must match fresh `/proc` evidence; macOS `worker_pid` and `worker_start_identity` or `worker_started_at` must match the process start time from `ps`. Only when all process identity fields are absent, local Herdr tasks fall back to an exact pane, registered agent and non-shell foreground-process check, while tmux tasks fall back to the exact recorded window in a successful inventory. Pane evidence identifies the terminal endpoint rather than the worker process; remote tasks, unsupported backends, malformed identities, CLI failures and timeouts remain **Unknown evidence**. No source files or metadata fields are created by this adapter.
 - **Waiting / external delay**, **Captain action**, **Retained / cleanup**, **Backlog**, and **Unknown evidence** are separate. A preserved/cleanup-pending copy, failed worker, old metadata, dead process or unresolved decision cannot inflate Active.
 - Multiple slices pointing to the same proven process incarnation count as **one active worker**. Hierarchical Active counts describe active slices; the Overview KPI and greater-than-eight review trigger use distinct genuinely active workers.
 - Completion attention may coexist with retention or an unresolved keyed decision. Rows remain single; pressure and completion badges/counts describe separate dimensions and should not be summed as mutually exclusive totals.
 
-Legacy homes without process-incarnation evidence will show unknown liveness for otherwise working records. This is intentional conservative behavior, not a claim that their workers stopped.
+Legacy homes without process-incarnation evidence can use their recorded local pane as weaker liveness evidence; when no supported pane is recorded or its read is inconclusive, otherwise working records remain unknown. Unknown liveness is not a claim that their workers stopped.
 
 ## Completion freshness is not delivery
 
