@@ -19,6 +19,7 @@ import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
 import { announceReview, inboxReady, inboxReceipts, inboxReviewState } from "./inbox.js";
 import { open, readFile, readdir, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,6 +49,7 @@ const STATIC_FILES = new Map([
   ["/panel-resize.js", ["panel-resize.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel.js", ["shell-panel.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel-layout.js", ["shell-panel-layout.js", "text/javascript; charset=utf-8"]],
+  ["/shell-width.js", ["shell-width.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel.css", ["shell-panel.css", "text/css; charset=utf-8"]],
   ["/preview-selector.js", ["preview-selector.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
@@ -627,7 +629,13 @@ async function readOptionalBrief(home, id) {
   } finally { await handle?.close(); }
 }
 
-export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader() } = {}) {
+// Claude Code keeps transcripts under the server user's config directory;
+// only this home's encoded project directory inside it is ever read.
+export function claudeConfigDir(env) {
+  return env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path.join(os.homedir(), ".claude");
+}
+
+export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null } = {}) {
   const readFile = reader.text;
   if (!home) throw new PublicDataError("Lanes offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
@@ -637,7 +645,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
       includeHistory ? readCaptainNotes(resolvedHome, reader) : [],
-      includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader }) : { messages: [], coverage: {} },
+      includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir }) : { messages: [], coverage: {} },
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
       includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
     ]);
@@ -947,7 +955,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
   const server = http.createServer(async (request, response) => {
     let release;
     let used = false;
@@ -1172,7 +1180,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       if (request.method === "GET" && url.pathname === "/api/lanes") {
         const ids = (name) => url.searchParams.getAll(name).filter((id) => id.length <= 250).slice(0, 60);
         const page = (name) => Math.min(20, Math.max(0, Number.parseInt(url.searchParams.get(name) || "0", 10) || 0));
-        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier });
+        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env) });
         await sendJson(request, response, 200, {
           generatedAt: new Date().toISOString(),
           source: firstmate.source,

@@ -93,8 +93,20 @@ try {
     const outside = await evaluate("(() => { const r = document.querySelector('button.primary-tab[data-view=overview]').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()");
     await command("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...outside });
     await command("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...outside });
+    await until("!document.querySelector('#review-gesture-popover').matches(':popover-open') && !document.querySelector('#review-annotation').hidden");
+    assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), true, "plain outside click annotates without changing the toggle");
+    await escape();
+    await until("document.querySelector('#review-annotation').hidden");
+    await evaluate("document.querySelector('#review-gesture-help').click()");
+    await until("document.querySelector('#review-gesture-popover').matches(':popover-open')");
+    // Annotation mode captures plain clicks, including navigation controls.
+    // Alt-click is the interaction gesture while the toggle is on; use real
+    // pointer input so native popover light dismissal is still exercised.
+    await command("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, modifiers: 1, ...outside });
+    await command("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, modifiers: 1, ...outside });
     await until("!document.querySelector('#review-gesture-popover').matches(':popover-open')");
-    assert.equal(await evaluate("document.querySelector('#review-annotation').hidden"), true, "outside dismissal uses a normal navigation control");
+    assert.equal(await evaluate("document.querySelector('#review-annotation').hidden"), true, "outside Alt-click interacts instead of annotating with the toggle on");
+    assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), true, "outside dismissal preserves annotation mode");
     await evaluate("document.querySelector('#review-toggle').click()");
     assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), false);
     await evaluate("document.querySelector('#projects').dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1, altKey: true }))");
@@ -180,7 +192,7 @@ try {
   await command("Page.reload");
   await until("document.querySelector('#review-message')?.value === 'Unsent draft'");
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
-  assert.equal(await evaluate("document.querySelector('#review-thread').children.length"), 70);
+  assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
   await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
   await command("Page.reload");
   await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");

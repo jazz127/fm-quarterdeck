@@ -4,6 +4,7 @@ import vm from "node:vm";
 import test from "node:test";
 
 const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+const openSent = (page, open) => { const sent = page.element("review-sent"); sent.open = open; sent.listeners.toggle(); };
 const tick = () => new Promise(setImmediate);
 function harness() {
   const data = new Map();
@@ -214,19 +215,47 @@ test("close and desktop Escape preserve unsent draft, queue, receipt history and
   assert.equal(restored.state().sent.length, 2);
 });
 
+test("one phone Annotate activation switches mode and arms page selection", () => {
+  for (const tab of ["conversation", "review"]) {
+    const p = harness().page();
+    p.setDesktop(false);
+    p.element("review-panel-toggle").click();
+    if (tab === "review") p.element("review-history-tab").click();
+    p.element("review-message").value = "Keep this draft";
+    p.element("review-select-location").click();
+    assert.equal(vm.runInContext("activeReviewTab", p.context), "annotation", tab);
+    assert.equal(vm.runInContext("pickingRegion", p.context), true, tab);
+    assert.equal(p.element("review-select-location").textContent, "Select on page", tab);
+    assert.equal(p.element("review-panel")["data-picking"], "", tab);
+    assert.equal(p.body.style.overflow, "scroll", tab);
+    assert.equal(p.element("review-message").value, "Keep this draft", tab);
+    p.element("review-select-location").click();
+    assert.equal(vm.runInContext("pickingRegion", p.context), false, "next activation cancels");
+  }
+  const desktop = harness().page();
+  desktop.element("review-panel-toggle").click();
+  desktop.element("review-select-location").click();
+  assert.equal(vm.runInContext("activeReviewTab", desktop.context), "conversation", "desktop tab unchanged");
+  assert.equal(vm.runInContext("pickingRegion", desktop.context), true);
+});
+
 test("phone scroll lock belongs only to Review, across mode switches and closing", () => {
   const p = harness().page();
   p.setDesktop(false);
   p.element("review-panel-toggle").listeners.click();
   assert.equal(p.body.style.overflow, "scroll");
+  assert.equal(p.element("review-panel")["data-review-tab"], "conversation");
   p.element("review-history-tab").listeners.click();
   assert.equal(p.body.style.overflow, "hidden");
+  assert.equal(p.element("review-panel")["data-review-tab"], "review");
+  assert.equal(p.element("review-phone-thread").hidden, false);
   p.element("review-history-tab").listeners.click();
   assert.equal(p.body.style.overflow, "hidden", "reselect does not overwrite prior overflow");
   p.element("review-annotation-tab").listeners.click();
   assert.equal(p.body.style.overflow, "scroll");
   p.element("review-conversation-tab").listeners.click();
   assert.equal(p.body.style.overflow, "scroll");
+  assert.equal(p.element("review-phone-thread").hidden, true);
   p.element("review-history-tab").listeners.click();
   p.element("review-close").listeners.click();
   assert.equal(p.body.style.overflow, "scroll");
@@ -236,16 +265,74 @@ test("phone scroll lock belongs only to Review, across mode switches and closing
   assert.equal(p.body.style.overflow, "scroll", "desktop never inherits the lock");
 });
 
-test("compact review keeps its receipt summary and accessible history in the Review tab", async () => {
+test("desktop Sent section drives the review state only at desktop width and never locks scroll", () => {
+  const p = harness().page();
+  p.element("review-panel-toggle").listeners.click();
+  assert.equal(p.element("review-panel")["data-review-tab"], "conversation");
+  openSent(p, true);
+  assert.equal(p.element("review-panel")["data-review-tab"], "review");
+  assert.equal(p.body.style.overflow, "scroll");
+  assert.equal(p.element("review-phone-thread").hidden, true, "phone thread is a phone-only surface");
+  openSent(p, false);
+  assert.equal(p.element("review-panel")["data-review-tab"], "conversation");
+});
+
+test("phone Review tab sends the queue, not the hidden composer text; Message tab still queues and sends", async () => {
+  const p = harness().page();
+  p.setDesktop(false);
+  await tick();
+  p.element("review-panel-toggle").listeners.click();
+  p.q("first");
+  assert.equal(p.state().queue.length, 1);
+  p.element("review-history-tab").listeners.click();
+  p.element("review-message").value = "typed but hidden";
+  p.send();
+  await tick();
+  assert.equal(p.state().sent.length, 1);
+  assert.equal(p.element("review-message").value, "typed but hidden");
+  p.element("review-conversation-tab").listeners.click();
+  p.q("second");
+  p.send();
+  await tick();
+  assert.equal(p.state().sent.length, 2);
+});
+
+test("review panel keeps desktop Sent/Queued sections and phone Message/Review tabs, split at the 720px breakpoint", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
+  const start = html.indexOf('<aside id="review-panel"');
+  const panel = html.slice(start, html.indexOf("</aside>", start));
+  // Desktop: collapsed Sent over always-visible Queued.
+  assert.match(panel, /<details id="review-sent"(?![^>]*\bopen\b)[^>]*>\s*<summary id="review-sent-summary"[^>]*><span>Sent<\/span> <span id="review-sent-count"/);
+  assert.match(panel, /<section id="review-queued"[^>]*>[\s\S]*Queued <span id="review-queued-count"[\s\S]*id="review-thread"/);
+  assert.ok(panel.indexOf('id="review-sent"') < panel.indexOf('id="review-queued"'), "Sent stacks above Queued");
+  // Phone: the original Message/Review tabs and one combined history thread.
+  assert.match(panel, /id="review-conversation-tab"[^>]*>Message<[\s\S]*id="review-history-tab"[^>]*aria-controls="review-phone-thread"[^>]*>Review</);
+  assert.match(panel, /id="review-phone-thread"[^>]*hidden/);
+  // Hidden by default (desktop); revealed only inside the phone breakpoint.
+  const phoneAt = css.indexOf("@media (max-width: 720px)");
+  assert.match(css.slice(0, phoneAt), /^\.review-tabs, #review-phone-thread \{ display: none; \}/m);
+  const phoneCss = css.slice(phoneAt);
+  assert.match(phoneCss, /\.review-panel \.review-tabs \{ display: flex/);
+  assert.match(phoneCss, /\.review-panel \.review-sent, \.review-panel \.review-queued \{ display: none/);
+  assert.match(phoneCss, /\.review-panel header:has\(\.review-tabs\) > strong \{ display: none; \}/);
+  assert.match(phoneCss, /\[data-review-tab="review"\] #review-phone-thread:not\(\[hidden\]\)/);
+  // The desktop header title still shrinks and wraps beside Close.
+  assert.match(css, /\.review-panel header > strong \{[^}]*flex: 1 1 0;[^}]*min-width: 0;[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.review-header-actions \{[^}]*flex: 0 0 auto/);
+  assert.doesNotMatch(css.slice(0, phoneAt), /header:has\(\.review-tabs\)/);
+});
+
+test("compact review keeps its receipt summary and accessible history in the Sent section", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
   const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
   const client = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
-  assert.match(html, /id="review-history-tab"[^>]*aria-controls="review-thread"/);
+  assert.match(html, /id="review-sent-summary" aria-label="Sent batches, 0"/);
   assert.match(html, /id="review-inline-summary" aria-hidden="true"/);
   assert.match(css, /\.mobile-dock \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(css, /\[data-review-tab="review"\] #review-thread:not\(\[hidden\]\)/);
+  assert.match(css, /\.review-sent:not\(\[open\]\) > \.review-thread \{ display: none/);
   assert.match(client, /el\("review-inline-summary"\)\.textContent = compactSummary/);
-  assert.match(client, /setReviewTab\("review"\); update\(\); void refreshStatuses\(\)/);
+  assert.match(client, /if \(sentOpen\) void refreshStatuses\(\)/);
 });
 
 test("phone visual viewport keeps composer above keyboard and restores navigation reserve", async () => {

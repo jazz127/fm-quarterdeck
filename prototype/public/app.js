@@ -555,7 +555,7 @@ function renderLanes(data) {
     infoTrigger.setAttribute("aria-label", `Transcript coverage: ${summaryText}`);
   }
   $("#transcript-note").textContent = [transcriptCoverage.note, ...transcriptCoverage.warnings].join(" ");
-  $("#transcript-sources").innerHTML = [...sources, ...(transcriptCoverage.outcomeSources || [])].map((session) => `<li>${escapeHtml(session.source)} · ${session.loaded ? `${session.messageCount} messages` : "not loaded"}${session.skippedRecords ? ` · ${session.skippedRecords} malformed/undated records skipped` : ""}</li>`).join("");
+  $("#transcript-sources").innerHTML = [...sources, ...(transcriptCoverage.outcomeSources || [])].map((session) => `<li>${escapeHtml(session.source)} · ${session.loaded ? `${session.messageCount} messages` : "not loaded"}${session.omittedBytes ? " · newest records only; older history not loaded" : ""}${session.skippedRecords ? ` · ${session.skippedRecords} malformed/undated records skipped` : ""}</li>`).join("");
   $("#transcript-session").innerHTML = '<option value="">Loaded transcript files</option>' + sources.map((session) => `<option value="${escapeHtml(session.id)}" ${session.id === selectedTranscriptSession ? "selected" : ""}>${escapeHtml(session.source)}${session.loaded ? "" : " · load on selection"}</option>`).join("");
   if (!lanes.length) {
     renderLanesError("No projects are registered in FM_HOME/data/projects.md.");
@@ -1514,8 +1514,20 @@ for (const [name, id] of [["lanes", "#mobile-lanes-tab"], ["kinds", "#mobile-kin
   });
 }
 const desktopPanels = { lane: true, kind: true };
-function setDesktopPanelExpanded(which, expanded) {
-  desktopPanels[which] = expanded;
+let keptDesktopPanel = "lane";
+// Panels the user wants open may still render collapsed when the feed would drop below its minimum width.
+function fittedDesktopPanels() {
+  const width = $(".conversation-body")?.clientWidth;
+  return width ? filterView.fitDesktopPanels(width, desktopPanels, keptDesktopPanel) : { ...desktopPanels };
+}
+function applyDesktopPanels() {
+  const fitted = fittedDesktopPanels();
+  setDesktopPanelExpanded("lane", fitted.lane, false);
+  setDesktopPanelExpanded("kind", fitted.kind, false);
+}
+function setDesktopPanelExpanded(which, expanded, remember = true) {
+  if (remember) desktopPanels[which] = expanded;
+  if (remember && expanded) keptDesktopPanel = which;
   const panel = $(which === "lane" ? "#lane-options" : "#conversation-kind-panel");
   const toggle = $(which === "lane" ? "#lane-panel-toggle" : "#kind-panel-toggle");
   const name = which === "lane" ? "Included fleets" : "Message kinds";
@@ -1545,8 +1557,7 @@ function syncConversationFilterLayout() {
   }
   if (!compact) {
     setLaneFiltersExpanded(true);
-    setDesktopPanelExpanded("lane", desktopPanels.lane);
-    setDesktopPanelExpanded("kind", desktopPanels.kind);
+    applyDesktopPanels();
     menu?.setAttribute("open", "");
   } else {
     setLaneFiltersExpanded(false);
@@ -1568,6 +1579,9 @@ function syncConversationFilterLayout() {
 }
 
 function setLaneFiltersExpanded(expanded) {
+  // Wide desktop lays the fleets panel out as a grid column (collapsed via data-collapsed), never hidden:
+  // route changes elsewhere close the compact sheet, and a hidden column would squeeze the feed.
+  if (!(compactChatFilters?.matches ?? true)) expanded = true;
   const toggle = $("#lane-filter-toggle");
   toggle.setAttribute("aria-expanded", String(expanded));
   toggle.setAttribute("aria-label", phoneChatFilters?.matches ? (expanded ? "Close conversation filters" : "Open conversation filters") : (expanded ? "Collapse fleet filters" : "Expand fleet filters"));
@@ -1583,8 +1597,8 @@ function closeOpenPopovers() {
   });
 }
 
-$("#lane-panel-toggle").addEventListener("click", () => setDesktopPanelExpanded("lane", !desktopPanels.lane));
-$("#kind-panel-toggle").addEventListener("click", () => setDesktopPanelExpanded("kind", !desktopPanels.kind));
+$("#lane-panel-toggle").addEventListener("click", () => { setDesktopPanelExpanded("lane", !fittedDesktopPanels().lane); applyDesktopPanels(); });
+$("#kind-panel-toggle").addEventListener("click", () => { setDesktopPanelExpanded("kind", !fittedDesktopPanels().kind); applyDesktopPanels(); });
 $("#lane-filter-toggle").addEventListener("click", () => {
   setLaneFiltersExpanded($("#lane-filter-toggle").getAttribute("aria-expanded") !== "true");
   if (phoneChatFilters?.matches && $("#lane-filter-toggle").getAttribute("aria-expanded") === "true") $(mobileFilterTab === "lanes" ? "#mobile-lanes-tab" : "#mobile-kinds-tab").focus();
@@ -1592,7 +1606,7 @@ $("#lane-filter-toggle").addEventListener("click", () => {
 const laneShortcut = $("#conversation-filter-shortcut");
 let shortcutPreviewTimer;
 function previewLaneShortcut() {
-  if (compactChatFilters?.matches || desktopPanels.lane) return;
+  if (compactChatFilters?.matches || fittedDesktopPanels().lane) return;
   clearTimeout(shortcutPreviewTimer);
   const rect = laneShortcut.getBoundingClientRect();
   const panel = $("#lane-options");
@@ -1623,8 +1637,9 @@ laneShortcut.addEventListener("click", () => {
     setLaneFiltersExpanded(true);
     $("#lane-filter-toggle").focus();
   } else {
-    setDesktopPanelExpanded("lane", !desktopPanels.lane);
-    if (!desktopPanels.lane) previewLaneShortcut();
+    setDesktopPanelExpanded("lane", !fittedDesktopPanels().lane);
+    applyDesktopPanels();
+    if (!fittedDesktopPanels().lane) previewLaneShortcut();
   }
 });
 $("#lane-filter-close").addEventListener("click", () => {
@@ -1673,6 +1688,7 @@ window.matchMedia?.("(max-width: 1200px)").addEventListener?.("change", () => se
 compactChatFilters?.addEventListener?.("change", syncConversationFilterLayout);
 roomyChatHeader?.addEventListener?.("change", syncConversationFilterLayout);
 syncConversationFilterLayout();
+if (window.ResizeObserver && $(".conversation-body")) new ResizeObserver(() => { if (!compactChatFilters?.matches) applyDesktopPanels(); }).observe($(".conversation-body"));
 
 function soloLane(laneId) {
   navigateToLane(laneId);

@@ -14,25 +14,43 @@
 .mobile-sheet { box-sizing: border-box; color: var(--text); background: var(--surface); border: 1px solid var(--line); }
 .mobile-sheet::backdrop { background: #07192399; backdrop-filter: blur(3px); }
 .mobile-dock-review-label { display: none; }
-.review-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.review-header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.review-panel header:has(.review-tabs) > strong { display: none; }
+.review-tabs, #review-phone-thread { display: none; }
 .review-tabs button { padding: 6px 10px; border-color: transparent; background: transparent; color: var(--muted); }
 .review-tabs button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--line); }
+.review-header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: 0 0 auto; }
+/* The title may wrap, but it can never run under Close: it shrinks, the actions do not. */
+.review-panel header > strong { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; padding-right: 4px; }
 .review-note-header { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .review-note-header > strong { flex: 1; min-width: 0; font-size: 12px; line-height: 1.3; }
 .review-thread .review-note-header button { flex: 0 0 auto; margin: 0; padding: 4px 8px; font-size: 11px; min-height: 44px; }
-.review-panel[data-review-tab="review"] #review-message,
-.review-panel[data-review-tab="review"] .review-form-header,
-.review-panel[data-review-tab="review"] .review-shortcuts,
-.review-panel[data-review-tab="review"] #review-target,
-.review-panel[data-review-tab="review"] #review-queue { display: none; }
-.review-panel[data-review-tab="review"] .review-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-#review-thread[hidden], #review-annotation-tools[hidden], .review-pick-notice[hidden] { display: none; }
-#review-annotation-tools { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+.review-pick-notice[hidden] { display: none; }
+.review-section { flex: 0 0 auto; min-width: 0; margin: 8px 0 0; }
+.review-sent > summary, .review-section-head { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 600; cursor: pointer; }
+.review-sent > summary { padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.review-section-head { justify-content: space-between; cursor: default; }
+.review-section-head h3 { margin: 0; font-size: inherit; }
+.review-section-head button { min-height: 44px; flex: 0 0 auto; }
+.review-section-count { display: inline-block; min-width: 1.6em; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; text-align: center; }
+.review-sent[open] > .review-thread { max-height: 32dvh; margin-top: 4px; }
+.review-sent:not([open]) > .review-thread { display: none; }
+.review-queued { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.review-queued > .review-thread { flex: 1 1 auto; }
+.review-sent-list:empty::before { content: "No sent batches yet."; display: block; padding: 8px 4px; color: var(--muted); font-size: 13px; }
+#review-thread:empty::before { content: "Nothing queued."; display: block; padding: 8px 4px; color: var(--muted); font-size: 13px; }
 .review-pick-notice { position: fixed; z-index: 100; top: calc(64px + env(safe-area-inset-top, 0px)); left: 8px; right: 8px; max-width: 560px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border: 1px solid #387c6b; border-radius: 12px; background: #123a40; color: white; box-shadow: 0 4px 20px #0003; font-size: 13px; }
 .review-pick-notice button { min-height: 44px; }
 @media (max-width: 720px) {
+  /* Phone keeps the original Message/Review tabs; the desktop Sent/Queued sections stay out of the sheet. */
+  .review-panel .review-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .review-panel header:has(.review-tabs) > strong { display: none; }
+  .review-panel #review-phone-thread { display: block; }
+  .review-panel #review-phone-thread[hidden], .review-panel .review-sent, .review-panel .review-queued { display: none; }
+  .review-panel[data-review-tab="review"] #review-message,
+  .review-panel[data-review-tab="review"] .review-form-header,
+  .review-panel[data-review-tab="review"] .review-shortcuts,
+  .review-panel[data-review-tab="review"] #review-target,
+  .review-panel[data-review-tab="review"] #review-queue { display: none; }
+  .review-panel[data-review-tab="review"] .review-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace, .workspace:not([data-view="conversations"]), .workspace:has(.uat-deployment-label) { display: block; height: 100dvh; }
   .workspace .lane-list, .workspace[data-shell-panel-collapsed="true"] .lane-list { position: static; height: 0; min-height: 0; padding: 0; border: 0; }
   .workspace .main-stage, .workspace[data-shell-panel-collapsed="true"] .main-stage,
@@ -110,7 +128,7 @@
   .mobile-review-sheet .review-panel { position: static; width: 100%; height: auto; min-height: 0; max-height: inherit; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); border: 0; background: var(--surface); }
   .mobile-review-sheet .review-panel header { padding: 0 0 6px; gap: 4px; border-bottom: 1px solid var(--line); }
   .mobile-review-sheet .review-panel header button { padding: 4px 5px; font-size: 11px; white-space: nowrap; }
-  .mobile-review-sheet #review-annotation-tab, .mobile-review-sheet #review-annotation-tools, .mobile-review-sheet #review-clear-location { display: none; }
+  .mobile-review-sheet #review-annotation-tab, .mobile-review-sheet #review-clear-location { display: none; }
   .mobile-review-sheet .review-tabs { flex: 0 0 auto; gap: 0; }
   .mobile-review-sheet .review-header-actions { flex: 0 1 auto; min-width: 0; gap: 2px; }
   .mobile-review-sheet #review-select-location { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -120,18 +138,16 @@
     .mobile-review-sheet .review-tabs { gap: 0; }
   }
   .mobile-review-sheet #review-context { margin: 4px 0; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .mobile-review-sheet #review-thread { flex: 0 1 auto; max-height: 20dvh; }
-  .mobile-review-sheet #review-thread:empty { display: none; }
-  .mobile-review-sheet [data-review-tab="review"] #review-thread:not([hidden]) { display: block; max-height: min(42dvh, calc(var(--review-vv-height, 100dvh) - 160px)); margin: 4px 0; }
-  .mobile-review-sheet [data-review-tab="review"] #review-thread:empty::before { content: "No queued notes or sent batches yet."; display: block; padding: 16px 4px; color: var(--muted); font-size: 13px; }
+  .mobile-review-sheet #review-phone-thread { flex: 0 1 auto; max-height: 20dvh; }
+  .mobile-review-sheet #review-phone-thread:empty { display: none; }
+  .mobile-review-sheet [data-review-tab="review"] #review-phone-thread:not([hidden]) { display: block; max-height: min(42dvh, calc(var(--review-vv-height, 100dvh) - 160px)); margin: 4px 0; }
+  .mobile-review-sheet [data-review-tab="review"] #review-phone-thread:empty::before { content: "No queued notes or sent batches yet."; display: block; padding: 16px 4px; color: var(--muted); font-size: 13px; }
   .mobile-review-sheet #review-form { flex: 0 1 auto; max-height: none; padding-top: 4px; border: 0; }
   .mobile-review-sheet #review-form-close, .mobile-review-sheet .review-shortcuts, .mobile-review-sheet .review-form-header { display: none; }
   .mobile-review-sheet #review-message { min-height: 64px; max-height: 20dvh; font-size: 16px; border-radius: 10px; padding: 10px; }
   .mobile-review-sheet #review-target { margin: 4px 0 6px; font-size: 11px; max-height: 32px; overflow: auto; }
   .mobile-review-sheet .review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .mobile-review-sheet .review-actions button { min-height: 44px; padding: 4px; font-size: 12px; border-radius: 8px; white-space: nowrap; }
-  .mobile-review-sheet #review-queue { font-size: 0; }
-  .mobile-review-sheet #review-queue::after { content: "Queue"; font-size: 12px; }
   .mobile-review-sheet #review-end { grid-column: auto; background: var(--surface); color: var(--accent); }
   .mobile-review-sheet #review-state { margin: 4px 0 0; font-size: 11px; max-height: 32px; overflow-y: auto; }
   .mobile-review-sheet #review-state:empty { display: none; }
@@ -197,12 +213,14 @@
 @media (min-width: 721px) {
   .workspace { position: relative; grid-template-columns: var(--shell-nav-width, var(--nav-width)) minmax(0, 1fr) var(--rail-width); }
   .workspace:not([data-view="conversations"]) { grid-template-columns: var(--shell-nav-width, var(--nav-width)) minmax(0, 1fr); }
-  #shell-panel-resize:not([hidden]) { position: absolute; z-index: 35; display: block; left: calc(var(--shell-nav-width, var(--nav-width)) - 24px); top: 64px; bottom: 78px; width: 24px; background: transparent; cursor: col-resize; touch-action: none; }
+  #shell-panel-resize:not([hidden]) { position: absolute; z-index: 35; display: block; left: calc(var(--shell-nav-width, var(--nav-width)) - 24px); top: 64px; bottom: 84px; width: 24px; background: transparent; cursor: col-resize; touch-action: none; }
   #shell-panel-resize:not([hidden])::before { content: ""; position: absolute; top: 0; bottom: 0; right: 1px; width: 4px; border-radius: 4px; background: #398779; }
   #shell-panel-resize:not([hidden])::after { content: "‹"; position: absolute; top: 50%; right: 4px; color: #0b7767; font-size: 18px; }
   #shell-panel-resize:not([hidden]):hover::before, #shell-panel-resize:not([hidden]):focus-visible::before { background: #0d9f8a; width: 6px; }
   #shell-panel-resize:not([hidden]):focus-visible { outline: 2px solid #0d9f8a; outline-offset: -2px; }
   .workspace:has(#shell-panel-resize:not([hidden])) .lane-list { padding-right: 24px; }
+  /* Quota cards reclaim the handle gutter; the strip stacks above the handle's hit area but leaves its visible bar clear. */
+  .workspace:has(#shell-panel-resize:not([hidden])) .sidebar-quota { margin-right: -24px; }
   .workspace[data-shell-panel-collapsed="true"] #shell-panel-resize:not([hidden]) { left: 0; cursor: pointer; }
   .workspace[data-shell-panel-collapsed="true"] #shell-panel-resize:not([hidden])::before { left: 1px; right: auto; }
   .workspace[data-shell-panel-collapsed="true"] #shell-panel-resize:not([hidden])::after { content: "›"; left: 7px; right: auto; }

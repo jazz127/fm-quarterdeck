@@ -22,6 +22,13 @@ jobs:
       - name: Install locked application package
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: prototype
+      - name: Select browser for all behavioral checks
+        run: |
+          # npm test also launches browsers; select stable Chrome before either suite.
+          CHROMIUM="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROMIUM"
+          "$CHROMIUM" --version
+          echo "CHROMIUM=$CHROMIUM" >> "$GITHUB_ENV"
       - name: Node 24 behavior suites
         run: npm test
         working-directory: prototype
@@ -33,10 +40,5 @@ jobs:
           python3 scripts/check-source-syntax.py
           python3 scripts/check-product-boundary.py
       - name: Chromium reload, retry, history and layout gate
-        run: |
-          # Prefer the runner's stable Chrome over its development Chromium snapshot.
-          export CHROMIUM="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
-          test -n "$CHROMIUM"
-          "$CHROMIUM" --version
-          npm run test:browser
+        run: npm run test:browser
         working-directory: prototype

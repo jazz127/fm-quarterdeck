@@ -40,6 +40,12 @@ window.filterView = (() => {
     return raw.slice(0, 4);
   }
 
+  function laneRailLabel(name, max = 14) {
+    const raw = String(name || "").trim();
+    if (!raw) return "?";
+    return raw.length > max ? raw.slice(0, max - 1) + "\u2026" : raw;
+  }
+
   function laneOptionHtml(lane, checked, escapeHtml, stateLabel) {
     return `<label class="lane-option${checked ? " is-selected" : ""}${lane.id === "general" ? " pinned" : ""}" data-lane-id="${escapeHtml(lane.id)}">
     <input type="checkbox" data-filter-lane="${escapeHtml(lane.id)}" ${checked ? "checked" : ""}>
@@ -71,9 +77,9 @@ window.filterView = (() => {
   function collapsedRailHtml(lanes, checkedIds, escapeHtml, all = lanes.length > 0 && lanes.every((lane) => checkedIds.has(lane.id))) {
     const pinned = `<button type="button" class="lane-rail-item lane-rail-all" data-filter-all="true" aria-label="Select all live fleets" aria-pressed="${all}"${lanes.length ? "" : " disabled"}><span>All</span></button>`;
     return pinned + lanes.map((lane) => {
-      const short = escapeHtml(laneShortName(lane.name));
+      const short = escapeHtml(laneRailLabel(lane.name));
       const selected = checkedIds.has(lane.id);
-      return `<button type="button" class="lane-rail-item${selected ? " is-selected" : ""}" data-lane-id="${escapeHtml(lane.id)}" aria-pressed="${selected}" aria-label="${escapeHtml(lane.name)} · solo fleet" title="${escapeHtml(lane.name)} · tap to solo"><svg class="lane-rail-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v5a4 4 0 0 0 4 4h5"/></svg><span aria-hidden="true">${short}</span></button>`;
+      return `<button type="button" class="lane-rail-item${selected ? " is-selected" : ""}" data-lane-id="${escapeHtml(lane.id)}" aria-pressed="${selected}" aria-label="${escapeHtml(lane.name)} · solo fleet" title="${escapeHtml(lane.name)} · tap to solo"><span class="lane-rail-label" aria-hidden="true">${short}</span></button>`;
     }).join("");
   }
 
@@ -100,12 +106,27 @@ window.filterView = (() => {
     return { statusFilter: nextStatus };
   }
 
+  // Desktop panel widths mirror the conversation-body grid in styles.css.
+  const PANEL_WIDTHS = { lane: [215, 52], kind: [205, 44] };
+  const MIN_FEED_WIDTH = 480;
+  // Which desktop side panels may stay expanded so the feed keeps MIN_FEED_WIDTH.
+  // The other panel yields before `keep` (the one the user last expanded, fleets by default); user choice only narrows.
+  function fitDesktopPanels(bodyWidth, wanted, keep = "lane") {
+    const open = { lane: Boolean(wanted.lane), kind: Boolean(wanted.kind) };
+    const fits = () => bodyWidth - PANEL_WIDTHS.lane[open.lane ? 0 : 1] - PANEL_WIDTHS.kind[open.kind ? 0 : 1] >= MIN_FEED_WIDTH;
+    for (const which of keep === "kind" ? ["lane", "kind"] : ["kind", "lane"]) if (!fits()) open[which] = false;
+    return open;
+  }
+
   return {
+    fitDesktopPanels,
+    MIN_FEED_WIDTH,
     kindGlyph,
     kindFiltersHtml,
     syncKindsBulk,
     renderKindFilters,
     laneShortName,
+    laneRailLabel,
     laneOptionHtml,
     laneFiltersHtml,
     statusOptionsHtml,

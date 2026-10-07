@@ -17,12 +17,29 @@ async function fixture(t) {
 const turn = (role, content, timestamp = "2026-01-01T00:00:00Z") => ({ type: "message", timestamp, message: { role, content } });
 const jsonl = (records) => records.map(JSON.stringify).join("\n");
 
-test("oversized transcript and legacy status fail explicitly instead of assembling unbounded history", async (t) => {
+test("an oversized transcript loads its newest whole records with a coverage warning; legacy status still fails", async (t) => {
   const home = await fixture(t);
   const file = path.join(home, "state/branch-session/large.jsonl");
-  await writeFile(file, jsonl([turn("assistant", "Alpha " + "x".repeat(2048))]));
-  await assert.rejects(loadFirstmateHome(home, { reader: createHistoryReader({ maxFileBytes: 1024 }) }), /history exceeds safe read limits/i);
+  const records = Array.from({ length: 40 }, (_, i) => turn("assistant", `Alpha record ${i} ${"x".repeat(80)}`, `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`));
+  await writeFile(file, jsonl(records) + "\n");
+  await writeFile(path.join(home, "state/.branch-session"), file);
+  const reader = () => createHistoryReader({ maxFileBytes: 1024, maxLineBytes: 512 });
+  const data = await loadFirstmateHome(home, { reader: reader() });
+  const texts = data.lanes[0].messages.map((m) => m.text);
+  assert.ok(texts.includes("Alpha record 39 " + "x".repeat(80)), "newest record is shown");
+  assert.equal(texts.some((text) => text.startsWith("Alpha record 0 ")), false, "older history is not loaded");
+  assert.ok(texts.length > 0 && texts.length < 40);
+  const session = data.transcript.sessions.find((s) => s.id === "state/branch-session/large.jsonl");
+  assert.ok(session.loaded && session.omittedBytes > 0 && session.skippedRecords === 0, "the partial leading record is dropped, not counted or parsed");
+  assert.ok(data.transcript.warnings.some((w) => /large\.jsonl.*only its newest .*older history in this source is not shown/.test(w)));
+  // Appending moves the window forward without renaming records already shown.
+  await writeFile(file, jsonl([...records, turn("assistant", "Alpha appended", "2026-01-01T00:01:00Z")]) + "\n");
+  const later = await loadFirstmateHome(home, { reader: reader() });
+  const id = (snapshot) => snapshot.lanes[0].messages.find((m) => m.text.startsWith("Alpha record 39 ")).recordId;
+  assert.equal(id(later), id(data));
+  assert.ok(later.lanes[0].messages.some((m) => m.text === "Alpha appended"));
   await rm(file);
+  await rm(path.join(home, "state/.branch-session"));
   await writeFile(path.join(home, "state/old.meta"), "project=Alpha\n");
   await writeFile(path.join(home, "state/old.status"), "working: " + "x".repeat(2048));
   await assert.rejects(loadFirstmateHome(home, { reader: createHistoryReader({ maxFileBytes: 1024 }) }), /history exceeds safe read limits/i);
@@ -219,4 +236,144 @@ test("fleet notes use the durable ledger, real epoch, project routing and no sil
   assert.equal(notes[0].occurredAt, new Date(1700000000000).toISOString());
   assert.ok(notes.every((m) => m.kind === "supervision"));
   assert.equal(data.transcript.outcomeSources.length, 2);
+});
+
+test("oversized sources share the request budget: newest active windows load, a starved source is reported unloaded", async (t) => {
+  const home = await fixture(t);
+  for (const [n, day] of [["a", 1], ["b", 2], ["c", 3]]) {
+    const file = path.join(home, "state/branch-session", `${n}.jsonl`);
+    await writeFile(file, jsonl(Array.from({ length: 30 }, (_, i) => turn("assistant", `Alpha ${n} ${i} ${"x".repeat(80)}`))) + "\n");
+    await utimes(file, new Date(`2026-01-0${day}T00:00:00Z`), new Date(`2026-01-0${day}T00:00:00Z`));
+  }
+  await writeFile(path.join(home, "state/.branch-session"), path.join(home, "state/branch-session/a.jsonl"));
+  const data = await loadFirstmateHome(home, { reader: createHistoryReader({ maxFileBytes: 1024, maxLineBytes: 512, maxTotalBytes: 2600, windowReserveBytes: 400 }) });
+  const loaded = Object.fromEntries(data.transcript.sessions.map((s) => [s.id.split("/").at(-1), s.loaded]));
+  assert.deepEqual(loaded, { "a.jsonl": true, "b.jsonl": false, "c.jsonl": true }, "active pointer and newest file win the budget");
+  assert.ok(data.transcript.warnings.some((w) => /b\.jsonl was not loaded: this request's read budget/.test(w)));
+  const deepLink = await loadFirstmateHome(home, { diskIds: ["state/branch-session/b.jsonl"], reader: createHistoryReader({ maxFileBytes: 1024, maxLineBytes: 512, maxTotalBytes: 2600, windowReserveBytes: 400 }) });
+  assert.ok(deepLink.lanes[0].messages.some((m) => m.text.startsWith("Alpha b 29 ")), "an explicit selection is read first");
+});
+
+const claudeHome = async (t, home) => {
+  const config = await mkdtemp(path.join(os.tmpdir(), "fm-claude-config-"));
+  t.after(() => rm(config, { recursive: true, force: true }));
+  const directory = path.join(config, "projects", home.replace(/[^a-zA-Z0-9]/g, "-"));
+  await mkdir(directory, { recursive: true });
+  return { config, directory };
+};
+const claudeRecord = (type, content, extra = {}) => ({ type, timestamp: "2026-10-06T12:00:00Z", sessionId: "primary", cwd: "/home", message: { role: type, content }, ...extra });
+
+test("Claude Code primary transcript maps dialogue, tools and harness for this home only", async (t) => {
+  const home = await fixture(t);
+  const { config, directory } = await claudeHome(t, home);
+  const primary = "11111111-2222-3333-4444-555555555555";
+  await writeFile(path.join(home, "state/.lock-session"), `${primary}\n`);
+  const at = (second) => ({ timestamp: `2026-10-06T12:00:${String(second).padStart(2, "0")}Z` });
+  await writeFile(path.join(directory, `${primary}.jsonl`), jsonl([
+    { type: "last-prompt", leafUuid: "x", sessionId: primary },
+    { type: "permission-mode", permissionMode: "auto", sessionId: primary },
+    claudeRecord("user", "Alpha captain asks for status", { ...at(1), origin: { kind: "human" } }),
+    claudeRecord("assistant", [{ type: "thinking", thinking: "", signature: "redacted" }], at(2)),
+    claudeRecord("assistant", [{ type: "thinking", thinking: "Alpha native thought" }], at(3)),
+    claudeRecord("assistant", [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } }], at(4)),
+    claudeRecord("user", [{ type: "tool_result", tool_use_id: "tool-1", content: "Alpha tool output" }], at(5)),
+    claudeRecord("assistant", [{ type: "text", text: "[fm-lane Alpha]\nAlpha reply in a lane block\n[end Alpha]" }], at(6)),
+    { type: "attachment", ...at(7), attachment: { type: "hook_success", content: "Alpha hook noise" } },
+    { type: "attachment", ...at(8), attachment: { type: "queued_command", prompt: "Alpha queued captain prompt", commandMode: "prompt", origin: { kind: "human" } } },
+    { type: "attachment", ...at(8), attachment: { type: "queued_command", prompt: "<task-notification>Alpha queued wake</task-notification>", origin: { kind: "task-notification" } } },
+    claudeRecord("user", "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n<system-reminder>\nAlpha stop hook wake\n</system-reminder>", { ...at(9), origin: { kind: "task-notification" } }),
+    claudeRecord("user", "<task-notification>\n<summary>Alpha background agent finished</summary>\n</task-notification>", { ...at(10), origin: { kind: "task-notification" } }),
+    claudeRecord("user", "Base directory for this skill: Alpha skill dump", { ...at(11), isMeta: true }),
+    claudeRecord("user", "Alpha compaction summary", { ...at(12), isCompactSummary: true }),
+    claudeRecord("user", "<command-name>/quiet</command-name>\n<command-message>quiet</command-message>\n<command-args>Alpha</command-args>", at(13)),
+    claudeRecord("user", "<local-command-stdout>Alpha command output</local-command-stdout>", at(14)),
+    claudeRecord("user", [{ type: "text", text: "[Request interrupted by user]" }], at(15)),
+    claudeRecord("user", "Alpha captain with reminder<system-reminder>hidden Alpha reminder</system-reminder>", { ...at(16), origin: { kind: "human" } }),
+    claudeRecord("user", "FIRSTMATE_OP: Alpha envelope", { ...at(17), origin: { kind: "human" } }),
+    claudeRecord("assistant", [{ type: "text", text: "Alpha sidechain" }], { ...at(18), isSidechain: true }),
+    { type: "system", subtype: "turn_duration", ...at(19) },
+  ]) + "\n");
+  await writeFile(path.join(directory, "other-newer.jsonl"), jsonl([claudeRecord("user", "Alpha must not load from a non-primary session", { origin: { kind: "human" } })]));
+  const sibling = path.join(config, "projects", `${home.replace(/[^a-zA-Z0-9]/g, "-")}-other`);
+  await mkdir(sibling);
+  await writeFile(path.join(sibling, `${primary}.jsonl`), jsonl([claudeRecord("user", "Alpha other home must not leak", { origin: { kind: "human" } })]));
+
+  assert.equal((await loadFirstmateHome(home)).transcript.sessions.length, 0, "no Claude config directory, no Claude source");
+  const data = await loadFirstmateHome(home, { claudeConfigDir: config });
+  const messages = [...new Map(data.lanes.flatMap((lane) => lane.messages).filter((m) => m.transcriptOrigin === "main Claude").map((m) => [m.recordId, m])).values()];
+  const byText = (text) => messages.find((m) => m.text === text);
+  assert.deepEqual(data.transcript.sessions.map((s) => [s.id, s.loaded]), [[`claude-main-session/${primary}.jsonl`, true]]);
+  assert.equal(byText("Alpha captain asks for status").role, "captain");
+  assert.equal(byText("Alpha queued captain prompt").role, "captain");
+  assert.equal(byText("/quiet Alpha").role, "captain");
+  assert.equal(byText("Alpha captain with reminder").role, "captain");
+  assert.equal(byText("Alpha native thought").kind, "thinking");
+  assert.equal(messages.filter((m) => m.kind === "thinking").length, 1, "redacted thinking is never shown or invented");
+  assert.equal(byText("Bash\n{\n  \"command\": \"ls\"\n}").kind, "tools");
+  assert.deepEqual([byText("Alpha tool output").kind, byText("Alpha tool output").author], ["tools", "Bash"]);
+  const laneReply = messages.find((m) => m.text.includes("Alpha reply in a lane block"));
+  assert.deepEqual([laneReply.kind, laneReply.author, laneReply.role], ["conversation", "Firstmate", "firstmate"], "lane blocks route as Firstmate replies");
+  for (const text of ["<task-notification>\n<summary>Alpha background agent finished</summary>\n</task-notification>", "Alpha command output", "[Request interrupted by user]"]) {
+    assert.equal(byText(text)?.kind, "harness", text);
+  }
+  const serialized = JSON.stringify(data);
+  for (const hidden of ["hook noise", "queued wake", "stop hook wake", "skill dump", "compaction summary", "hidden Alpha reminder", "Alpha envelope", "Alpha sidechain", "non-primary", "other home", config]) {
+    assert.equal(serialized.includes(hidden), false, hidden);
+  }
+  assert.equal(messages.length, 11);
+  assert.ok(messages.every((m) => m.recordId.startsWith(`claude-main-session/${primary}.jsonl@`)));
+  assert.equal(new Set(messages.map((m) => m.recordId)).size, messages.length);
+  assert.match(data.transcript.note, /Claude Code primary session included\./);
+});
+
+test("Claude Code primary is inferred from the newest non-wake session and never followed through symlinks", async (t) => {
+  const home = await fixture(t);
+  const { config, directory } = await claudeHome(t, home);
+  const write = async (name, records, day) => {
+    const file = path.join(directory, name);
+    await writeFile(file, jsonl(records));
+    await utimes(file, new Date(`2026-10-0${day}T00:00:00Z`), new Date(`2026-10-0${day}T00:00:00Z`));
+  };
+  await write("old-primary.jsonl", [claudeRecord("user", "Alpha older primary", { origin: { kind: "human" } })], 1);
+  await write("primary.jsonl", [{ type: "last-prompt", leafUuid: "x" }, claudeRecord("user", "Alpha inferred primary", { origin: { kind: "human" } })], 2);
+  await write("secondary.jsonl", [{ type: "queue-operation", operation: "enqueue", content: "MAIN DIALOG MIRROR (read-only context)" }, claudeRecord("user", "Alpha secondary wake")], 3);
+  await write("wake.jsonl", [{ type: "queue-operation", operation: "enqueue", content: "FIRSTMATE SUPERVISION WAKE: check" }, claudeRecord("user", "Alpha wake session")], 4);
+  const data = await loadFirstmateHome(home, { claudeConfigDir: config });
+  const texts = data.lanes[0].messages.map((m) => m.text);
+  assert.deepEqual(texts, ["Alpha inferred primary"]);
+  assert.match(data.transcript.note, /inferred as the newest non-wake session/);
+
+  await writeFile(path.join(home, "state/.lock-session"), "../escape\n");
+  const invalid = await loadFirstmateHome(home, { claudeConfigDir: config });
+  assert.ok(invalid.transcript.warnings.some((w) => /state\/\.lock-session names no Claude Code transcript/.test(w)));
+  assert.deepEqual(invalid.lanes[0].messages.map((m) => m.text), ["Alpha inferred primary"]);
+
+  const outside = await mkdtemp(path.join(os.tmpdir(), "fm-claude-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(path.join(outside, "linked.jsonl"), jsonl([claudeRecord("user", "Alpha linked outside", { origin: { kind: "human" } })]));
+  await symlink(path.join(outside, "linked.jsonl"), path.join(directory, "linked.jsonl"));
+  await writeFile(path.join(home, "state/.lock-session"), "linked\n");
+  const linked = await loadFirstmateHome(home, { claudeConfigDir: config });
+  assert.equal(JSON.stringify(linked).includes("linked outside"), false, "a symlinked session file is not followed");
+
+  const linkedConfig = await mkdtemp(path.join(os.tmpdir(), "fm-claude-linked-config-"));
+  t.after(() => rm(linkedConfig, { recursive: true, force: true }));
+  await mkdir(path.join(linkedConfig, "projects"));
+  await symlink(directory, path.join(linkedConfig, "projects", home.replace(/[^a-zA-Z0-9]/g, "-")));
+  const linkedDirectory = await loadFirstmateHome(home, { claudeConfigDir: linkedConfig });
+  assert.equal(linkedDirectory.lanes[0].messages.length, 0);
+  assert.ok(linkedDirectory.transcript.warnings.some((w) => /project directory for this home is a symlink/.test(w)));
+});
+
+test("an oversized Claude Code primary keeps the view online with its newest records", async (t) => {
+  const home = await fixture(t);
+  const { config, directory } = await claudeHome(t, home);
+  await writeFile(path.join(home, "state/.lock-session"), "big\n");
+  await writeFile(path.join(directory, "big.jsonl"), jsonl(Array.from({ length: 60 }, (_, i) =>
+    claudeRecord("assistant", [{ type: "text", text: `Alpha claude reply ${i} ${"y".repeat(60)}` }], { timestamp: `2026-10-06T12:${String(i).padStart(2, "0")}:00Z` }))) + "\n");
+  const data = await loadFirstmateHome(home, { claudeConfigDir: config, reader: createHistoryReader({ maxFileBytes: 2048, maxLineBytes: 1024 }) });
+  const texts = data.lanes[0].messages.map((m) => m.text);
+  assert.ok(texts.at(-1).startsWith("Alpha claude reply 59 "));
+  assert.equal(texts.some((text) => text.startsWith("Alpha claude reply 0 ")), false);
+  assert.ok(data.transcript.warnings.some((w) => /claude-main-session\/big\.jsonl.*older history in this source is not shown/.test(w)));
 });

@@ -1,8 +1,11 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHistoryReader } from "./history-reader.js";
+import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
 
 const MIRROR_MATCH_WINDOW_MS = 60_000;
+const NATIVE_MAIN = new Set(["main Pi", "main Claude"]);
+const mebibytes = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 
 function turnIdentity(message) {
   return `${message.role}\u0000${message.kind}\u0000${message.text}`;
@@ -14,7 +17,7 @@ function turnIdentity(message) {
 function deduplicateMirroredTurns(messages) {
   const nativeByIdentity = new Map();
   for (const message of messages) {
-    if (message.transcriptOrigin !== "main Pi") continue;
+    if (!NATIVE_MAIN.has(message.transcriptOrigin)) continue;
     const identity = turnIdentity(message);
     if (!nativeByIdentity.has(identity)) nativeByIdentity.set(identity, []);
     nativeByIdentity.get(identity).push(message.timestamp.valueOf());
@@ -39,8 +42,10 @@ function deduplicateMirroredTurns(messages) {
 }
 
 // External Pi discovery is limited to the cursor's home-encoded directory AND
-// session headers whose cwd matches this home. Never scan other session homes.
-export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader() } = {}) {
+// session headers whose cwd matches this home. Claude Code discovery is limited
+// to this home's encoded project directory under claudeConfigDir. Never scan
+// other session homes.
+export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null } = {}) {
   const readFile = reader.text;
   const root = await realpath(home);
   const files = new Map();
@@ -112,6 +117,8 @@ export async function readConversationTranscript(home, publicMessage, { selected
       await add(path.resolve(root, target), pointer);
     }
   }
+  const claudePrimary = await findClaudePrimary(root, claudeConfigDir, reader, warnings);
+  if (claudePrimary) files.set(claudePrimary.file, `claude-main-session/${path.basename(claudePrimary.file)}`);
   // Stat before parsing: a default request reads only the live cursor(s) and the
   // two newest disk sessions. Explicit selections/older pages are bounded too.
   const inventory = await Promise.all([...files].map(async ([file, source]) => ({ file, source, changed: (await stat(file)).mtimeMs })));
@@ -124,65 +131,88 @@ export async function readConversationTranscript(home, publicMessage, { selected
       if (typeof target === "string") active.add(path.resolve(root, target));
     } catch (error) { if (error.code !== "ENOENT") warnings.push(`${pointer} cannot identify an active transcript.`); }
   }
+  if (claudePrimary) active.add(claudePrimary.file);
   const requested = new Set(selectedIds.slice(0, 60));
   const visible = new Set(inventory.slice(0, 2 + Math.min(older, 20) * 2).map(({ source }) => source));
   for (const entry of inventory) if (active.has(entry.file) || requested.has(entry.source)) visible.add(entry.source);
   const messages = [];
   const sessions = inventory.map(({ source, changed }) => ({ id: source, source, updatedAt: new Date(changed).toISOString(), loaded: visible.has(source), messageCount: null, skippedRecords: 0, startedAt: null }));
-  for (const { file, source } of inventory.filter(({ source }) => visible.has(source))) {
-    const session = { id: source, source, messageCount: 0, skippedRecords: 0, startedAt: null, updatedAt: null };
+  // Requested, then active, then recent: each oversized source gets its newest
+  // records within the request budget, so one large file cannot starve the rest.
+  const rank = ({ file, source }) => requested.has(source) ? 0 : active.has(file) ? 1 : 2;
+  const loadOrder = inventory.filter(({ source }) => visible.has(source)).sort((a, b) => rank(a) - rank(b));
+  for (const { file, source } of loadOrder) {
+    const session = { id: source, source, messageCount: 0, skippedRecords: 0, startedAt: null, updatedAt: null, omittedBytes: 0 };
+    const window = await reader.recent(file);
+    if (!window) {
+      Object.assign(sessions.find((entry) => entry.source === source), { loaded: false });
+      warnings.push(`${source} was not loaded: this request's read budget went to other sources; select it on its own.`);
+      continue;
+    }
+    if (window.omittedBytes) {
+      session.omittedBytes = window.omittedBytes;
+      warnings.push(`${source} is ${mebibytes(window.totalBytes)}; only its newest ${mebibytes(window.totalBytes - window.omittedBytes)} of whole records loaded, so older history in this source is not shown.`);
+    }
+    const claude = source.startsWith("claude-main-session/");
+    // Line numbers are unknown once a window starts mid-file, so windowed and
+    // Claude records are identified by stable byte offset instead.
+    const byOffset = claude || window.omittedBytes > 0;
+    const toolNames = new Map();
     let lineIndex = 0;
-    const lines = reader.lines(file);
-    for await (const line of lines) {
+    for await (const { line, offset } of window.lines) {
       lineIndex += 1;
       if (!line.trim()) continue;
       let record;
       try { record = JSON.parse(line); } catch { session.skippedRecords += 1; continue; }
-      let role;
-      let content;
-      let recordKind = null;
-      let origin = source.startsWith("state/branch-session/") ? "branch" : source.startsWith("main-pi-session/") ? "main Pi" : "session";
-      if (record.type === "custom_message" && record.customType === "fm-main-mirror" && typeof record.content === "string") {
+      let origin = source.startsWith("state/branch-session/") ? "branch" : source.startsWith("main-pi-session/") ? "main Pi" : claude ? "main Claude" : "session";
+      let turns;
+      if (claude) turns = claudeTurns(record, toolNames);
+      else if (record.type === "custom_message" && record.customType === "fm-main-mirror" && typeof record.content === "string") {
         const mirror = record.content.match(/^\[(captain|main)\]\s*([\s\S]*)$/);
         if (!mirror) continue;
-        role = mirror[1] === "captain" ? "user" : "assistant";
-        content = mirror[2];
+        turns = [{ role: mirror[1] === "captain" ? "user" : "assistant", content: mirror[2] }];
         origin = "main mirror";
       } else if (record.type === "custom_message" && record.display === true && typeof record.content === "string") {
         if (/^\W*FIRSTMATE_OP:/.test(record.content)) continue;
-        role = "assistant";
-        content = record.content;
-        recordKind = record.customType === "fm-branch-merge" ? "supervision" : "harness";
+        turns = [{ role: "assistant", content: record.content, recordKind: record.customType === "fm-branch-merge" ? "supervision" : "harness" }];
       } else if (record.type === "message" && ["user", "assistant", "toolResult", "bashExecution"].includes(record.message?.role)) {
-        role = record.message.role;
-        content = role === "bashExecution" ? `${record.message.command || ""}\n${record.message.output || ""}` : record.message.content;
-        if (["toolResult", "bashExecution"].includes(role)) recordKind = "tools";
+        const role = record.message.role;
+        turns = [{ role, content: role === "bashExecution" ? `${record.message.command || ""}\n${record.message.output || ""}` : record.message.content,
+          recordKind: ["toolResult", "bashExecution"].includes(role) ? "tools" : null, author: role === "toolResult" ? record.message.toolName : null }];
       } else continue;
-      if (origin === "branch" && role === "assistant" && !recordKind) recordKind = "branch";
+      if (!turns.length) continue;
       const timestamp = new Date(record.timestamp ?? record.message?.timestamp);
       if (Number.isNaN(timestamp.valueOf())) { session.skippedRecords += 1; continue; }
-      const parts = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
-      for (const [partIndex, part] of parts.entries()) {
-        const thinking = role === "assistant" && part.type === "thinking";
-        const toolCall = part.type === "toolCall";
-        const text = thinking ? part.thinking : toolCall ? `${part.name || "Tool"}\n${JSON.stringify(part.arguments ?? {}, null, 2)}` : part.type === "text" ? part.text : part.type === "image" ? "[Image attachment stored in transcript; image rendering is not supported here.]" : "";
-        if (typeof text !== "string" || !text.trim()) continue;
-        // Remove only machine envelopes, not arbitrary ordinary user turns.
-        if (role === "user" && (/^\W*FIRSTMATE_OP:/.test(text) || /^FIRSTMATE SUPERVISION WAKE:/.test(text) || /^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/.test(text))) continue;
-        reader.takeMessage();
-        messages.push({ ...publicMessage({
-          author: recordKind === "supervision" ? "Fleet" : role === "user" ? "Captain" : role === "toolResult" ? record.message.toolName || "Tool" : origin === "branch" ? "Firstmate (branch)" : "Firstmate", role: role === "user" ? "captain" : "firstmate",
-          source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex,
-          state: role === "user" ? "captain" : thinking ? "thinking" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : recordKind || "conversation",
-        }), transcriptSessionId: source, transcriptOrigin: origin, recordId: `${source}:${lineIndex}:${partIndex}` });
-        session.messageCount += 1;
-        const iso = timestamp.toISOString();
-        if (!session.startedAt || iso < session.startedAt) session.startedAt = iso;
-        if (!session.updatedAt || iso > session.updatedAt) session.updatedAt = iso;
+      let partIndex = -1;
+      for (const turn of turns) {
+        const { role } = turn;
+        const recordKind = turn.recordKind || (origin === "branch" && role === "assistant" ? "branch" : null);
+        const content = turn.content;
+        const parts = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
+        for (const part of parts) {
+          partIndex += 1;
+          const thinking = role === "assistant" && part.type === "thinking";
+          const toolCall = part.type === "toolCall";
+          const text = thinking ? part.thinking : toolCall ? `${part.name || "Tool"}\n${JSON.stringify(part.arguments ?? {}, null, 2)}` : part.type === "text" ? part.text : part.type === "image" ? "[Image attachment stored in transcript; image rendering is not supported here.]" : "";
+          if (typeof text !== "string" || !text.trim()) continue;
+          // Remove only machine envelopes, not arbitrary ordinary user turns.
+          if (role === "user" && (/^\W*FIRSTMATE_OP:/.test(text) || /^FIRSTMATE SUPERVISION WAKE:/.test(text) || /^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/.test(text))) continue;
+          reader.takeMessage();
+          messages.push({ ...publicMessage({
+            author: recordKind === "supervision" ? "Fleet" : role === "user" ? "Captain" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: role === "user" ? "captain" : "firstmate",
+            source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex,
+            state: role === "user" ? "captain" : thinking ? "thinking" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : recordKind || "conversation",
+          }), transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });
+          session.messageCount += 1;
+          const iso = timestamp.toISOString();
+          if (!session.startedAt || iso < session.startedAt) session.startedAt = iso;
+          if (!session.updatedAt || iso > session.updatedAt) session.updatedAt = iso;
+        }
       }
     }
     Object.assign(sessions.find((entry) => entry.source === source), session, { loaded: true });
   }
-  const mainNote = mainPiSessions ? "Main Pi transcripts included; matching branch mirrors are deduplicated." : "Main Pi transcript not sourced: only available in-home sessions and partial main mirrors are shown. Configure the home’s state/.branch-mirror-cursor or mirror main JSONL into state/main-session/.";
-  return { messages: deduplicateMirroredTurns(messages), coverage: { sessions, warnings, note: `${mainNote} Only the active and recent disk sessions are loaded by default; older sessions remain available on demand; filters apply (General excludes complete, valid project-lane blocks). Thinking is native transcript content, never generated for this UI. Pure operational envelopes are hidden. Images are labeled, not rendered; pane lines never persisted cannot be recovered.` } };
+  const claudeNote = claudePrimary ? `Claude Code primary session included${claudePrimary.inferred ? " (inferred as the newest non-wake session; state/.lock-session names none)" : ""}. ` : "";
+  const mainNote = claudeNote + (mainPiSessions ? "Main Pi transcripts included; matching branch mirrors are deduplicated." : claudePrimary ? "Main Pi transcript not sourced." : "Main Pi transcript not sourced: only available in-home sessions and partial main mirrors are shown. Configure the home’s state/.branch-mirror-cursor or mirror main JSONL into state/main-session/.");
+  return { messages: deduplicateMirroredTurns(messages), coverage: { sessions, warnings, note: `${mainNote} Only the active and recent disk sessions are loaded by default, each up to its newest 8 MiB of whole records; older sessions remain available on demand; filters apply (General excludes complete, valid project-lane blocks). Thinking is native transcript content, never generated for this UI. Pure operational envelopes are hidden. Images are labeled, not rendered; pane lines never persisted cannot be recovered.` } };
 }

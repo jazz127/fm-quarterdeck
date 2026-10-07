@@ -1,12 +1,13 @@
 # Durable transcript coverage
 
-`transcript.js` (Pi sessions) and `supervision.js` (fleet outcomes) are read-only adapters. No pane scraping, thinking generation, prompt changes or extra mirror traffic is required.
+`transcript.js` (Pi sessions), `claude-transcript.js` (the Claude Code primary session) and `supervision.js` (fleet outcomes) are read-only adapters. No pane scraping, thinking generation, prompt changes or extra mirror traffic is required.
 
 ## Sources and confinement
 
 - Metadata inventories cover `FM_HOME/state/branch-session/*.jsonl` and optional `state/main-session/*.jsonl`.
 - `state/.branch-session` and optional `.main-session` point to JSONL inside the same real home. Duplicate paths load once.
 - `state/.branch-mirror-cursor` contains `{file,index}`. The writer cursor index is not a read-history limit. An external main Pi directory is allowed only when its basename encodes the exact selected home (synthetic example: `--synthetic-home--` for `/synthetic/home`), with no directory symlink. Each regular JSONL file must have a first session record whose `cwd` equals the real selected home. Other homes are never scanned. Browser labels use `main-pi-session/<filename>`, not the absolute path.
+- A Claude Code primary is read from `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<home with every non-alphanumeric character replaced by "-">/`, never another directory. The session id in `state/.lock-session` selects `<id>.jsonl`; without a valid sidecar the newest file whose first record is not a queued Firstmate wake/mirror envelope is used and the note says it was inferred. Symlinked directories or files are not followed. Browser labels use `claude-main-session/<filename>`. Captain prompts (including queued prompts and slash commands), assistant text and native non-empty thinking map to the shared model; tool calls/results are tools; hook/background notifications, local command output and interrupts are harness; meta/skill bodies, compaction summaries, sidechains, system-reminder text, Stop-hook wakes and attachments other than queued captain prompts are omitted.
 - `state/branch-outcomes.jsonl` non-silent `{seq,task,summary,verdict,epoch}` records become fleet notes with recorded epoch time. Optional `terminal-outcomes.jsonl` also supports `task_id` and `created_epoch`. Notes go to General and the metadata-owned project lane. The ledger wins over duplicate displayed merge notices.
 - Captain notes, task status, task inbox and outbox remain separate sources. Task inboxes are internal steers, not captain chat. Presentation receipts are not original dialogue.
 
@@ -14,7 +15,7 @@ Missing, invalid or unavailable main sources produce explicit gap notes, never r
 
 ## Bounded display contract
 
-The [source window](SESSION-WINDOW.md) loads active/recent sources initially, with older metadata and explicit bounded loads. Within selected sources, full records are read line-by-line without per-kind/status-line caps. Invalid JSON and undated conversation records are counted as coverage limits rather than assigned invented clocks. The client renders at most 200 records per page and distinguishes loaded records from the current page.
+The [source window](SESSION-WINDOW.md) loads active/recent sources initially, with older metadata and explicit bounded loads. Within selected sources, records are read line-by-line without per-kind/status-line caps. A source larger than the window loads only its newest whole records (the partial leading record is dropped) and the coverage lists a warning that older history in that source is not shown; windowed and Claude records use byte-offset record IDs so appends keep IDs stable. Invalid JSON and undated conversation records are counted as coverage limits rather than assigned invented clocks. The client renders at most 200 records per page and distinguishes loaded records from the current page.
 
 Complete standalone `[fm-lane <registered project>]` / `[end <same project>]` blocks route exclusively to that project before legacy name matching. Multiple valid blocks separated by blank lines project independently with distinct derived record IDs; original Pi text is unchanged. Public product aliases `Quarterdeck` / `Quarterdeck` and `Lavish` resolve to `fm-quarterdeck` and `lavish-axi`. Explicit General stays only in General. General receives no project-block copy. Unknown/malformed/unmarked envelopes use legacy ownership/name matching, which is not perfect contextual attribution. Lane, task and disk-session filters intersect.
 
