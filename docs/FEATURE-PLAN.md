@@ -6,7 +6,7 @@ This roadmap describes product contracts, not an installation's branch history o
 
 - **Conversation workspace:** lane and message-kind filtering, explicit product aliases, safe Markdown/raw rendering, debounced search, source/session identity, independent source windows and 200-record pages. Refresh preserves selection, disclosures and reading intent.
 - **Navigation:** Overview, Work Split, Lane Chats, Expenses, Quota, Preferences and closed history have stable routes. Task links use `#lanes/<lane>/session/<task>`; filters and route identity remain separate from agent destinations.
-- **Work model:** explicit repository/lane/theme classification, verified process liveness, pressure versus completion attention, idempotent acknowledgement and exact evidence-bound delivery. Unknown evidence is not Active or Deployed.
+- **Work model:** explicit repository/lane/theme classification, idempotent acknowledgement and exact evidence-bound delivery. [Work taxonomy](../prototype/WORK-TAXONOMY.md) owns execution evidence, pressure and completion attention semantics.
 - **Expenses:** selected-home private overlay before empty public fallback; exact currency-separated ledger arithmetic; independently cached billing adapters with explicit attribution and unavailable states.
 - **Quota:** allowlisted local adapter output, separate provider/effective-scope windows, bounded caching, visible stale/unavailable states and conservative timing semantics.
 - **Review:** durable receipts, same-batch retries, exact version/origin checks, annotation/message distinction and guarded optional primary intake. Chat view context is advisory, never destination authority.

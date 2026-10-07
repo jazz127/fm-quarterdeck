@@ -21,7 +21,7 @@ No home discovery or saved circular pointer inside the home is required. The sel
 - `prototype/transcript.js` / `supervision.js`: JSONL normalization, exact-home session confinement, mirror deduplication and outcome notes.
 - `prototype/private-runtime.js` / `cost-config.js`: guarded private expense selection and validated attribution.
 - `prototype/costs.js` / `quota.js`: bounded allowlisted account adapters, cache coalescing and truthful unavailable/stale states.
-- `prototype/agent-state.js` / `work-model.js`: atomic presentation state, explicit classification, process-incarnation evidence and completion/delivery separation.
+- `prototype/agent-state.js` / `work-model.js`: atomic presentation state, explicit classification, read-only endpoint probes and completion/delivery separation.
 - `prototype/review.js`, `inbox.js`, `revision.js`, `previews.js`, `preview-lifecycle.js`: exact identity, origin, receipt/intake and pre-provisioned runtime contracts.
 - `prototype/public/`: hash routing, safe rendering, independently refreshing views, filters, source selection, pagination and accessibility.
 
@@ -49,7 +49,7 @@ Lane/kind/source/task/search filters intersect. Search is debounced and escaped.
 
 ## Surfaces
 
-- **Overview / Work Split:** repository → lane/workstream → theme, explicit classification and exact task links. Active requires live process-incarnation proof; waiting, captain action, cleanup, backlog and unknown remain separate. Newly done/Previously done are attention labels, not deployment. See [work taxonomy](../prototype/WORK-TAXONOMY.md).
+- **Overview / Work Split:** repository → lane/workstream → theme, explicit classification and exact task links. [Work taxonomy](../prototype/WORK-TAXONOMY.md) owns execution evidence, pressure and completion attention semantics.
 - **Lane Chats:** oldest-to-newest feed, independent refresh, preserved reading intent, safe Markdown/raw text, bounded history and context drawers. Lane envelopes are display hints, not agent authority.
 - **Expenses:** selected private overlay before empty canonical public ledger; labeled synthetic demo only when the canonical file is absent. Decimal strings use BigInt cents with separate currency/project/category totals. Billing snapshots are separate, never added to ledger totals. Attribution comes from private `costs.json`; unknown allocation stays unclassified.
 - **Quota:** allowlisted account adapter with six-second/one-MiB read bounds. Unsupported timing stays unknown. [Quota usage](../README.md#product-surfaces) owns the invocation, caching and freshness behavior.

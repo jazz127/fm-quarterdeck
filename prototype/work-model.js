@@ -57,7 +57,7 @@ export function classifyCurrent({ state, inFlight, endpointLive, queued, retaine
   return "unknown";
 }
 
-// PID alone is vulnerable to reuse. Only an exact process incarnation is live evidence.
+// Process evidence needs a start identity because PIDs can be reused.
 function validPid(meta) { return /^[1-9]\d*$/.test(meta.worker_pid || ""); }
 
 function darwinStartIdentity(meta) {
