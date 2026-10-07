@@ -1,0 +1,23 @@
+# Python tooling
+__pycache__/
+*.py[cod]
+expenses/.expense_tracker.lock
+prototype/data/review-receipts/
+prototype/data/agent-state.json*
+# Synthetic first-run homes, never installed Firstmate state
+prototype/data/onboarding-test-*/
+.taxonomy-lab/
+prototype/data/preview-acceptance/
+# Task-isolated lifecycle acceptance checkouts, process records and evidence
+.preview-lab/
+# Task-only sanitization evidence, synthetic homes and headless profiles
+.sanitization-lab/
+.frontend-matrix-chrome-*/
+.agentos-controller/
+.agentos-runtime/
+
+# Local environment
+.env
+.env.*
+!.env.example
+.DS_Store

@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible problem using synthetic or redacted data.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read CONTRIBUTING.md and CODE_OF_CONDUCT.md in the repository root first.
+        Security vulnerabilities go through SECURITY.md's confidential route.
+        Do not post credentials, private transcripts, receipts, account data or personal paths.
+  - type: input
+    id: revision
+    attributes:
+      label: Affected commit
+      description: The exact commit being tested (git rev-parse HEAD).
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS/WSL, Node and npm versions, browser version and relevant optional integrations. Omit private identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal synthetic example, setup and numbered steps. Mention whether it reproduces on a clean checkout.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include only inspected, redacted diagnostics or synthetic screenshots.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: This report contains no sensitive or private data and is not a security vulnerability report.
+          required: true
+        - label: I agree to follow CODE_OF_CONDUCT.md.
+          required: true

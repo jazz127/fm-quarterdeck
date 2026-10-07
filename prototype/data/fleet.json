@@ -1,0 +1,44 @@
+{
+  "updatedAt": "2025-02-14T16:20:00Z",
+  "summary": {
+    "activeAgents": 4,
+    "openDecisions": 2,
+    "completedToday": 7
+  },
+  "projects": [
+    {
+      "id": "fm-quarterdeck",
+      "name": "fm-quarterdeck",
+      "status": "active",
+      "progress": 68,
+      "mission": "Ship the live Quarterdeck surface",
+      "agents": 2,
+      "items": [
+        { "title": "Orca launch prototype", "state": "in-progress", "owner": "Frontend crew" },
+        { "title": "Expense ledger integration", "state": "review", "owner": "Platform crew" }
+      ]
+    },
+    {
+      "id": "firstmate-core",
+      "name": "Firstmate Core",
+      "status": "steady",
+      "progress": 84,
+      "mission": "Keep orchestration reliable",
+      "agents": 1,
+      "items": [
+        { "title": "Pipeline health checks", "state": "complete", "owner": "Release crew" }
+      ]
+    },
+    {
+      "id": "orca-remote",
+      "name": "Orca Remote",
+      "status": "planning",
+      "progress": 35,
+      "mission": "Smooth remote worktree operations",
+      "agents": 1,
+      "items": [
+        { "title": "Browser launch guide", "state": "in-progress", "owner": "Docs crew" }
+      ]
+    }
+  ]
+}

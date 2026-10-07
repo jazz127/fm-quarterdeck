@@ -1,0 +1,15 @@
+# Lane Chat source windows
+
+The default task window per lane is every session not explicitly done/failed (including blocked, paused and needs-decision), union the two most recently updated sessions, deduplicated. An old active task outside the recent pair remains in the window. The task index is metadata-only for older tasks.
+
+The disk window is active pointer files union two latest-mtime files. Disk inventory is metadata-only. Explicit task/disk selections and hash deep links read exact sources on demand without changing source records. Load older adds ten task sessions per lane or two disk files per click, capped at twenty clicks and sixty pinned identities per type. The 200-record rendered page is separate from the source window.
+
+Requests reread authoritative sources; there is no cross-home snapshot cache. Responses overtaken by changed selection are discarded. Identical rendered pages retain message nodes; changed pages preserve disclosures and scroll intent. Lane Chats refresh is independent of Overview and Quota and automatic reads run only while that view is active.
+
+Selected task and disk identities precede retained identities in each sixty-ID request, deduplicated. An unloaded selection gets at most two automatic follow-ups; persistent non-progress stops with a visible Refresh instruction. Explicit refresh/reselection remains available. Metadata, status, legacy notes, outboxes, outcomes and selected transcripts share one request reader: 8 MiB per file, 32 MiB total read bytes, 1 MiB per line, 20,000 lines/records, 20,000 emitted messages and 2,048 file reads. Repeated metadata reads count too; one JSONL record cannot evade the message limit through many content parts. Exceeding a limit fails the request explicitly without rewriting or silently omitting records. The brief-intent prefix remains independently limited to 16 KiB. External session discovery reads only the bounded first header line; inventory/metadata enumeration and concurrent requests still have costs. Larger archives need a later server cursor/index design; browser pagination does not grant unlimited backend assembly.
+
+## Reproducible acceptance
+
+Use a temporary synthetic home with more sessions than each window, including an old active task, recent completed tasks, and old disk transcripts. Compare default reads, explicit deep links and Load older; assert deduplication, exact source identity, search/filter preservation, and at most 200 rendered records. Tests in `test/server.test.js`, `test/transcript.test.js` and `test/ui.test.js` cover these contracts.
+
+For a separately authorized browser measurement, record the exact clean serving revision, synthetic fixture size, viewport, cold/warm assembly time, JSON/transfer bytes, request duration and client freshness clock. Do not publish measurements or session pointers from an operator's home as product defaults. Consider caching or streaming only after measuring the bounded path; browser rendering and source assembly are separate costs.

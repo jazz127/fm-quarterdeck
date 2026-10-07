@@ -1,0 +1,42 @@
+name: Source preview checks
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install locked application package
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: prototype
+      - name: Node 24 behavior suites
+        run: npm test
+        working-directory: prototype
+      - name: Repository, expense and source boundary checks
+        run: |
+          python3 -m unittest discover -s expenses
+          node --test test/*.test.mjs
+          python3 -m unittest discover -s test -p 'test_*.py'
+          python3 scripts/check-source-syntax.py
+          python3 scripts/check-product-boundary.py
+      - name: Chromium reload, retry, history and layout gate
+        run: |
+          # Prefer the runner's stable Chrome over its development Chromium snapshot.
+          export CHROMIUM="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROMIUM"
+          "$CHROMIUM" --version
+          npm run test:browser
+        working-directory: prototype

@@ -1,0 +1,19 @@
+{
+  "name": "fm-quarterdeck",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Runnable fm-quarterdeck fleet and expense dashboard prototype",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "onboard": "node scripts/onboard.mjs",
+    "dev": "FM_DEV=1 FM_REFRESH_MS=${FM_REFRESH_MS:-15000} node --watch server.js",
+    "pretest": "node scripts/check-validation-runtime.mjs",
+    "test": "node --test",
+    "test:browser": "node scripts/hardening-browser-pass.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

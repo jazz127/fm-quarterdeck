@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "default_currency": "USD",
+  "entries": [
+    {
+      "id": "demo-fm-quarterdeck-hosting",
+      "date": "2025-02-10",
+      "amount": "24.00",
+      "project_id": "fm-quarterdeck",
+      "project_name": "fm-quarterdeck",
+      "category": "hosting",
+      "note": "Prototype hosting estimate"
+    },
+    {
+      "id": "demo-firstmate-api",
+      "date": "2025-02-12",
+      "amount": "38.50",
+      "project_id": "firstmate-core",
+      "project_name": "Firstmate Core",
+      "category": "api",
+      "note": "Model usage estimate"
+    },
+    {
+      "id": "demo-fm-quarterdeck-credit",
+      "date": "2025-02-13",
+      "amount": "-4.00",
+      "project_id": "fm-quarterdeck",
+      "project_name": "fm-quarterdeck",
+      "category": "credit",
+      "note": "Service credit estimate"
+    }
+  ]
+}

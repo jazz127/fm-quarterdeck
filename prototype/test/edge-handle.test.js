@@ -1,0 +1,36 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+import * as layout from "../public/shell-panel-layout.js";
+
+test("one desktop edge handle distinguishes click/drag, preserves width and supports keyboard", async () => {
+  const node = () => ({ attrs: {}, handlers: {}, dataset: {}, hidden: true, style: { setProperty() {} }, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; }, addEventListener(k, fn) { this.handlers[k] = fn; }, setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture() { return false; }, querySelector() { return { textContent: "" }; }, contains() { return false; }, focus() {} });
+  const workspace = node(), panel = node(), toggle = node(), divider = node();
+  const nodes = { ".workspace": workspace, "#review-sidebar-region": panel, "#shell-panel-toggle": toggle, "#shell-panel-resize": divider };
+  const saved = new Map();
+  const context = { ...layout, document: { querySelector: (key) => nodes[key], activeElement: null }, window: { innerWidth: 1600, matchMedia: (q) => ({ matches: !q.includes("coarse"), addEventListener() {} }), addEventListener() {} }, localStorage: { getItem: (k) => saved.get(k) || null, setItem: (k, v) => saved.set(k, v) }, openMobileTools() {} };
+  const source = (await readFile(new URL("../public/shell-panel.js", import.meta.url), "utf8")).split("// Reuse the actual controls")[0].replace(/^import .*;$/m, "");
+  vm.runInNewContext(source, context);
+  const pointer = (type, x, y = 200) => divider.handlers[type]({ pointerId: 1, button: 0, clientX: x, clientY: y, preventDefault() {} });
+  const key = (key) => divider.handlers.keydown({ key, preventDefault() {} });
+  assert.equal(toggle.hidden, true); assert.equal(divider.hidden, false);
+  pointer("pointerdown", 252); pointer("pointermove", 254); pointer("pointerup", 254);
+  assert.equal(workspace.dataset.shellPanelCollapsed, "true"); assert.equal(divider.attrs["aria-valuenow"], "0");
+  key("Enter"); assert.equal(workspace.dataset.shellPanelCollapsed, "false"); assert.equal(divider.attrs["aria-valuenow"], "252");
+  pointer("pointerdown", 252); pointer("pointermove", 340); pointer("pointerup", 340);
+  assert.equal(workspace.dataset.shellPanelCollapsed, "false", "drag release never toggles"); assert.equal(divider.attrs["aria-valuenow"], "340");
+  key(" "); key("Enter"); assert.equal(divider.attrs["aria-valuenow"], "340", "restores last useful width");
+  key("ArrowLeft"); assert.equal(divider.attrs["aria-valuenow"], "320");
+  pointer("pointerdown", 320); pointer("pointermove", 220); pointer("pointercancel", 220); assert.equal(divider.attrs["aria-valuenow"], "320");
+  key(" "); pointer("pointerdown", 0); pointer("pointermove", 50); pointer("pointerup", 50); assert.equal(workspace.dataset.shellPanelCollapsed, "true", "drag while collapsed does not toggle or resize");
+  key("Enter"); assert.equal(divider.attrs["aria-valuenow"], "320");
+  divider.handlers.click({ detail: 0 }); assert.equal(workspace.dataset.shellPanelCollapsed, "true", "assistive activation toggles");
+  divider.handlers.click({ detail: 1 }); assert.equal(workspace.dataset.shellPanelCollapsed, "true", "pointer-generated click cannot toggle again");
+  divider.handlers.click({ detail: 0 });
+  pointer("pointerdown", 320); pointer("pointerup", 350); assert.equal(workspace.dataset.shellPanelCollapsed, "false", "large release movement alone still counts as drag");
+  vm.runInNewContext("coarse.matches=true; syncPanel()", context);
+  assert.equal(divider.hidden, true); assert.equal(toggle.hidden, false, "coarse tablet keeps its disclosure button");
+  vm.runInNewContext("desktop.matches=false; syncPanel()", context);
+  assert.equal(divider.hidden, true); assert.equal(toggle.hidden, false, "phone controls are unchanged");
+});

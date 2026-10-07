@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a focused improvement before implementation.
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read CONTRIBUTING.md and CODE_OF_CONDUCT.md in the repository root first.
+        Keep examples synthetic. Report security vulnerabilities through SECURITY.md.
+        Source preview targets a trusted private runtime; public multi-user hosting and PWA work are outside current scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Who encounters the problem and what current behavior prevents them from doing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and scope
+      description: Describe the user-visible result and how to verify it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+      description: Consider existing behavior, dependencies, file/integration contracts and privacy implications.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: This request and its examples contain no sensitive or private data.
+          required: true
+        - label: I agree to follow CODE_OF_CONDUCT.md.
+          required: true
