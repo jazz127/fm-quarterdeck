@@ -3,9 +3,87 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { quotaDom } from "./helpers/quota-dom.js";
+import { createHash } from "node:crypto";
 
 const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+
+test("opt-in compact headers preserve Quota markup and expose full descriptions", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const headers = [...html.matchAll(/<header class="feature-head compact-head">[\s\S]*?<\/header>/g)];
+  assert.equal(headers.length, 5);
+  for (const [header] of headers) {
+    assert.doesNotMatch(header, /eyebrow/);
+    for (const [, title, text] of header.matchAll(/<p title="([^"]+)">([^<]+)<\/p>/g)) assert.equal(title, text);
+    assert.equal((header.match(/<p\b/g) || []).length, (header.match(/<p title=/g) || []).length);
+  }
+  assert.equal(html.match(/id="quota-view"[\s\S]*?(<header[\s\S]*?<\/header>)/)[1], '<header class="feature-head"><div><p class="eyebrow">QUOTA</p><h1>Subscription limits</h1><p>Read-only quota evidence from quota-axi. Missing limits remain unknown.</p></div><span class="source-badge">quota-axi</span></header>');
+  assert.match(css, /\.feature-head\.compact-head \{ flex-wrap: nowrap;/);
+  assert.match(css, /\.compact-head h1 \{[^}]*font-size: 22px; white-space: nowrap/);
+  assert.match(css, /\.compact-head p:not\(\.eyebrow\) \{[^}]*text-overflow: ellipsis; white-space: nowrap/);
+});
+
+test("freshness shows only condition and time while preserving accessible evidence", () => {
+  const app = ui();
+  app.node(".workspace").dataset.view = "overview";
+  app.run("freshness.dashboard.lastSuccess = Date.now(); freshness.dashboard.duration = 70; freshness.dashboard.refreshing = false; renderFreshness()");
+  const reading = app.node("#view-freshness"), pill = app.node("#fleet-state");
+  assert.doesNotMatch(reading.textContent, /Overview|fresh|Last success/);
+  assert.equal(app.node("#fleet-state b").textContent, "fresh");
+  assert.match(reading.title, /^Overview · fresh · Last success.* · 70ms$/);
+  assert.equal(reading.getAttribute("aria-label"), reading.title);
+  assert.equal(pill.title, reading.title);
+  assert.equal(pill.getAttribute("aria-label"), reading.title);
+  app.run("freshness.dashboard.lastSuccess = null; renderFreshness()");
+  assert.equal(reading.textContent, "no reading yet");
+});
+
+test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
+  const app = ui(), controls = app.node("#preferences-view .scan-controls"), state = app.node("#preferences-state");
+  app.run("renderPreferences({error: 'Unavailable'})");
+  assert.equal(state.classList.contains("error"), true);
+  assert.equal(controls.hidden, true);
+  app.run(`renderPreferences({source: 'data/captain.md', entries: [{title: 'Behavior', source: 'synthetic', content: 'Example'}]})`);
+  assert.equal(state.classList.contains("error"), false);
+  assert.equal(controls.hidden, false);
+  const previous = app.node("#preferences-list").innerHTML;
+  app.run("renderPreferences({error: 'Refresh failed'})");
+  assert.equal(state.classList.contains("error"), true);
+  assert.equal(controls.hidden, false);
+  assert.equal(app.node("#preferences-list").innerHTML, previous);
+  app.run("renderPreferences({source: 'data/captain.md', entries: []})");
+  assert.equal(state.classList.contains("error"), false);
+  assert.equal(controls.hidden, true);
+});
+
+test("unavailable work hides controls and empty sections, then restores them", () => {
+  const app = ui();
+  const selectors = ['.work-tools .scan-controls', '#work-view section[aria-labelledby="tight-heading"]', '#work-view section[aria-labelledby="large-heading"]'];
+  app.run("renderWorkSplit(null)");
+  for (const selector of selectors) assert.equal(app.node(selector).hidden, true);
+  app.run("renderWorkSplit({items: []})");
+  for (const selector of selectors) assert.equal(app.node(selector).hidden, false);
+});
+
+test("request failures use readable HTTP or network messages", async () => {
+  for (const [fetchImpl, expected] of [
+    [async () => ({ok: false, status: 502, json: async () => { throw new SyntaxError('HTML'); }}), 'HTTP 502'],
+    [async () => ({ok: false, status: 503, json: async () => ({error: 'Serving revision unavailable'})}), 'Serving revision unavailable'],
+    [async () => { throw new TypeError('fetch failed'); }, 'Server unreachable'],
+  ]) {
+    const app = ui({fetchImpl: (url, options) => url === '/synthetic-error' ? fetchImpl() : new Promise(() => {})});
+    await assert.rejects(app.run("fetchJson('/synthetic-error')"), {message: expected});
+  }
+});
+
+test("fallback overview status buttons and options are sentence case", () => {
+  const app = ui();
+  app.run(`renderProjects([{id: 'example', name: 'Example', status: 'complete', items: [{state: 'complete'}]}, {id: 'review', name: 'Review', status: 'review', items: [{state: 'review'}]}])`);
+  assert.match(app.node("#overview-status").innerHTML, />Complete<\/option>/);
+  assert.match(app.node("#overview-status").innerHTML, />Review<\/option>/);
+  assert.match(app.node("#overview-status-buttons").innerHTML, />Complete<\/span>/);
+  assert.match(app.node("#overview-status-buttons").innerHTML, />Review<\/span>/);
+});
 
 test("phone shell preserves navigation and leaves feed clear of fixed controls", () => {
   const phone = css.slice(css.lastIndexOf("@media (max-width: 720px) {"), css.indexOf("@media (max-width: 720px) and (min-width: 600px)"));
@@ -73,7 +151,7 @@ test("desktop control and persistent review footer keep gesture and action order
 
 test("annotation composer has one three-column action row with unchanged button identities", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit">Queue message \(Enter\)<\/button><button id="review-send" type="button">Send batch \(Ctrl\/Cmd\+Enter\)<\/button><button id="review-end" type="button">Send &amp; end<\/button><\/div><\/form>/);
+  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send batch<\/button><button id="review-end" type="button" data-hint="Then end chat">Send &amp; End<\/button><\/div><\/form>/);
   assert.match(css, /\.review-actions \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.review-actions button \{ min-width: 0;/);
 });
@@ -146,7 +224,7 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true } = {}) {
         return null;
       }
       if (!nodes.has(selector)) {
-        if (["#quota-providers", "#quota-strip", "#mobile-quota-sheet-content", "#quota-state", "#sidebar-quota-freshness"].includes(selector)) {
+        if (["#quota-providers", "#quota-summary", "#quota-strip", "#mobile-quota-sheet-content", "#quota-state", "#sidebar-quota-freshness"].includes(selector)) {
           nodes.set(selector, quotaNodes.element("div", true));
           return nodes.get(selector);
         }
@@ -447,22 +525,22 @@ test("slow large lane response cannot block Overview or Quota, and refreshes do 
   assert.equal(app.run("freshness.dashboard.refreshing"), false);
   assert.equal(app.run("freshness.lanes.refreshing"), true);
   app.run('showView("quota"); renderFreshness()');
-  assert.match(app.node("#view-freshness").textContent, /^Quota · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Quota · fresh · Last success/);
   app.run('showView("conversations"); loadDashboard();');
   assert.equal(calls.lanes.length, 1, "manual and automatic refresh must skip in-flight history");
   assert.equal(calls.dashboard.length, 2, "Overview can update while lanes are slow");
   calls.lanes[0].resolve({ lanes: [lane("general", Array.from({ length: 1000 }, (_, i) => record({ text: `History ${i}` })))], source: "synthetic", transcript: { sessions: [], warnings: [], note: "" } });
   await flush();
-  assert.match(app.node("#view-freshness").textContent, /^Fleet Chats · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Fleet Chats · fresh · Last success/);
   assert.equal(app.run("messagesForSelection().length"), 1000);
   assert.equal((app.node("#messages").innerHTML.match(/<article/g) || []).length, 200);
   calls.dashboard[1].resolve({ fleet: { summary: { activeAgents: 3 }, projects: [] }, expenses: { entries: [], projects: [], categories: [], overall: [], entryCount: 0 }, refreshMs: 0 });
   calls.quota[1].resolve({ providers: [], readAt: null, stale: true, error: "source unavailable" });
   await flush();
   app.run('showView("quota")');
-  assert.match(app.node("#view-freshness").textContent, /^Quota · disconnected · Last success.*source unavailable/);
+  assert.match(app.node("#view-freshness").title, /^Quota · disconnected · Last success.*source unavailable/);
   app.run('showView("overview")');
-  assert.match(app.node("#view-freshness").textContent, /^Overview · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Overview · fresh · Last success/);
 });
 
 test("preference density, sorting and expansion persist through rendering", () => {
@@ -530,6 +608,31 @@ test("a selected sibling lane renders only its projected block, not the unchecke
   assert.match(html, /Synthetic Quarterdeck update/);
   assert.match(html, /class="message-lane">fm-quarterdeck<\/span>/);
   assert.doesNotMatch(html, /Synthetic store update|class="message-lane">General<\/span>/);
+});
+
+test("mixed lane replies preserve context with selected sections expanded and unchecked sections collapsed", () => {
+  const app = ui();
+  const blocks = ["general", "alpha", "beta"].map((projectId) => ({ projectId, name: `${projectId}-UI`,
+    text: `[fm-lane ${projectId}-UI]\n${projectId} context <img src=x>\nSecond line\n[end ${projectId}-UI]` }));
+  const mixedLaneMessage = { recordId: "original:1", text: blocks.map(({ text }) => text).join("\n\n"), blocks };
+  seed(app, blocks.map((block, index) => lane(block.projectId, [record({ recordId: `original:1:block:${index}`, text: block.text, mixedLaneMessage })])));
+  app.run('allLanesSelected = false; selectedLaneIds = new Set(["alpha"]); renderFeed()');
+  const html = app.node("#messages").innerHTML;
+  assert.equal((html.match(/<article /g) || []).length, 1);
+  assert.equal((html.match(/aria-expanded="false"/g) || []).length, 2);
+  assert.equal((html.match(/aria-expanded="true"/g) || []).length, 1);
+  assert.match(html, /\[fm-lane <strong>alpha-UI<\/strong>\]<\/button>/);
+  assert.equal((html.match(/\[fm-lane /g) || []).length, 3, "each marker is the toggle, not repeated in its body");
+  assert.match(html, /2 lines/);
+  assert.doesNotMatch(html, /<img /);
+  assert.match(html, /&lt;img src=x&gt;/);
+  assert.equal(app.run('window.quarterdeckMessageTargets[0].recordId'), "original:1");
+  app.run('allLanesSelected = true; renderFeed()');
+  assert.equal((app.node("#messages").innerHTML.match(/aria-expanded="true"/g) || []).length, 3);
+  app.run('allLanesSelected = false; selectedLaneIds = new Set(["alpha", "beta"]); renderFeed()');
+  assert.equal((app.node("#messages").innerHTML.match(/aria-expanded="true"/g) || []).length, 2);
+  app.run('messageFormat = "raw"; renderFeed()');
+  assert.match(app.node("#messages").innerHTML, /mixed-lane-content" hidden/);
 });
 
 test("record search narrows the loaded history without changing lane or kind filters", () => {
@@ -1337,6 +1440,50 @@ test("Quota route renders known, partial and unknown without inventing zero or l
   assert.match(app.node("#quota-state").textContent, /Stale last successful reading.*Quota source last read.*Quota refresh unavailable/);
 });
 
+test("quota page summarizes source evidence, renders unsupported counts and suppresses stale winners", () => {
+  const app = ui();
+  const reading = { providers: [{ provider: "grok", status: "fresh", scopes: [{ scope: "all", percentRemaining: 12, runway: { status: "through_reset" } }], windows: [] }], unsupportedProviders: 2 };
+  app.run(`renderQuota(${JSON.stringify(reading)})`);
+  assert.equal(app.node("#quota-summary").querySelectorAll(".quota-summary-tile").length, 4);
+  assert.match(app.node("#quota-summary").textContent, /12%/);
+  assert.match(app.node("#quota-providers").textContent, /2 provider entries not shown because the format is unsupported/);
+  const stateText = app.node("#quota-state").textContent;
+  app.run(`renderQuota(${JSON.stringify(reading)})`);
+  assert.equal(app.node("#quota-state").textContent, stateText, "countdown updates do not change the live region");
+  app.run(`renderQuota(${JSON.stringify({ ...reading, stale: true })})`);
+  const tightest = app.node("#quota-summary").querySelector('[data-quota-key="tightest"]');
+  assert.match(tightest.textContent, /—.*unknown \(stale\)/);
+  assert.doesNotMatch(tightest.textContent, /\d+%/);
+  app.run('renderQuota({ providers: [], unsupportedProviders: 2 })');
+  assert.match(app.node("#quota-providers").textContent, /No subscriptions reported.*2 provider entries not shown/);
+});
+
+test("page sort has one bidirectional key each and shares every stored mode with the sidebar", () => {
+  const app = ui();
+  const stored = () => app.run('sidebarQuotaSort');
+  const click = key => app.node("#quota-sort-" + key).dispatchEvent({ type: "click" });
+  assert.equal(stored(), "highest");
+  click("left"); assert.equal(stored(), "lowest");
+  click("left"); assert.equal(stored(), "highest");
+  click("runway"); assert.equal(stored(), "runway");
+  click("runway"); assert.equal(stored(), "runway-lowest");
+  click("az"); assert.equal(stored(), "az");
+  click("az"); assert.equal(stored(), "za");
+  click("runway"); assert.equal(stored(), "runway-lowest", "returning to a key keeps its direction");
+  click("left"); assert.equal(stored(), "highest");
+  assert.equal(app.node("#quota-sort-left").getAttribute("aria-pressed"), "true");
+  assert.equal(app.node("#quota-sort-runway").getAttribute("aria-pressed"), "false");
+});
+
+test("compact quota family output is byte-identical to the sidebar batch baseline", () => {
+  const app = ui();
+  const family = { provider: "grok", name: "grok", scope: null, status: "fresh", windows: [{ id: "credits", label: "week", percentRemaining: 12, isLimiting: true }, { id: "chat", label: "Chat", percentRemaining: null }] };
+  const output = app.run(`quotaFamilyBox(${JSON.stringify(family)}, null, { compact: true })`);
+  // SHA-256 snapshot of the exact 3bb5fbf renderer for this synthetic fixture.
+  assert.equal(createHash("sha256").update(output).digest("hex"), "8fee7376db5b0037eb3e9314dc10195bdf819fee171ab2aeef8117f16b5f69c3");
+  assert.doesNotMatch(output, /quota-family-band|quota-family-meta|LIMIT/);
+});
+
 test("quota window annotations are shown for every subscription, including unknown text", () => {
   const app = ui();
   app.run(`renderQuota(${JSON.stringify({ providers: ["codex", "agy"].map((provider) => ({ provider, status: "fresh", quotaStatus: "known", stale: false, scopes: [], windows: [
@@ -1359,11 +1506,18 @@ test("tiny quota strip reuses page reading and retains source pace/runway in acc
   assert.match(css, /\.quota-divider \{[^}]+width: 100%; height: 16px; cursor: ns-resize;/);
   assert.match(css, /\.review-divider \{[^}]+width: 16px; cursor: ew-resize;/);
   assert.match(css, /@media \(max-width: 720\.01px\) \{ \.panel-divider \{ display: none; \} \}/);
-  assert.match(css, /\.sidebar-quota \{[^}]+flex: 0 0 auto; height: var\(--quota-height, 220px\)/);
+  assert.match(css, /\.sidebar-quota \{[^}]+flex: 0 1 auto; height: var\(--quota-height, auto\)/);
   assert.doesNotMatch(css, /\.quota-strip \{[^}]+resize: vertical;/);
   assert.ok(html.indexOf('<section id="sidebar-quota"') < html.indexOf('<footer class="source-status"'));
   assert.match(css, /\.sidebar-quota \{ display: none; \}/);
   assert.match(css, /\.primary-nav \{[^}]+grid-template-rows: 48px 48px/);
+  // Native header button covers non-control space; narrow panes hide the reading time.
+  assert.match(css, /\.sidebar-quota-head \{ position: relative; display: flex;/);
+  assert.match(css, /@container sidebar-quota \(max-width: 219\.98px\) \{ \.sidebar-quota-freshness \{ display: none; \} \}/);
+  assert.match(html, /id="sidebar-quota-toggle"[^>]+aria-expanded="true"[^>]+><span>Quota<\/span>/);
+  assert.doesNotMatch(html, /class="sidebar-quota-link"/);
+  assert.match(html, /<div id="sidebar-quota-sort" class="sidebar-quota-sort" role="group" aria-label="Sort quota limits">/);
+  assert.match(html, /data-sort="left" aria-pressed="true"[^>]*>Left<span class="sidebar-quota-sort-direction" aria-hidden="true">↓<\/span><\/button><button type="button" class="sidebar-quota-sort-option" data-sort="runway" aria-pressed="false" aria-label="Runway"[^>]*>Run<span class="sidebar-quota-sort-long">way<\/span>/);
 
   const app = ui();
   const statuses = ["ahead", "on_pace", "behind", "mixed", "through_reset", "projected_exhaustion", "exhausted_now", "unknown"];
@@ -1414,12 +1568,23 @@ test("grouped quota cards keep two compact rows, truthful remaining and timing u
     assert.match(html, /Reset-window position unknown/);
     assert.doesNotMatch(html, /time \?/);
     assert.match(html, /provider-monogram/);
-    assert.match(html, /provider-name/);
+    assert.match(html, html === strip ? /<b class="provider-name">AGY/ : /<h2[^>]*>AGY<\/h2>/);
+    assert.doesNotMatch(html, /<span class="provider-name">/);
     assert.equal((html.match(/class="quota-family-notch"/g) || []).length, 1);
     assert.ok(html.includes("2030-01-08"));
   }
   assert.equal((strip.match(/class="quota-family-row/g) || []).length, 3, "extra unknown window remains in its own unproven group");
   assert.equal((page.split("</summary>")[0].match(/class="quota-family-row/g) || []).length, 3);
+});
+
+test("quota freshness stays accessible with compact single-line text", () => {
+  const app = ui();
+  app.run(`renderQuota(${JSON.stringify({ providers: [{ provider: "agy", stale: true, status: "stale", refreshedAt: "2030-01-01T00:00:00Z", windows: [{ id: "w", label: "week", kind: "weekly", percentRemaining: 50 }], scopes: [] }] })})`);
+  for (const html of [app.node("#quota-strip").innerHTML, app.node("#quota-providers").innerHTML]) {
+    assert.match(html, /class="quota-staleness" title="stale · 0s" aria-label="stale · 0s"/);
+    assert.match(html, /class="quota-age">stale 0s/);
+    assert.match(html, /AGY/);
+  }
 });
 
 test("compact desktop and phone quota previews keep both horizons, reset ticker, and honest marker", () => {
@@ -1432,7 +1597,8 @@ test("compact desktop and phone quota previews keep both horizons, reset ticker,
   for (const id of ["#quota-strip", "#mobile-quota-sheet-content"]) {
     const preview = app.node(id).innerHTML;
     assert.match(preview, />5h/);
-    assert.match(preview, />weekly/);
+    assert.match(preview, />7d/);
+    assert.match(preview, /title="Gemini weekly"/);
     assert.match(preview, /24%/);
     assert.match(preview, /70%/);
     assert.match(preview, / · <span class="quota-reset-full">[0-9]+[dhm]/);
@@ -1482,13 +1648,13 @@ test("Quota controls sort known effective remaining, keep unknown last, and hide
   ];
   app.run(`renderQuota(${JSON.stringify({ providers, readAt: null, stale: false, error: null })})`);
   let cards = app.node("#quota-providers").innerHTML;
-  assert.ok(cards.indexOf("high</h2>") < cards.indexOf("low</h2>"));
-  assert.ok(cards.indexOf("low</h2>") < cards.indexOf("unknown</h2>"));
+  assert.ok(cards.indexOf("High</h2>") < cards.indexOf("Low</h2>"));
+  assert.ok(cards.indexOf("Low</h2>") < cards.indexOf("Unknown</h2>"));
   assert.match(cards, /inactive/);
-  app.node("#quota-order").dispatchEvent({ type: "click" });
+  app.node("#quota-sort-left").dispatchEvent({ type: "click" });
   cards = app.node("#quota-providers").innerHTML;
-  assert.ok(cards.indexOf("low</h2>") < cards.indexOf("high</h2>"));
-  assert.ok(cards.indexOf("high</h2>") < cards.indexOf("unknown</h2>"));
+  assert.ok(cards.indexOf("Low</h2>") < cards.indexOf("High</h2>"));
+  assert.ok(cards.indexOf("High</h2>") < cards.indexOf("Unknown</h2>"));
   app.node("#quota-hide-inactive").dispatchEvent({ type: "change", target: { checked: true } });
   cards = app.node("#quota-providers").innerHTML;
   assert.doesNotMatch(cards, /inactive/);
@@ -1543,7 +1709,7 @@ test("Quota density: unconfigured providers are grouped in compact tray, and ref
 
   // Empty providers grouped into compact unconfigured tray
   assert.match(initialHtml, /quota-unconfigured-tray/);
-  assert.match(initialHtml, /quota-card-compact/);
+  assert.match(initialHtml, /quota-unconfigured-chip/);
   assert.match(initialHtml, /empty-provider-1/);
   assert.match(initialHtml, /empty-provider-2/);
 
@@ -1697,11 +1863,11 @@ test("Quota summary retains every reported window and only source-named binding 
   ] })})`);
   const html = app.node("#quota-providers").innerHTML;
   const summary = html.split("</summary>")[0];
-  assert.match(summary, /Source-reported limit<\/span> Week/);
+  assert.match(summary, /limit 7d/);
   assert.match(summary, /Day/);
   assert.equal((summary.match(/quota-summary-window-limiting/g) || []).length, 1);
   assert.doesNotMatch(summary, /reported windows|elapsed-time marker unavailable|Limiting constraint/);
-  assert.match(summary, /aria-label="Week percent remaining"[^>]+aria-valuenow="12"/);
+  assert.match(summary, /aria-label="Week: 12% remaining[^>]+aria-valuenow="12"/);
   assert.match(html, /2030-01-08/);
   assert.match(html, /-5\.00% reserve/);
   assert.match(html, /\+12\.35% reserve/);
@@ -1718,7 +1884,7 @@ test("Quota with incomplete relationships or values never invents binding, elaps
   ] })})`);
   const html = app.node("#quota-providers").innerHTML;
   assert.match(html, /Binding limit unknown/);
-  assert.match(html, /No source-reported limiting window/);
+  assert.match(html, /no effective scope reported/);
   assert.doesNotMatch(html, /quota-summary-window-limiting/);
   assert.match(html, /Remaining unknown/);
   assert.match(html, /Reset unknown/);
@@ -1735,9 +1901,12 @@ test("Quota Expand all updates native disclosures even before a tapped toggle ev
   const disclosure = { dataset: { provider: "codex" }, open: false };
   const list = app.node("#quota-providers");
   list.querySelectorAll = () => [disclosure];
-  app.node("#quota-expand-all").dispatchEvent({ type: "click" });
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
   assert.equal(disclosure.open, true);
-  app.node("#quota-collapse-all").dispatchEvent({ type: "click" });
+  disclosure.open = false; // User closes it before the native toggle event.
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
+  assert.equal(disclosure.open, true, "reads live native state rather than a stale all-open label");
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
   assert.equal(disclosure.open, false);
 });
 
@@ -1795,13 +1964,14 @@ test("Quota detailed view adapts provider accordion, critical constraint, pacing
   const cards = app.node("#quota-providers").innerHTML;
 
   // Accordion details and summary markup
-  const accordions = app.node("#quota-providers").querySelectorAll("details.quota-card.quota-accordion");
-  assert.ok(accordions.length > 0);
-  assert.match(cards, /<summary class="quota-accordion-summary"/);
+  const accordions = app.node("#quota-providers").querySelectorAll("details.quota-more");
+  assert.equal(accordions.length, 3);
+  assert.ok(accordions.every(details => !details.open));
+  assert.equal(app.node("#quota-providers").querySelectorAll("article.quota-card").length, 3);
 
-  // Critical constraint summary identifying the limiting window
-  assert.match(cards, /Source-reported limit/);
-  assert.match(cards, /Gemini 5h/);
+  // Source-named limiting windows remain visible on the meter rows.
+  assert.match(cards, /Source-reported limiting window/);
+  assert.match(cards, /Gemini 5-hour/);
 
   // Truthful pacing comparisons
   assert.match(cards, /Consuming faster than elapsed-time pacing/);
@@ -1820,11 +1990,10 @@ test("Quota detailed view adapts provider accordion, critical constraint, pacing
   assert.match(cards, /commandcode/);
 
   // Expand all and collapse all controls toggle state
-  app.node("#quota-collapse-all").dispatchEvent({ type: "click" });
-  assert.ok(accordions.every((details) => !details.open));
-
-  app.node("#quota-expand-all").dispatchEvent({ type: "click" });
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
   assert.ok(accordions.every((details) => details.open));
+  app.node("#quota-details-toggle").dispatchEvent({ type: "click" });
+  assert.ok(accordions.every((details) => !details.open));
 });
 
 test("compact reset labels use only days/hours/minutes with deterministic short fallbacks", () => {
@@ -2108,7 +2277,7 @@ test("quota cards distinguish reused and stale readings and suppress stale proje
   const reusedAt = new Date(Date.now() - 42000).toISOString();
   app.run(`renderQuota(${JSON.stringify({ maxAgeMs: 300000, readAt: reusedAt, providers: [{ ...baseProvider, reused: true, refreshedAt: reusedAt }] })})`);
   let cards = app.node("#quota-providers").innerHTML;
-  assert.match(cards, /class="quota-reused">reused 42s/);
+  assert.match(cards, /class="quota-reused" title="reused 42s" aria-label="reused 42s"><span class="quota-age">reused 42s/);
 
   const staleAt = new Date(Date.now() - 1000).toISOString();
   app.run(`renderQuota(${JSON.stringify({ maxAgeMs: 300000, readAt: staleAt, providers: [{ ...baseProvider, status: "stale", stale: true, refreshedAt: staleAt }] })})`);
@@ -2233,8 +2402,10 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     };
     app.run(`renderQuota(${JSON.stringify(reading)})`);
     const cards = app.node("#quota-providers");
-    const card = cards.querySelector('details[data-provider="codex"]');
-    const summary = card.querySelector("summary");
+    const card = cards.querySelector('article[data-provider="codex"]');
+    const disclosure = card.querySelector("details");
+    disclosure.open = true;
+    const summary = disclosure.querySelector("summary");
     const strip = app.node("#quota-strip");
     const link = strip.querySelector("a");
     const mobile = app.node("#mobile-quota-sheet-content");
@@ -2253,10 +2424,10 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     else selection.setBaseAndExtent(selectedText, backward ? selectedLength : 0, selectedText, backward ? 0 : selectedLength);
 
     const assertInteraction = () => {
-      assert.equal(cards.querySelector('details[data-provider="codex"]'), card, interaction);
+      assert.equal(cards.querySelector('article[data-provider="codex"]'), card, interaction);
       assert.equal(card.querySelector("summary"), summary, interaction);
-      assert.equal(strip.querySelector("a"), link, interaction);
-      assert.equal(mobile.querySelector(".mobile-quota-sheet-row"), row, interaction);
+      assert.ok([...strip.querySelectorAll("a")].includes(link), interaction);
+      assert.ok([...mobile.querySelectorAll(".mobile-quota-sheet-row")].includes(row), interaction);
       if (interaction.endsWith("focus")) assert.equal(app.run("document.activeElement"), focused, interaction);
       else {
         assert.equal(selection.anchorNode, selectedText, interaction);
@@ -2272,18 +2443,18 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     assert.equal(card.querySelector(".quota-reused"), freshness);
     assert.equal(freshness.textContent, "reused 2m");
     assertInteraction();
-    if (interaction === "card-focus") card.open = false;
+    if (interaction === "card-focus") disclosure.open = false;
 
     app.run('quotaNow = Date.parse("2030-01-01T02:34:50Z"); quotaTick()');
     assertInteraction();
     app.run("quotaNow += 15000; quotaTick()");
     assert.equal(card.classList.contains("quota-card-stale"), true);
-    assert.match(card.textContent, /stale · 5m/);
+    assert.match(card.textContent, /stale 5m/);
     assert.match(card.textContent, /Effective availability unknown/);
     assert.match(card.textContent, /Runway: Unknown/);
     assert.doesNotMatch(card.textContent, /Pace: Ahead|Projected exhaustion|percentage points reserve/);
     assert.equal(cards.querySelector("details").dataset.provider, "agy", "stale scopes sort after fresh scopes");
-    assert.equal(card.open, interaction !== "card-focus", "pending native toggle state survives freshness changes");
+    assert.equal(disclosure.open, interaction !== "card-focus", "pending native toggle state survives freshness changes");
     for (const surface of [card, link, row]) {
       const notch = surface.querySelector(".quota-family-notch");
       assert.equal(notch.getAttribute("style"), "--remaining:50%");
@@ -2293,15 +2464,15 @@ test("quota freshness preserves in-card and compact interactions and captured ma
     }
     assertInteraction();
 
-    card.open = false;
-    card.dispatchEvent({ type: "toggle" });
+    disclosure.open = false;
+    disclosure.dispatchEvent({ type: "toggle" });
     reading.providers[0].refreshedAt = new Date(app.run("quotaNow")).toISOString();
     app.run(`renderQuota(${JSON.stringify(reading)})`);
-    assert.equal(card.open, false, "native disclosure state survives a refreshed reading");
+    assert.equal(disclosure.open, false, "native disclosure state survives a refreshed reading");
     assert.equal(card.classList.contains("quota-card-stale"), false);
     assert.match(card.textContent, /Pace: Ahead/);
     assertInteraction();
-    app.node("#quota-order").dispatchEvent({ type: "click" });
+    app.node("#quota-sort-left").dispatchEvent({ type: "click" });
     assert.equal(cards.querySelector("details").dataset.provider, "agy");
     assertInteraction();
   }
@@ -2344,7 +2515,7 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
     for (let index = 0; index < 4; index++) {
       assert.equal(staleLinks[index], links[index]);
       assert.equal(staleRows[index], rows[index]);
-      assert.match(staleRows[index].textContent, /stale · 5m/);
+      assert.match(staleRows[index].textContent, /stale 5m/);
     }
     for (const surface of [strip, mobile]) assert.doesNotMatch(surface.textContent, /unmeasured|Hidden source|grok/);
     if (interaction === "sidebar-focus") assert.equal(app.run("document.activeElement"), links[0]);

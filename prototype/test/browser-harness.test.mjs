@@ -4,7 +4,56 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { cleanupBrowserProfile } from "../scripts/browser-harness.mjs";
+import { cleanupBrowserProfile, waitForBrowserPort } from "../scripts/browser-harness.mjs";
+
+const runningBrowser = () => ({ exitCode: null, signalCode: null });
+const missingPort = () => { const error = Error("Not ready"); error.code = "ENOENT"; throw error; };
+
+test("cold browser readiness beyond ten seconds uses a separate bounded launch budget", async () => {
+  let elapsed = 0, polls = 0;
+  const port = await waitForBrowserPort(runningBrowser(), "/synthetic/profile", {
+    now: () => elapsed,
+    wait: async (ms) => { elapsed += ms; },
+    readActivePort: async () => { polls++; return elapsed < 12000 ? missingPort() : "9222\n/devtools/browser/fixture"; },
+  });
+  assert.equal(port, 9222);
+  assert.equal(elapsed, 12000);
+  assert.equal(polls, 121, "readiness is polled, not a second browser launch");
+});
+
+test("browser readiness times out at thirty seconds with bounded startup evidence", async () => {
+  let elapsed = 0;
+  await assert.rejects(waitForBrowserPort(runningBrowser(), "/synthetic/profile", {
+    now: () => elapsed, wait: async (ms) => { elapsed += ms; },
+    readActivePort: async () => missingPort(), diagnostics: () => "Synthetic startup diagnostic",
+  }), /Chromium startup timed out after 30000ms: Synthetic startup diagnostic/);
+  assert.equal(elapsed, 30000, "a browser that never starts still fails closed");
+});
+
+test("partially written or invalid debugging ports are not readiness", async () => {
+  let elapsed = 0;
+  const readings = ["", "0", "65536", "not a port", "9223\n/devtools/browser/fixture"];
+  assert.equal(await waitForBrowserPort(runningBrowser(), "/synthetic/profile", {
+    now: () => elapsed, wait: async (ms) => { elapsed += ms; }, readActivePort: async () => readings.shift(),
+  }), 9223);
+  assert.equal(elapsed, 400);
+});
+
+for (const browser of [{exitCode: 1, signalCode: null}, {exitCode: null, signalCode: "SIGKILL"}]) {
+  test(`browser exit ${browser.exitCode ?? browser.signalCode} fails immediately instead of waiting`, async () => {
+    await assert.rejects(waitForBrowserPort(browser, "/synthetic/profile", {
+      readActivePort: async () => assert.fail("exited browser must not be polled"), diagnostics: () => "Synthetic failure",
+    }), /Chromium exited (1|SIGKILL): Synthetic failure/);
+  });
+}
+
+test("spawn and profile access errors retain their original failure", async () => {
+  for (const code of ["ENOENT", "EACCES"]) {
+    const error = Object.assign(Error(code), {code});
+    await assert.rejects(waitForBrowserPort(runningBrowser(), "/synthetic/profile", code === "ENOENT"
+      ? {spawnError: () => error} : {readActivePort: async () => { throw error; }}), (received) => received === error);
+  }
+});
 
 test("browser profile cleanup waits for the Chromium process to exit", async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-browser-cleanup-test-"));

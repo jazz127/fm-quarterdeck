@@ -112,7 +112,8 @@ try {
     } else {
       assert.equal(state.display, "none", "Options hidden on desktop");
       assert.equal(state.parent, "conversation-head", "desktop Options stays in its original hidden location");
-      assert.equal(await evalPage(`document.querySelector('#review-send').textContent`), "Send batch (Ctrl/Cmd+Enter)", "desktop shortcut presentation retained");
+      assert.equal(await evalPage(`document.querySelector('#review-send').textContent`), "Send batch", "desktop label retained");
+      assert.equal(await evalPage(`document.querySelector('#review-send').dataset.hint`), "Ctrl/Cmd+Enter", "desktop shortcut hint retained");
       assert.notEqual(await evalPage(`getComputedStyle(document.querySelector('.conversation-head')).display`), "none", "desktop header retained");
       assert.equal(await evalPage(`document.querySelector('#conversation-filter-shortcut').getAttribute('aria-controls')`), "lane-filter-controls", "desktop Included lanes disclosure retained");
       const before = await evalPage(`document.querySelector('#lane-panel-toggle').getAttribute('aria-expanded')`);

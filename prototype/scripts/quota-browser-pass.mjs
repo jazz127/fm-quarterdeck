@@ -10,7 +10,7 @@ import { createServer } from "../server.js";
 import { sanitizeQuota } from "../quota.js";
 
 const chromium = process.env.CHROMIUM || "chromium";
-const profile = await mkdtemp(path.join(process.cwd(), ".quota-chrome-"));
+const profile = await mkdtemp(path.join(os.tmpdir(), "quota-chrome-"));
 
 const sampleRawQuota = {
   schemaVersion: 5,
@@ -180,14 +180,14 @@ try {
   assert.ok(desktopSidebar.html.includes("agy"), "desktop sidebar shows AGY (Grok-only bug fixed)");
   assert.ok(!desktopSidebar.html.includes("commandcode"), "desktop sidebar excludes inactive providers");
   assert.equal(await evalJs('document.querySelectorAll("#quota-strip .quota-family").length'), 4, "AGY scope families and unsplit providers each have a compact box");
-  assert.equal(await evalJs('document.querySelectorAll("#quota-strip .quota-family-notch").length'), 4, "source-backed Codex and Grok intervals draw notches, AGY does not");
+  assert.equal(await evalJs('document.querySelectorAll("#quota-strip .quota-family-notch").length'), 6, "source intervals and in-range AGY label intervals draw notches");
   assert.ok(await evalJs('document.querySelector("#quota-strip .quota-family-notch")?.getAttribute("aria-label")?.includes("remaining at source capture")'), "notch has an accessible meaning");
-  assert.ok(Math.abs(Number(await evalJs('document.querySelector("#quota-strip .quota-family-notch").style.getPropertyValue("--remaining").replace("%", "")')) - 79.1667) < 0.001, "5d13h remaining in the 7-day Codex window positions the marker at 79.1%");
+  assert.ok(Math.abs(Number(await evalJs('document.querySelector("#quota-strip [data-quota-key*=codex] .quota-family-notch").style.getPropertyValue("--remaining").replace("%", "")')) - 79.1667) < 0.001, "5d13h remaining in the 7-day Codex window positions the marker at 79.1%");
   assert.ok(desktopSidebar.html.includes("Gemini 5-hour") && desktopSidebar.html.includes("Claude/GPT 5-hour"), "desktop sidebar shows multiple windows for AGY");
   assert.ok(desktopSidebar.freshness.length > 0, "desktop sidebar shows freshness timestamp");
   assert.ok(!desktopSidebar.html.includes("time ?"), "missing window timing does not clutter rows");
   assert.equal(await evalJs('document.querySelectorAll("#quota-strip .quota-family-side").length'), 4, "one Grok card alongside Codex and two AGY families");
-  assert.deepEqual(await evalJs('[...document.querySelectorAll("#quota-strip .quota-family-side")].filter(f => f.querySelector(".quota-family-identity")?.textContent === "grok").map(f => [...f.querySelectorAll(".quota-family-row")].map(r => ({ label: r.querySelector(".quota-family-label").firstChild.textContent, value: r.querySelector(".quota-family-value").textContent })))'), [[{ label: "Credits", value: "12%" }, { label: "Build", value: "43%" }, { label: "Chat", value: "80%" }]], "independent Grok rows in one card");
+  assert.deepEqual(await evalJs('[...document.querySelectorAll("#quota-strip .quota-family-side")].filter(f => f.querySelector(".quota-family-title > .provider-name")?.textContent === "grok").map(f => [...f.querySelectorAll(".quota-family-row")].map(r => ({ label: r.querySelector(".quota-family-label").firstChild.textContent.replace(/ · $/, ""), value: r.querySelector(".quota-family-value").textContent })))'), [[{ label: "Credits", value: "12%" }, { label: "Build", value: "43%" }, { label: "Chat", value: "80%" }]], "independent Grok rows in one card");
 
   // Changing 1/2/3-digit values must not move either bar edge or the notch.
   const stableGeometry = (selector) => `(() => {
@@ -219,22 +219,22 @@ try {
   }
   await evalJs('document.querySelector(".workspace").style.removeProperty("--shell-nav-width")');
 
-  // Navigate to #quota view via View all link
-  await evalJs('document.querySelector(".sidebar-quota-link").click()');
+  // The full Quota page remains reachable from the main navigation.
+  await evalJs(`document.querySelector('.primary-nav [data-view="quota"]').click()`);
   await wait(150);
 
   const desktopQuotaView = await evalJs(`(() => {
     const view = document.querySelector("#quota-view");
     const hash = location.hash;
-    const accordions = [...view.querySelectorAll("details.quota-accordion")].map(d => ({
+    const accordions = [...view.querySelectorAll("article.quota-card[data-provider]")].map(d => ({
       provider: d.dataset.provider,
-      open: d.open,
-      summary: d.querySelector("summary")?.textContent || ""
+      open: d.querySelector(".quota-more").open,
+      summary: d.querySelector(".quota-card-head").textContent + d.querySelector(".quota-summary-windows").textContent
     }));
     const limitingBadges = view.querySelectorAll(".quota-summary-window-limiting").length;
     const pacingNotes = view.querySelectorAll(".quota-pacing-note").length;
-    const unconfigured = view.querySelectorAll(".quota-card-compact").length;
-    const progressBars = [...view.querySelectorAll(".quota-bar[role='progressbar']")].map(b => ({
+    const unconfigured = view.querySelectorAll(".quota-unconfigured-chip").length;
+    const progressBars = [...view.querySelectorAll(".quota-family-track[role='progressbar']")].map(b => ({
       now: b.getAttribute("aria-valuenow"),
       width: b.querySelector("span")?.style.width
     }));
@@ -246,23 +246,34 @@ try {
   assert.equal(await evalJs(stableGeometry('#quota-view .quota-family-row')), true, 'full-page bar and notch are fixed across percentage widths');
   assert.equal(desktopQuotaView.overflow, false, "desktop #quota-view has no horizontal overflow");
   assert.equal(desktopQuotaView.accordions.length, 3, "three active provider accordions rendered");
-  assert.ok(desktopQuotaView.accordions.some(a => a.provider === "codex" && a.open), "Codex accordion open");
-  assert.ok(desktopQuotaView.accordions.some(a => a.provider === "grok" && a.open), "Grok accordion open");
-  assert.ok(desktopQuotaView.accordions.some(a => a.provider === "agy" && a.open), "AGY accordion open");
+  assert.ok(desktopQuotaView.accordions.every(a => !a.open), "details collapsed by default");
+  assert.equal(await evalJs('document.querySelectorAll(".quota-summary-tile").length'), 4, "four summary tiles");
+  assert.ok(await evalJs('document.querySelector(".quota-summary [data-quota-key=tightest]").textContent.includes("12%") && document.querySelector(".quota-summary [data-quota-key=tightest] [data-quota-target=grok]") !== null'), "tightest uses Grok effective 12%");
+  assert.equal(await evalJs('document.querySelectorAll("#quota-view .quota-family-band").length'), 3, "bands require both source marker and reserve");
+  assert.equal(await evalJs('document.querySelectorAll("#quota-view [data-provider=agy] .quota-family-band").length'), 0, "AGY marker-only evidence never gets a band");
+  await evalJs('document.querySelector(".quota-summary [data-quota-key=tightest] a").focus()');
+  await cmd("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+  await cmd("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  assert.equal(await evalJs('document.activeElement.closest("article")?.dataset.provider'), "grok", "summary activation focuses provider heading");
+  assert.equal(await evalJs('document.activeElement.tagName'), "H2");
   assert.ok(desktopQuotaView.limitingBadges >= 1, "limiting window badges rendered");
   assert.ok(desktopQuotaView.pacingNotes >= 1, "pacing notes comparing consumption to elapsed-time pacing rendered");
   assert.ok(desktopQuotaView.unconfigured >= 2, "inactive providers grouped into unconfigured tray");
   assert.ok(desktopQuotaView.accordions.some(a => a.provider === "grok" && a.summary.includes("Credits") && a.summary.includes("Build")), "both constrained provider windows remain visible in the summary");
-  assert.ok(desktopQuotaView.accordions.some(a => a.provider === "grok" && a.summary.includes("Source-reported limit week")), "only the source-named binding window is called limiting");
+  assert.ok(desktopQuotaView.accordions.some(a => a.provider === "grok" && a.summary.includes("limit Credits")), "only the source-named binding window is called limiting");
+  assert.equal(await evalJs('document.querySelectorAll(".quota-family-identity .provider-name").length'), 0, "provider name is not repeated in the monogram badge");
+  assert.equal(await evalJs('document.querySelector("#quota-view [data-provider=agy] h2").textContent'), "AGY");
   assert.equal(await evalJs('document.querySelectorAll("#quota-view [data-provider=agy] .quota-family").length'), 2, "full page separates proven AGY scopes");
   assert.equal(await evalJs('document.querySelectorAll("#quota-view [data-provider=agy] .quota-family-row").length'), 4, "two rows in each AGY family");
   assert.ok(await evalJs('[...document.querySelectorAll("#quota-view [data-provider=agy] .quota-family")].every(g => g.querySelectorAll(".quota-family-row").length === 2)'), "each proven family has exactly two compact window rows");
-  assert.equal(await evalJs("document.querySelector('#quota-strip [aria-label=\"Gemini 5-hour\"]')?.textContent.includes('5h')"), true, "only source-scoped labels abbreviate 5-hour");
-  assert.equal(await evalJs('document.querySelectorAll("#quota-view .quota-family-notch").length'), 4, "missing AGY boundaries never draw a false timing marker");
+  assert.equal(await evalJs("document.querySelector('#quota-strip .quota-family-label[title=\"Gemini 5-hour\"]')?.textContent.includes('5h')"), true, "only source-scoped labels abbreviate 5-hour");
+  assert.equal(await evalJs('document.querySelectorAll("#quota-view .quota-family-notch").length'), 6, "out-of-range AGY label intervals never draw timing markers");
+  assert.ok(await evalJs('[...document.querySelectorAll("#quota-view [data-provider=agy] .quota-family-row")].every(r => r.title.includes("Window length from provider label"))'), "AGY label interval provenance is disclosed");
+  assert.ok(await evalJs('[...document.querySelectorAll("#quota-view [data-provider=agy] .quota-family-label")].some(r => r.firstChild.textContent === "7d" && r.getAttribute("aria-label").includes("weekly"))'), "7d label preserves full accessible wording");
   assert.ok(!await evalJs('document.querySelector("#quota-view").innerText.includes("time ?")'), "full page hides timing artifact");
   assert.equal(await evalJs('document.querySelectorAll("#quota-view [data-provider=grok] .quota-family").length'), 1);
   assert.equal(await evalJs('document.querySelectorAll("#quota-view [data-provider=grok] .quota-family-row").length'), 3);
-  assert.ok(await evalJs('document.querySelector("#quota-view .quota-family-identity")?.getAttribute("aria-label")?.includes("text fallback")'), "accessible provider identity when logo assets are unavailable");
+  assert.ok(await evalJs('document.querySelector("#quota-view .quota-card-head h2")?.textContent'), "provider identity remains readable beside decorative monogram");
   const exactReset = await evalJs('document.querySelector(".quota-window time[datetime=\'2026-09-30T22:52:52.000Z\']") !== null');
   assert.ok(exactReset, "exact reset datetime remains available in expanded detail");
 
@@ -270,14 +281,32 @@ try {
   const codexBar = desktopQuotaView.progressBars.find(b => b.now === "19");
   assert.ok(codexBar && codexBar.width === "19%", "truthful remaining progressbar width matches percentRemaining exactly");
 
-  // Test Collapse All and Expand All buttons
-  await evalJs('document.querySelector("#quota-collapse-all").click()');
-  const allClosed = await evalJs('[...document.querySelectorAll("details.quota-accordion")].every(d => !d.open)');
-  assert.equal(allClosed, true, "collapse all closes all provider accordions");
-
-  await evalJs('document.querySelector("#quota-expand-all").click()');
-  const allOpened = await evalJs('[...document.querySelectorAll("details.quota-accordion")].every(d => d.open)');
-  assert.equal(allOpened, true, "expand all opens all provider accordions");
+  // Shared keys and saved preference; AGY's adjacent families remain one page card.
+  for (const mode of ["highest", "lowest", "runway", "runway-lowest", "az", "za"]) {
+    const key = mode.startsWith("runway") ? "runway" : ["az", "za"].includes(mode) ? "az" : "left";
+    for (let attempt = 0; attempt < 2 && await evalJs('localStorage.getItem("fm-agentos-sidebar-quota-sort.v1")') !== mode; attempt++) await evalJs(`document.querySelector("#quota-sort-${key}").click()`);
+    assert.deepEqual(await evalJs('[...document.querySelectorAll("#quota-providers article[data-provider]")].map(c => c.dataset.provider)'), await evalJs('[...new Set([...document.querySelectorAll("#quota-strip .quota-family")].map(c => JSON.parse(c.dataset.quotaKey)[0]))]'), `${mode}: page and sidebar share order`);
+    assert.equal(await evalJs('localStorage.getItem("fm-agentos-sidebar-quota-sort.v1")'), mode);
+    assert.equal(await evalJs('document.querySelector("#sidebar-quota-sort [data-sort=runway]").getAttribute("aria-pressed")'), String(mode.startsWith("runway")));
+  }
+  await evalJs("window.quotaReloadPending = true");
+  await cmd("Page.reload");
+  for (let i = 0; i < 100; i++) {
+    if (await evalJs('!window.quotaReloadPending && document.readyState === "complete" && document.querySelector("#quota-providers article")')) break;
+    await wait(50);
+  }
+  assert.equal(await evalJs('!window.quotaReloadPending && document.readyState === "complete"'), true, "checks the replaced document after reload");
+  assert.equal(await evalJs('localStorage.getItem("fm-agentos-sidebar-quota-sort.v1")'), "za", "shared preference persists across reload");
+  assert.equal(await evalJs('document.querySelector("#sidebar-quota-sort [data-sort=az]").getAttribute("aria-pressed")'), "true");
+  assert.equal(await evalJs('document.querySelector("#quota-sort-az .quota-sort-direction").textContent'), "↓");
+  await evalJs('document.querySelector("#sidebar-quota-sort [data-sort=left]").click(); if (localStorage.getItem("fm-agentos-sidebar-quota-sort.v1") !== "lowest") document.querySelector("#sidebar-quota-sort [data-sort=left]").click()');
+  assert.equal(await evalJs('document.querySelector("#quota-sort-left").getAttribute("aria-pressed")'), "true", "sidebar changes page control");
+  assert.equal(await evalJs('document.querySelector("#quota-sort-left .quota-sort-direction").textContent'), "↑");
+  await evalJs('document.querySelector("#quota-details-toggle").click()');
+  assert.equal(await evalJs('[...document.querySelectorAll("details.quota-more")].every(d => d.open)'), true, "Show all details opens every disclosure");
+  await evalJs('document.querySelector("#quota-details-toggle").click()');
+  assert.equal(await evalJs('[...document.querySelectorAll("details.quota-more")].every(d => !d.open)'), true, "Hide all details closes every disclosure");
+  await evalJs('document.querySelector("#quota-details-toggle").click()');
 
   await cmd("Emulation.setDeviceMetricsOverride", { width: 834, height: 1000, deviceScaleFactor: 1, mobile: true });
   assert.equal(await evalJs('document.documentElement.scrollWidth > innerWidth'), false, "tablet quota has no horizontal overflow");
@@ -307,6 +336,9 @@ try {
     const fit = await evalJs(`(() => ({ overflow: document.documentElement.scrollWidth > innerWidth,
       rows: [...document.querySelectorAll("#quota-view .quota-family-row")].every(row => row.scrollWidth <= row.clientWidth + 1 && row.querySelector(".quota-family-meter").getBoundingClientRect().width >= 20) }))()`);
     assert.ok(fit.rows && !fit.overflow, `${width}px quota rows fit without clipping: ${JSON.stringify(fit)}`);
+    await evalJs('document.querySelector(".quota-summary [data-quota-key=tightest] a").click()');
+    assert.equal(await evalJs('document.activeElement.tagName'), "H2");
+    assert.ok(await evalJs('document.activeElement.getBoundingClientRect().top >= document.querySelector(".product-identity").getBoundingClientRect().bottom'), `${width}px target heading stays below the fixed phone header`);
   }
   await cmd("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   const mobileViewCheck = await evalJs(`(() => {
@@ -324,25 +356,26 @@ try {
 
   // Test tapping accordion on mobile
   const summaryPoint = await evalJs(`(() => {
-    const summary = document.querySelector("details.quota-accordion summary");
+    const summary = document.querySelector("details.quota-more summary");
+    summary.scrollIntoView({block: "center"});
     const r = summary.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   })()`);
   await cmd("Input.dispatchMouseEvent", { type: "mousePressed", ...summaryPoint, button: "left", clickCount: 1 });
   await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", ...summaryPoint, button: "left", clickCount: 1 });
 
-  const toggledState = await evalJs('document.querySelector("details.quota-accordion").open');
+  const toggledState = await evalJs('document.querySelector("details.quota-more").open');
   assert.equal(toggledState, false, "tapping accordion header toggles open/close on mobile");
 
   // The narrowest supported phone width must preserve summary and detail inside the viewport.
   await cmd("Emulation.setDeviceMetricsOverride", { width: 320, height: 700, deviceScaleFactor: 1, mobile: true });
-  await evalJs('document.querySelector("#quota-expand-all").click()');
+  await evalJs('document.querySelector("#quota-details-toggle").click()');
   const narrow = await evalJs(`(() => ({
     overflow: document.documentElement.scrollWidth > innerWidth,
     cardsFit: [...document.querySelectorAll("#quota-view .quota-card")].every(c => c.getBoundingClientRect().right <= innerWidth && c.getBoundingClientRect().left >= 0),
-    detailsOpen: [...document.querySelectorAll("details.quota-accordion")].every(d => d.open),
+    detailsOpen: [...document.querySelectorAll("details.quota-more")].every(d => d.open),
     windowsVisible: document.querySelectorAll("#quota-view .quota-family-row").length,
-    cards: [...document.querySelectorAll("details.quota-accordion")].map(d => ({ provider: d.dataset.provider, open: d.open, right: Math.round(d.getBoundingClientRect().right) }))
+    cards: [...document.querySelectorAll("article.quota-card")].map(d => ({ provider: d.dataset.provider, open: d.querySelector("details").open, right: Math.round(d.getBoundingClientRect().right) }))
   }))()`);
   console.log("320px expanded geometry", JSON.stringify(narrow));
   if (process.env.QUOTA_SCREENSHOT) {
@@ -364,6 +397,7 @@ try {
     await wait(100);
   }
   assert.ok(incompleteLoaded, "incomplete quota reading rendered");
+  await evalJs('document.querySelector("#quota-details-toggle").click()');
   const incomplete = await evalJs(`(() => {
     const view = document.querySelector("#quota-view");
     return { overflow: document.documentElement.scrollWidth > innerWidth, text: view.innerText,

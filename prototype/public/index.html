@@ -38,11 +38,11 @@
         <section id="sidebar-quota" class="sidebar-quota" aria-label="Subscription quota snapshot">
           <div id="quota-resize" class="panel-divider quota-divider" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="sidebar-quota" aria-label="Resize quota limits: drag divider up or down; use arrow keys to adjust, Home to reset" title="Drag divider to resize quota limits · Home resets"></div>
           <div class="sidebar-quota-head">
-            <div class="sidebar-quota-heading">
-              <span>Quota limits</span>
-              <small id="sidebar-quota-freshness" class="sidebar-quota-freshness"></small>
+            <button id="sidebar-quota-toggle" class="sidebar-quota-toggle" type="button" aria-label="Collapse quota" aria-expanded="true" aria-controls="quota-strip"><span>Quota</span></button>
+            <small id="sidebar-quota-freshness" class="sidebar-quota-freshness"></small>
+            <div id="sidebar-quota-sort" class="sidebar-quota-sort" role="group" aria-label="Sort quota limits">
+              <button type="button" class="sidebar-quota-sort-option" data-sort="left" aria-pressed="true" title="Captured remaining percentage · select again to reverse; unknown and stale last">Left<span class="sidebar-quota-sort-direction" aria-hidden="true">↓</span></button><button type="button" class="sidebar-quota-sort-option" data-sort="runway" aria-pressed="false" aria-label="Runway" title="Runway: source pace reserve, or source runway coverage relative to reset; unknown and stale last">Run<span class="sidebar-quota-sort-long">way</span><span class="sidebar-quota-sort-direction" aria-hidden="true">↓</span></button><button type="button" class="sidebar-quota-sort-option" data-sort="az" aria-pressed="false" aria-label="Provider name, A to Z" title="Provider name · select again to reverse">AZ<span class="sidebar-quota-sort-direction" aria-hidden="true">↑</span></button>
             </div>
-            <a href="#quota" class="sidebar-quota-link" title="Open full Quota page">View all →</a>
           </div>
           <div id="quota-strip" class="quota-strip" aria-label="Quota snapshot" aria-live="polite"><a href="#quota" title="Open quota details">Quota · loading…</a></div>
         </section>
@@ -143,7 +143,7 @@
         </section>
 
         <section id="overview-view" class="product-view feature-view active" aria-label="Fleet overview">
-          <header class="feature-head"><div><p class="eyebrow">OVERVIEW</p><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge"></span></header>
+          <header class="feature-head compact-head"><div><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge"></span></header>
           <div id="summary" class="summary-grid"></div>
           <p id="overview-state" class="notice hidden" role="status"></p>
           <div class="section-tools"><h2 class="section-heading">Repositories → fleets → voyages</h2><div class="scan-controls"><div id="overview-status-buttons" class="status-button-filter" role="group" aria-label="Filter work by status"></div><label class="sr-only-select">Work status <select id="overview-status" aria-label="Filter work by status"><option value="all">All statuses</option></select></label><label>Sort <select id="overview-sort"><option value="name">Name</option><option value="activity">Active crew</option></select></label><button type="button" id="overview-expand">Expand all</button><button type="button" id="overview-collapse">Collapse all</button></div></div>
@@ -151,7 +151,7 @@
         </section>
 
         <section id="work-view" class="product-view feature-view" aria-label="Work split">
-          <header class="feature-head"><div><p class="eyebrow">WORK SPLIT</p><h1>Workstreams &amp; implementation slices</h1><p>Firstmate records stay read-only. Quarterdeck classification and understood acknowledgements change presentation only.</p></div><span class="source-badge">data/backlog.md</span></header>
+          <header class="feature-head compact-head"><div><h1>Workstreams &amp; implementation slices</h1><p title="Firstmate records stay read-only. Quarterdeck classification and understood acknowledgements change presentation only.">Firstmate records stay read-only. Quarterdeck classification and understood acknowledgements change presentation only.</p></div><span class="source-badge">data/backlog.md</span></header>
           <div class="section-tools work-tools"><h2 class="section-heading">Organize work</h2><div class="scan-controls"><div id="work-phase-buttons" class="status-button-filter" role="group" aria-label="Filter work by phase"></div><label>Group by <select id="work-group-by" aria-label="Group work by"><option value="repository">Repository → fleet → voyage</option></select></label><label>Repository <select id="work-repository" aria-label="Filter work by repository"><option value="all">All repositories</option></select></label><label class="sr-only-select">Phase <select id="work-phase" aria-label="Filter work by phase"><option value="all">All phases</option><option value="active">Active</option><option value="waiting">Waiting / external delay</option><option value="captain-action">Captain action</option><option value="cleanup">Retained / cleanup</option><option value="unknown">Unknown evidence</option><option value="backlog">Backlog</option><option value="newly-done">Newly done</option><option value="previously-done">Previously done</option></select></label></div></div>
           <p id="work-state" class="notice hidden" role="status"></p>
           <section aria-labelledby="tight-heading"><h2 id="tight-heading" class="section-heading">Expeditions</h2><p class="muted">Completion attention is separate from execution, retained cleanup and delivery. Newly done is ready for review, not a claim of live code. Pressure and completion counts can overlap without duplicate expeditions.</p><div id="tight-work" class="work-grid"></div></section>
@@ -159,7 +159,7 @@
         </section>
 
         <section id="expenses-view" class="product-view feature-view" aria-label="Expenses">
-          <header class="feature-head"><div><p class="eyebrow">EXPENSES</p><h1>Operating costs</h1><p>Review every recorded charge and see where operating spend is going.</p></div><span id="expense-source" class="source-badge"></span></header>
+          <header class="feature-head compact-head"><div><h1>Operating costs</h1><p title="Review every recorded charge and see where operating spend is going.">Review every recorded charge and see where operating spend is going.</p></div><span id="expense-source" class="source-badge"></span></header>
           <p id="expense-notice" class="notice hidden"></p>
           <section class="cost-panels" aria-label="Read-only live billing evidence">
             <h2>Provider billing · read-only</h2>
@@ -204,21 +204,23 @@
 
         <section id="quota-view" class="product-view feature-view" aria-label="Subscription quota">
           <header class="feature-head"><div><p class="eyebrow">QUOTA</p><h1>Subscription limits</h1><p>Read-only quota evidence from quota-axi. Missing limits remain unknown.</p></div><span class="source-badge">quota-axi</span></header>
-          <div class="quota-controls"><label><input id="quota-hide-inactive" type="checkbox"> Hide inactive subscriptions</label><button id="quota-order" type="button" aria-label="Sort by lowest remaining first" aria-pressed="false">Highest remaining first ↓</button><button id="quota-expand-all" type="button">Expand all</button><button id="quota-collapse-all" type="button">Collapse all</button></div>
-          <p id="quota-state" class="notice" role="status" aria-live="polite">Loading quota…</p>
-          <div id="quota-providers" class="quota-grid"></div>
+          <p id="quota-state" class="quota-freshline" role="status" aria-live="polite">Loading quota…</p>
+          <div class="quota-controls"><span id="quota-sort-label">Sort</span><div class="quota-sort" role="group" aria-labelledby="quota-sort-label"><button id="quota-sort-left" type="button" data-quota-sort="left" aria-pressed="true" title="Select again to reverse direction">Left <span class="quota-sort-direction" aria-hidden="true">↓</span></button><button id="quota-sort-runway" type="button" data-quota-sort="runway" aria-pressed="false" title="Select again to reverse direction">Runway <span class="quota-sort-direction" aria-hidden="true">↓</span></button><button id="quota-sort-az" type="button" data-quota-sort="az" aria-pressed="false" title="Select again to reverse direction">AZ <span class="quota-sort-direction" aria-hidden="true">↑</span></button></div><label><input id="quota-hide-inactive" type="checkbox"> Hide not set up</label><button id="quota-details-toggle" type="button" aria-pressed="false">Show all details</button></div>
+          <div id="quota-summary"></div>
+          <p id="quota-legend" class="quota-legend" aria-hidden="true" hidden><span><i></i> remaining</span><span><i class="quota-legend-track"></i> used</span><span><i class="quota-legend-notch"></i> time left in window</span><span><i class="quota-legend-reserve"></i> reserve (under pace)</span><span><i class="quota-legend-deficit"></i> over pace</span></p>
+          <div id="quota-providers" class="quota-grid" aria-busy="true"><div class="quota-skeleton" data-quota-key="loading-1"><span></span><span></span><span></span></div><div class="quota-skeleton" data-quota-key="loading-2"><span></span><span></span><span></span></div></div>
         </section>
 
         <section id="preferences-view" class="product-view feature-view" aria-label="Firstmate preferences">
-          <header class="feature-head"><div><p class="eyebrow">PREFERENCES</p><h1>Working preferences</h1><p>Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.</p></div><span id="preferences-source" class="source-badge">data/captain.md</span></header>
+          <header class="feature-head compact-head"><div><h1>Working preferences</h1><p title="Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.">Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.</p></div><span id="preferences-source" class="source-badge">data/captain.md</span></header>
           <p id="preferences-state" class="notice" role="status" aria-live="polite">Loading preferences…</p>
           <div class="scan-controls" aria-label="Preference navigation"><label>Show <select id="preferences-density"><option value="titles">Titles only</option><option value="reasons">Titles and reasons</option><option value="details" selected>Titles, reasons and details</option></select></label><label>Sort <select id="preferences-sort"><option value="source">Source order</option><option value="newest">Newest evidence</option><option value="oldest">Oldest evidence</option></select></label><button type="button" id="preferences-expand">Expand all</button><button type="button" id="preferences-collapse">Collapse all</button></div>
           <div id="preferences-list" class="preferences-list"></div>
         </section>
 
         <section id="closed-view" class="product-view feature-view closed-view" aria-label="Closed fleets">
-          <header class="feature-head">
-            <div><p class="eyebrow">FLEET CHATS</p><h1>Closed fleets</h1><p>Browse completed fleets and open their historical conversations.</p></div>
+          <header class="feature-head compact-head">
+            <div><h1>Closed fleets</h1><p title="Browse completed fleets and open their historical conversations.">Browse completed fleets and open their historical conversations.</p></div>
             <button id="closed-back" type="button">Back to Fleet Chats</button>
           </header>
           <label class="closed-search"><span>Filter closed fleets</span><input id="closed-search" type="search" placeholder="Search fleets or tasks" autocomplete="off"></label>
@@ -229,11 +231,12 @@
       <button id="review-pick" type="button" hidden aria-label="Annotate hovered region">＋ Annotate</button>
       <aside id="review-panel" class="review-panel" hidden aria-label="Review conversation">
         <div id="review-resize" class="panel-divider review-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="review-panel" aria-label="Resize review conversation: drag divider left or right; use arrow keys to adjust, Home to reset" title="Drag divider to resize review conversation · Home resets"></div>
-        <header><strong>Review conversation</strong><div class="review-tabs" role="tablist" aria-label="Review mode"><button id="review-conversation-tab" type="button" role="tab" aria-selected="true" aria-controls="review-form">Message</button><button id="review-annotation-tab" type="button" role="tab" aria-selected="false" aria-controls="review-annotation-tools" tabindex="-1">Annotation</button><button id="review-history-tab" type="button" role="tab" aria-selected="false" aria-controls="review-thread" tabindex="-1" aria-label="Review queued notes and batch history">Review</button></div><div class="review-header-actions"><button id="review-clear-location" type="button" hidden>Cancel selection</button><button id="review-close" type="button" aria-label="Close review conversation (keep draft)">Close ×</button></div></header>
+        <header><strong>Review conversation</strong><div class="review-tabs" role="tablist" aria-label="Review mode"><button id="review-conversation-tab" type="button" role="tab" aria-selected="true" aria-controls="review-form">Message</button><button id="review-annotation-tab" type="button" role="tab" aria-selected="false" aria-controls="review-form" tabindex="-1">Annotation</button><button id="review-history-tab" type="button" role="tab" aria-selected="false" aria-controls="review-phone-thread" tabindex="-1" aria-label="Review queued notes and batch history">Review</button></div><div class="review-header-actions"><button id="review-clear-location" type="button" hidden>Cancel selection</button><button id="review-close" type="button" aria-label="Close review conversation (keep draft)">Close ×</button></div></header>
         <p id="review-context" class="muted"></p>
-        <div id="review-thread" class="review-thread" role="log" aria-live="polite"></div>
-        <div id="review-annotation-tools" hidden><button id="review-select-location" type="button" aria-label="Annotate">Annotate</button></div>
-        <form id="review-form"><div class="review-form-header"><label for="review-message">Annotation or message</label><button id="review-form-close" type="button" aria-label="Close annotation or message (keep draft)">Close ×</button></div><textarea id="review-message" rows="3" maxlength="4000" placeholder="Message firstmate"></textarea><small class="review-shortcuts">Enter: queue · Shift+Enter: new line · Ctrl/Cmd+Enter: send</small><p id="review-target" class="muted"></p><div class="review-actions"><button id="review-queue" type="submit">Queue message (Enter)</button><button id="review-send" type="button">Send batch (Ctrl/Cmd+Enter)</button><button id="review-end" type="button">Send &amp; end</button></div></form>
+        <div id="review-phone-thread" class="review-thread" role="log" aria-live="polite" hidden></div>
+        <details id="review-sent" class="review-section review-sent"><summary id="review-sent-summary" aria-label="Sent batches, 0"><span>Sent</span> <span id="review-sent-count" class="review-section-count">0</span></summary><div id="review-sent-list" class="review-thread" role="log" aria-live="polite"></div></details>
+        <section id="review-queued" class="review-section review-queued" aria-labelledby="review-queued-title"><div class="review-section-head"><h3 id="review-queued-title">Queued <span id="review-queued-count" class="review-section-count">0</span></h3><button id="review-select-location" type="button" aria-label="Annotate">Annotate</button></div><div id="review-thread" class="review-thread" role="log" aria-live="polite"></div></section>
+        <form id="review-form"><div class="review-form-header"><label for="review-message">Annotation or message</label><button id="review-form-close" type="button" aria-label="Close annotation or message (keep draft)">Close ×</button></div><textarea id="review-message" rows="3" maxlength="4000" placeholder="Message firstmate"></textarea><small class="review-shortcuts">Enter: queue · Shift+Enter: new line · Ctrl/Cmd+Enter: send</small><p id="review-target" class="muted"></p><div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message (Enter)" data-hint="Enter">Queue</button><button id="review-send" type="button" data-hint="Ctrl/Cmd+Enter">Send batch</button><button id="review-end" type="button" data-hint="Then end chat">Send &amp; End</button></div></form>
         <p id="review-state" role="status" aria-live="polite"></p>
       </aside>
       <div id="review-annotation" hidden role="dialog" aria-label="Annotate selected region"></div>
@@ -271,6 +274,7 @@
     <script src="/message-font-size.js"></script>
     <script src="/quota-view-model.js"></script>
     <script src="/cost-view-model.js"></script>
+    <script type="module" src="/shell-width.js"></script>
     <script type="module" src="/app.js"></script>
     <script type="module" src="/review-client.js"></script>
     <script type="module" src="/panel-resize.js"></script>

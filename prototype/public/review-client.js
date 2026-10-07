@@ -1,7 +1,7 @@
 // Native review overlay. Annotation is always available; the toggle swaps click precedence.
 const el = (id) => document.getElementById(id);
 // Content taps/clicks annotate immediately, including on touch devices with no hover.
-// The pen toggles interaction mode; controls always take ordinary clicks.
+// The pen toggles interaction mode; while it is on every click annotates, Alt-click interacts.
 let annotateByDefault = false;
 let awaitingReview = null;
 function showAwaitingReview(count) {
@@ -13,6 +13,8 @@ function showAwaitingReview(count) {
 }
 let selected = null;
 let activeReviewTab = "conversation";
+// Sent history is a collapsed section; expanding it never replaces the queue or composer.
+let sentOpen = false;
 let pickingRegion = false;
 let returnToArmed = false;
 let touchStart = null;
@@ -23,19 +25,21 @@ pickNotice.hidden = true;
 pickNotice.setAttribute?.("role", "status");
 pickNotice.innerHTML = '<span>Tap a place to attach your message</span><button type="button">Cancel</button>';
 document.body.append(pickNotice);
+// Phone width keeps Message/Review tabs; desktop shows Sent over Queued with no tabs.
+function reviewHistoryTab() { return Boolean(phoneReview?.matches) && activeReviewTab === "review"; }
 function setReviewTab(tab) {
   activeReviewTab = tab;
   const annotation = tab === "annotation";
+  const phone = Boolean(phoneReview?.matches);
   for (const [id, value] of [["review-conversation-tab", "conversation"], ["review-annotation-tab", "annotation"], ["review-history-tab", "review"]]) {
-    const selectedTab = tab === value && !(phoneReview?.matches && value === "annotation");
+    const selectedTab = tab === value && !(phone && value === "annotation");
     el(id)?.setAttribute("aria-selected", String(selectedTab));
     el(id)?.setAttribute("tabindex", selectedTab ? "0" : "-1");
   }
-  el("review-select-location")?.setAttribute("aria-pressed", String(annotation && Boolean(phoneReview?.matches)));
-  el("review-panel").setAttribute("data-review-tab", tab);
+  el("review-select-location")?.setAttribute("aria-pressed", String(annotation && phone));
+  el("review-panel").setAttribute("data-review-tab", phone ? tab : annotation ? "annotation" : sentOpen ? "review" : "conversation");
   syncReviewScrollLock();
-  if (el("review-annotation-tools")) el("review-annotation-tools").hidden = !annotation;
-  el("review-thread").hidden = tab !== "review";
+  el("review-phone-thread").hidden = !phone || tab !== "review";
 }
 function endPicking() {
   pickingRegion = false;
@@ -259,20 +263,29 @@ function update() {
   el("review-inline-summary").textContent = compactSummary;
 
   el("review-toggle").setAttribute("aria-label", annotateByDefault
-    ? "Annotation mode on: tap or click content to annotate; controls interact normally. Alt-click content to interact."
+    ? "Annotation mode on: tap or click content to annotate; every click is captured. Alt-click to interact."
     : "Annotation mode off: tap or click to interact; Alt-click to annotate on desktop.");
-  el("review-target").textContent = selected ? `Annotating ${selected.label} · ${selected.route}` : "Message to review conversation";
+  el("review-target").textContent = selected ? `Annotating ${selected.label} · ${selected.route}` : "";
   el("review-target").hidden = !selected && Boolean(phoneReview?.matches);
   updateSelectionAction();
-  el("review-queue").textContent = selected ? "Queue annotation" : "Queue message";
+  const queueLabel = selected ? "Queue annotation" : "Queue message";
+  el("review-queue").textContent = "Queue";
+  el("review-queue").setAttribute("aria-label", `${queueLabel} (Enter)`);
   el("review-context").textContent = `Version ${config.version.slice(0, 12)} · ${config.delivery === "lavish" ? `Lavish session ${config.sessionId}` : config.intakeReady ? "Firstmate inbox intake" : "Local receipt · Firstmate intake unavailable"}`;
-  const sendable = queue.length || retryBatches.length || (activeReviewTab !== "review" && el("review-message").value.trim());
+  const sendable = queue.length || retryBatches.length || (!reviewHistoryTab() && el("review-message").value.trim());
   el("review-send").disabled = !sendable || pending || !config.ready;
   el("review-end").disabled = pending || !config.ready || !sendable;
   el("review-queue").disabled = false;
   el("review-pick").hidden = !hovered || Boolean(desktopComposer?.matches);
   const thread = el("review-thread");
+  const sentList = el("review-sent-list");
+  const phoneThread = el("review-phone-thread");
   thread.replaceChildren();
+  sentList.replaceChildren();
+  phoneThread.replaceChildren();
+  el("review-sent-count").textContent = String(sent.length);
+  el("review-sent-summary").setAttribute("aria-label", `Sent batches, ${sent.length}`);
+  el("review-queued-count").textContent = String(queuedCount);
   saveDraft();
   function renderNote(entry, key, removeIndex = null) {
     const card = document.createElement("article");
@@ -336,7 +349,7 @@ function update() {
     }
     return card;
   }
-  for (const batch of sent) {
+  function renderSentBatch(batch) {
     const details = document.createElement("details");
     details.className = "review-batch";
     details.open = openBatches.has(batch.id);
@@ -364,9 +377,9 @@ function update() {
       details.append(retry);
     }
     details.addEventListener("toggle", () => { if (details.open) openBatches.add(batch.id); else openBatches.delete(batch.id); });
-    thread.append(details);
+    return details;
   }
-  if (queue.length) {
+  function renderQueuedBatch() {
     const details = document.createElement("details");
     details.className = "review-batch";
     details.open = openBatches.has(batchId || "draft");
@@ -378,10 +391,9 @@ function update() {
       const key = batchId || "draft";
       if (details.open) openBatches.add(key); else openBatches.delete(key);
     });
-    thread.append(details);
+    return details;
   }
-  for (const [captured, title] of [[inFlight, "Sending"], ...retryBatches.map((batch) => [batch, "Retry needed"])]) {
-    if (!captured) continue;
+  function renderCaptured(captured, title) {
     const details = document.createElement("details");
     details.className = "review-batch";
     details.open = openBatches.has(captured.id);
@@ -417,8 +429,17 @@ function update() {
       }
     }
     details.addEventListener("toggle", () => { if (details.open) openBatches.add(captured.id); else openBatches.delete(captured.id); });
-    thread.append(details);
+    return details;
   }
+  const capturedBatches = [[inFlight, "Sending"], ...retryBatches.map((batch) => [batch, "Retry needed"])].filter(([captured]) => captured);
+  // Desktop: Sent list over an always-listed queue (count lives in the section heading).
+  for (const batch of sent) sentList.append(renderSentBatch(batch));
+  for (const [index, entry] of queue.entries()) thread.append(renderNote(entry, `queued:${index}`, index));
+  for (const [captured, title] of capturedBatches) thread.append(renderCaptured(captured, title));
+  // Phone: the Review tab lists sent batches, the queued batch, then in-flight/retry batches.
+  for (const batch of sent) phoneThread.append(renderSentBatch(batch));
+  if (queue.length) phoneThread.append(renderQueuedBatch());
+  for (const [captured, title] of capturedBatches) phoneThread.append(renderCaptured(captured, title));
 }
 function selectRegion(node, point) {
   const next = regionFor(node);
@@ -477,6 +498,7 @@ function useCurrentVersion(next) {
   el("review-state").textContent = "Preview updated. Check unsent annotation targets. Unconfirmed deliveries retain their original IDs; retry to reconcile receipts.";
   return true;
 }
+const UNAVAILABLE = "Review delivery unavailable (Quarterdeck server down or restarting). Send resumes automatically when it is back; notes remain queued.";
 async function loadConfig() {
   try {
     const response = await fetch("/api/review", { cache: "no-store" });
@@ -485,11 +507,20 @@ async function loadConfig() {
     useCurrentVersion(next);
     showAwaitingReview(next.awaitingReview);
   } catch { config = { ready: false, version: "unknown", sessionId: "", delivery: "local" }; showAwaitingReview(null); }
-  if (!config.ready) el("review-state").textContent = "Review delivery unavailable. Notes remain queued.";
+  if (!config.ready) el("review-state").textContent = UNAVAILABLE;
+  else if (el("review-state").textContent === UNAVAILABLE) el("review-state").textContent = "Review delivery reconnected.";
   update();
-  void refreshStatuses();
+  // Status reads would fail too; keep the unavailable reason visible instead.
+  if (config.ready) void refreshStatuses();
 }
-if (typeof setInterval === "function") setInterval(() => { if (sent.some((batch) => !["completed", "failed", "replied"].includes(batch.state))) void refreshStatuses(); }, 5000);
+// Recovery re-reads run one at a time: while the open composer cannot send, and on tab return.
+let recheck = null;
+function recheckConfig() { recheck ||= loadConfig().finally(() => { recheck = null; }); }
+if (typeof setInterval === "function") setInterval(() => {
+  if (!config.ready && !el("review-panel").hidden) recheckConfig();
+  else if (config.ready && sent.some((batch) => !["completed", "failed", "replied"].includes(batch.state))) void refreshStatuses();
+}, 5000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "hidden") recheckConfig(); });
 // Keep one composer and its draft across layout switches. Phones retain the in-pane row.
 const desktopComposer = window.matchMedia?.("(min-width: 721px)");
 function resizeMessage() {
@@ -525,8 +556,10 @@ function placeComposer() {
 }
 function placeSelectionAction() {
   const action = el("review-select-location");
-  const destination = phoneReview?.matches ? document.querySelector(".review-header-actions") : el("review-annotation-tools");
-  if (action && destination?.insertBefore && action.parentElement !== destination) destination.insertBefore(action, destination.firstChild);
+  const destination = phoneReview?.matches ? document.querySelector(".review-header-actions") : document.querySelector(".review-section-head");
+  if (action && destination?.insertBefore && action.parentElement !== destination) {
+    if (phoneReview?.matches) destination.insertBefore(action, destination.firstChild); else destination.append(action);
+  }
   setReviewTab(activeReviewTab);
   updateSelectionAction();
 }
@@ -573,12 +606,17 @@ for (const id of reviewTabIds) {
   el(id)?.addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const tabs = phoneReview?.matches ? reviewTabIds.filter((tabId) => tabId !== "review-annotation-tab") : reviewTabIds;
+    const tabs = reviewTabIds.filter((tabId) => tabId !== "review-annotation-tab");
     const next = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs.at(-1)
       : tabs[(tabs.indexOf(id) + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
     el(next).click(); el(next).focus();
   });
 }
+el("review-sent")?.addEventListener("toggle", () => {
+  sentOpen = el("review-sent").open;
+  setReviewTab(activeReviewTab);
+  if (sentOpen) void refreshStatuses();
+});
 function updateSelectionAction() {
   const action = el("review-select-location");
   if (!action) return;
@@ -596,9 +634,8 @@ function updateSelectionAction() {
 el("review-select-location")?.addEventListener("click", () => {
   if (phoneReview?.matches && activeReviewTab !== "annotation") {
     document.activeElement?.blur?.();
-    setReviewTab("annotation"); update();
-    el("review-select-location").focus();
-    return;
+    // Switching the phone pane must not consume the activation that arms selection.
+    setReviewTab("annotation");
   }
   if (selected) { selected = null; selectedNode = null; positionHighlight(); }
   else if (pickingRegion) { endPicking(); update(); return; }
@@ -672,24 +709,15 @@ document.addEventListener("click", (event) => {
     }
     touchStart = null;
   }
-  if (pickingRegion) {
-    if (event.target.closest(".review-pick-notice") || !regionFor(event.target)) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    selectRegion(event.target);
-    return;
-  }
-  if (!event.target.closest(".product-view, .lane-list, .context-rail")) return;
-  // Alt inverts the current default for content. Operational controls always
-  // take an ordinary click, including when a gesture
-  // is enabled. Alt-click can still deliberately annotate a control.
-  if (!event.altKey && event.target.closest(controls)) return;
-  // Checked means ordinary content clicks annotate; Alt reverses that choice.
-  if (annotateByDefault === event.altKey) return;
-  if (!regionFor(event.target)) return;
+  // Review chrome stays operable so annotation mode can always be turned off.
+  if (event.target.closest(".review-pick-notice, .review-gesture-controls, #review-gesture-popover, #desktop-review-footer")) return;
+  // While annotating (picking, mode on, or Alt-click with mode off) the tool owns
+  // every click, including non-interactive areas; none reaches the page beneath.
+  if (!pickingRegion && annotateByDefault === event.altKey) return;
   event.preventDefault();
-  event.stopPropagation();
-  selectRegion(event.target, { x: event.clientX, y: event.clientY });
+  event.stopImmediatePropagation();
+  if (!regionFor(event.target)) return;
+  selectRegion(event.target, pickingRegion ? undefined : { x: event.clientX, y: event.clientY });
 }, true);
 el("review-message").addEventListener("input", () => { resizeMessage(); update(); });
 el("review-message").addEventListener("keydown", (event) => {
@@ -727,7 +755,7 @@ function enqueue() {
 el("review-form").addEventListener("submit", (event) => { event.preventDefault(); enqueue(); });
 async function send(end) {
   if (pending || !config.ready) return;
-  if (activeReviewTab !== "review" && el("review-message").value.trim() && (!queue.length || end) && !enqueue()) return;
+  if (!reviewHistoryTab() && el("review-message").value.trim() && (!queue.length || end) && !enqueue()) return;
   if (!queue.length && retryBatches.length && !end) { await submitBatch(retryBatches[0]); return; }
   if (!queue.length && (!end || !retryBatches.length)) return;
   // Capture the entire persisted board at the action cutoff, before any await.

@@ -33,7 +33,8 @@ window.quotaViewModel = (() => {
       // Grok reports credits plus independently measured product windows. Its
       // overlapping scope bounds do not establish a shared allowance; keep all
       // source windows as separate rows in one provider card, never merge data.
-      const scope = provider.provider === "grok" ? null : names.length === 1 ? names[0] : null;
+      // Claude's account and model windows likewise share a visual card only.
+      const scope = ["grok", "claude"].includes(provider.provider) ? null : names.length === 1 ? names[0] : null;
       const key = scope ? `scope:${scope}` : "provider";
       if (!result.has(key)) result.set(key, { name: scope ? `${provider.provider} · ${scope.replaceAll("_", " ")}` : provider.provider, provider: provider.provider, scope, windows: [] });
       result.get(key).windows.push(window);
@@ -43,18 +44,20 @@ window.quotaViewModel = (() => {
   // Abbreviate only an explicit source label's period suffix for compact cards.
   // This is presentation, never duration evidence or a grouping decision. If
   // abbreviating would collide with another row, retain the original labels.
+  const windowLabel = (label) => String(label ?? "").replace(/\b(?:week|weekly)\b/gi, "7d");
   const windowLabels = (family) => {
     const labels = family.windows.map((window) => window.label || window.scope || "Unknown");
     if (family.provider === "grok") {
-      const short = family.windows.map((window) => window.id === "credits" && window.label === "week" ? "Credits" : window.label?.replace(/^Grok /i, "") || "Unknown");
-      return short.map((label, index) => short.indexOf(label) === short.lastIndexOf(label) ? label : labels[index]);
+      const short = family.windows.map((window) => window.id === "credits" && window.label === "week" ? "Credits" : windowLabel(window.label?.replace(/^Grok /i, "") || "Unknown"));
+      return short.map((label, index) => short.indexOf(label) === short.lastIndexOf(label) ? label : windowLabel(labels[index]));
     }
-    if (!family.scope) return labels;
-    const short = labels.map((label) => /(?:^| )5-hour$/i.test(label) ? "5h" : /(?:^| )weekly$/i.test(label) ? "weekly" : label);
-    return short.map((label, index) => short.indexOf(label) === short.lastIndexOf(label) ? label : labels[index]);
+    if (!family.scope) return labels.map(windowLabel);
+    const short = labels.map((label) => /(?:^| )5-hour$/i.test(label) ? "5h" : /(?:^| )(?:week|weekly)$/i.test(label) ? "7d" : windowLabel(label));
+    return short.map((label, index) => short.indexOf(label) === short.lastIndexOf(label) ? label : windowLabel(labels[index]));
   };
   // A notch marks the remaining fraction of a complete source interval, not
-  // consumption or a guess from "weekly". The source can declare a start, or
+  // consumption. AGY's explicit period classification is retained with label
+  // provenance by the sanitizer. Other sources can declare a start, or
   // its pace can explicitly validate the window_seconds basis (an implied
   // start from source duration and reset). Past resets never roll forward.
   const marker = (window, capturedAt) => {
@@ -64,11 +67,53 @@ window.quotaViewModel = (() => {
     const start = window.startsAt ? Date.parse(window.startsAt) : end - duration;
     if (!Number.isFinite(start) || Math.abs(end - start - duration) > 1 || captured < start || captured > end) return null;
     const remaining = (end - captured) / duration * 100;
-    if (!window.startsAt && (window.pace?.cycleBasis !== "window_seconds" || window.pace.cycleSeconds !== window.durationSeconds ||
+    if (!window.startsAt && window.durationBasis !== "provider_label" && (window.pace?.cycleBasis !== "window_seconds" || window.pace.cycleSeconds !== window.durationSeconds ||
       typeof window.pace.timeRemainingPercent !== "number" || Math.abs(remaining - window.pace.timeRemainingPercent) > 0.001)) return null;
     return Math.max(0, Math.min(100, remaining));
   };
-  const project = (reading, { hideInactive = false, lowestFirst = false, now = Date.now() } = {}) => {
+  // Runway ordering uses source pace reserve (remaining minus time remaining).
+  // When pace is absent, source runway coverage of the bounded reset interval
+  // supplies the same signed margin. Never extrapolate consumption ourselves.
+  const runwayMargin = (scope, windows, now) => {
+    if (windows.some((w) => w.resetsAt && Date.parse(w.resetsAt) <= now)) return null;
+    if (scope?.pace?.status && scope.pace.status !== "unknown" && Number.isFinite(scope.pace.reservePercentPoints)) {
+      return { value: scope.pace.reservePercentPoints, basis: "source pace" };
+    }
+    if (windows.length && windows.every((w) => w.pace?.status && w.pace.status !== "unknown" && Number.isFinite(w.pace.reservePercentPoints))) {
+      return { value: Math.min(...windows.map((w) => w.pace.reservePercentPoints)), basis: "source pace" };
+    }
+    const runway = scope?.runway;
+    const bounded = (scope?.boundedBy || []).map((id) => windows.find((w) => w.id === id));
+    if (!bounded.length || bounded.some((w) => !w || !Number.isFinite(Date.parse(w.resetsAt)) || Date.parse(w.resetsAt) <= now)) return null;
+    if (runway?.status === "through_reset") return { value: 0, basis: "source runway through reset" };
+    if (runway?.status === "exhausted_now") return { value: -100, basis: "source runway exhausted" };
+    if (runway?.status !== "projected_exhaustion" || !Number.isFinite(runway.seconds) || runway.seconds < 0) return null;
+    const resetSeconds = Math.min(...bounded.map((w) => (Date.parse(w.resetsAt) - now) / 1000));
+    return { value: (Math.min(1, runway.seconds / resetSeconds) - 1) * 100, basis: "source runway / reset coverage" };
+  };
+  const familyMetrics = (provider, family, now) => {
+    const scopes = family.scope ? provider.scopes.filter((scope) => scope.scope === family.scope)
+      : provider.scopes.filter((scope) => scope.boundedBy?.length && scope.boundedBy.every((id) => family.windows.some((w) => w.id === id)));
+    const margins = scopes.length ? scopes.map((scope) => runwayMargin(scope, family.windows, now)) : [runwayMargin(null, family.windows, now)];
+    const percentages = family.windows.map((w) => w.percentRemaining);
+    return {
+      sortRunway: !provider.stale && margins.every(Boolean) ? margins.reduce((a, b) => a.value <= b.value ? a : b) : null,
+      sortRemaining: !provider.stale && percentages.length && percentages.every(valid) ? Math.min(...percentages) : null
+    };
+  };
+  const compare = (mode) => (a, b) => {
+    if (mode === "source") return 0;
+    if (["az", "za"].includes(mode)) {
+      const alphabetical = a.provider.localeCompare(b.provider, "en", { sensitivity: "base" });
+      return mode === "za" ? -alphabetical : alphabetical;
+    }
+    const left = ["runway", "runway-lowest"].includes(mode) ? a.sortRunway?.value ?? null : a.sortRemaining;
+    const right = ["runway", "runway-lowest"].includes(mode) ? b.sortRunway?.value ?? null : b.sortRemaining;
+    if (left === null) return right === null ? 0 : 1;
+    if (right === null) return -1;
+    return ["lowest", "runway-lowest"].includes(mode) ? left - right : right - left;
+  };
+  const project = (reading, { hideInactive = false, lowestFirst = false, sortMode = lowestFirst ? "lowest" : "highest", sidebarSort = "highest", now = Date.now() } = {}) => {
     const maxAgeMs = Number.isFinite(reading.maxAgeMs) && reading.maxAgeMs > 0 ? reading.maxAgeMs : 300000;
     const timedReading = { ...reading, now };
     const providers = (reading.providers || []).map((provider) => {
@@ -87,14 +132,14 @@ window.quotaViewModel = (() => {
       const critical = stale ? { kind: "unknown" } : limiting.length
         ? { kind: "source-limiting", windows: limiting }
         : lowest ? { kind: "lowest-scope-binding-unknown", scope: lowest } : { kind: "unknown" };
-      return { ...provider, stale, ageMs, reusedLabel, staleLabel, windows, scopes, critical };
+      const projected = { ...provider, stale, ageMs, reusedLabel, staleLabel, windows, scopes, critical };
+      const families = windows.length ? groups(projected) : scopes.map((scope) => ({ scope: scope.scope, windows: [{ ...scope, label: scope.scope }] }));
+      const metrics = families.map((family) => familyMetrics(projected, family, now));
+      projected.sortRemaining = metrics.length && metrics.every((m) => m.sortRemaining !== null) ? Math.min(...metrics.map((m) => m.sortRemaining)) : null;
+      projected.sortRunway = metrics.length && metrics.every((m) => m.sortRunway !== null) ? metrics.map((m) => m.sortRunway).reduce((a, b) => a.value <= b.value ? a : b) : null;
+      return projected;
     });
-    const detail = providers.filter(active).sort((a, b) => {
-      const left = remaining(a), right = remaining(b);
-      if (left === null) return right === null ? 0 : 1;
-      if (right === null) return -1;
-      return lowestFirst ? left - right : right - left;
-    });
+    const detail = providers.filter(active).sort(compare(sortMode));
     const inactive = hideInactive ? [] : providers.filter((provider) => !active(provider));
     const sidebar = providers.flatMap((provider, index) => {
       if ((provider.authStatus && provider.authStatus !== "usable") || ["auth_required", "unavailable", "error"].includes(provider.status)) return [];
@@ -102,10 +147,59 @@ window.quotaViewModel = (() => {
       const limits = source.windows?.length ? source.windows : source.scopes || [];
       if (!limits.some((limit) => valid(limit.percentRemaining))) return [];
       const families = provider.windows.length ? groups(provider) : provider.scopes.filter((_, scopeIndex) => valid(source.scopes[scopeIndex].percentRemaining)).map((scope) => ({ name: provider.provider, provider: provider.provider, scope: scope.scope, windows: [{ ...scope, label: scope.scope }] }));
-      return families.map((family) => ({ ...family, status: provider.status, stale: provider.stale, staleLabel: provider.staleLabel, reusedLabel: provider.reusedLabel,
-        windows: family.windows.map((window) => ({ ...window, stale: provider.stale })) }));
-    });
-    return { detail, inactive, sidebar };
+      return families.map((family) => {
+        const { sortRunway: runway, sortRemaining: capacity } = familyMetrics(provider, family, now);
+        return { ...family, status: provider.status, stale: provider.stale, staleLabel: provider.staleLabel, reusedLabel: provider.reusedLabel,
+          sortRemaining: capacity, sortRunway: runway,
+          windows: family.windows.map((window) => ({ ...window, stale: provider.stale })) };
+      });
+    }).sort(compare(sidebarSort));
+    return { detail, inactive, sidebar, wholeStale: Boolean(reading.stale) };
   };
-  return { project, groups, marker, windowLabels, valid, remaining, active, ageLabel };
+  // Geometry depicts two captured source values; reserve text is never inferred
+  // from the distance. Label-derived durations alone cannot establish pace.
+  const paceBand = (window, position, stale = false) => {
+    if (stale || window.stale || !valid(window.percentRemaining) || !valid(position) || !window.pace?.status || window.pace.status === "unknown" || !Number.isFinite(window.pace.reservePercentPoints)) return null;
+    return { left: Math.min(window.percentRemaining, position), width: Math.abs(window.percentRemaining - position),
+      kind: window.percentRemaining >= position ? "reserve" : "deficit", reserve: window.pace.reservePercentPoints };
+  };
+  const summarize = (projection, now = Date.now()) => {
+    const known = [], resets = [];
+    const runway = { total: 0, through_reset: 0, projected_exhaustion: 0, exhausted_now: 0, unknown: 0, soonest: null };
+    let unknown = 0;
+    for (const provider of projection.detail || []) {
+      const fresh = !provider.stale && provider.status === "fresh";
+      const familyFor = (window) => groups(provider).find(f => f.windows.includes(window));
+      const labelFor = (window) => {
+        const family = familyFor(window);
+        return family ? windowLabels(family)[family.windows.indexOf(window)] : windowLabel(window.label);
+      };
+      for (const scope of provider.scopes || []) {
+        if (fresh && valid(scope.percentRemaining)) {
+          const limit = (scope.limitingWindowIds || []).map((id) => provider.windows.find((w) => w.id === id)).find(Boolean) || null;
+          known.push({ provider: provider.provider, scope: scope.scope, percentRemaining: scope.percentRemaining, limit, limitLabel: limit ? labelFor(limit) : null });
+        } else unknown++;
+        runway.total++;
+        const status = fresh && ["through_reset", "projected_exhaustion", "exhausted_now"].includes(scope.runway?.status) ? scope.runway.status : "unknown";
+        runway[status]++;
+        if (status === "projected_exhaustion" && Number.isFinite(scope.runway.seconds) && scope.runway.seconds >= 0 && (!runway.soonest || scope.runway.seconds < runway.soonest.seconds)) runway.soonest = scope.runway;
+      }
+      // A failed whole refresh may still expose explicitly labelled captured
+      // reset timestamps. Individually stale providers are otherwise excluded.
+      if (fresh || projection.wholeStale) for (const window of provider.windows || []) {
+        const time = Date.parse(window.resetsAt);
+        if (Number.isFinite(time) && time > now) resets.push({ provider: provider.provider, scope: familyFor(window)?.scope || null, window, label: labelFor(window), time, captured: projection.wholeStale });
+      }
+    }
+    const winner = (direction) => {
+      if (!known.length) return null;
+      const value = direction === "min" ? Math.min(...known.map((s) => s.percentRemaining)) : Math.max(...known.map((s) => s.percentRemaining));
+      const tied = known.filter((s) => s.percentRemaining === value);
+      return { ...tied[0], tied: tied.length - 1 };
+    };
+    resets.sort((a, b) => a.time - b.time);
+    return { tightest: winner("min"), mostRoom: winner("max"), unknown, runway, nextReset: resets[0] || null, thenReset: resets[1] || null, stale: Boolean(projection.wholeStale) };
+  };
+  return { project, groups, marker, windowLabels, windowLabel, valid, remaining, active, ageLabel, summarize, paceBand };
+
 })();

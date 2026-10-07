@@ -19,6 +19,7 @@ import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
 import { announceReview, inboxReady, inboxReceipts, inboxReviewState } from "./inbox.js";
 import { open, readFile, readdir, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,6 +50,7 @@ const STATIC_FILES = new Map([
   ["/panel-resize.js", ["panel-resize.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel.js", ["shell-panel.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel-layout.js", ["shell-panel-layout.js", "text/javascript; charset=utf-8"]],
+  ["/shell-width.js", ["shell-width.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel.css", ["shell-panel.css", "text/css; charset=utf-8"]],
   ["/preview-selector.js", ["preview-selector.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
@@ -212,12 +214,27 @@ function explicitLaneBlocks(message, projects) {
     if (!/^(?:\r?\n)*$/.test(message.text.slice(end, match.index))) return null;
     const name = match[1].toLowerCase();
     if (name !== match[2].toLowerCase()) return null;
-    // Stock Firstmate may use the short display names for these registered lanes.
-    // Resolve only known aliases; never infer ownership from arbitrary body text.
-    const matches = [...projects.filter((candidate) => candidate.id !== "general"), { id: "general", name: "General" }].filter((candidate) =>
-      [candidate.id, candidate.name.toLowerCase(), ...(LANE_LABEL_ALIASES[candidate.id] || [])].includes(name));
+    // A lane label can include a voyage/theme suffix (Example-Store-UI).
+    // Exact registered names win; otherwise use the longest registered parent
+    // followed by a hyphen. Never infer ownership from arbitrary body prose.
+    const candidates = [...projects.filter((candidate) => candidate.id !== "general"), { id: "general", name: "General" }];
+    const directLabels = (candidate) => [candidate.id, candidate.name.toLowerCase()];
+    const aliasLabels = (candidate) => LANE_LABEL_ALIASES[candidate.id] || [];
+    const resolve = (labels) => {
+      const exact = candidates.filter((candidate) => labels(candidate).includes(name));
+      if (exact.length) return exact;
+      const parents = candidates.map((candidate) => ({ candidate, length: Math.max(0, ...labels(candidate)
+        .filter((label) => name.startsWith(`${label}-`) && name.length > label.length + 1).map((label) => label.length)) }));
+      const longest = Math.max(0, ...parents.map(({ length }) => length));
+      return longest ? parents.filter(({ length }) => length === longest).map(({ candidate }) => candidate) : [];
+    };
+    // Explicit registered ownership must outrank compatibility aliases. Homes
+    // can register both the current product and its historical name; an alias
+    // on that historical lane must not make the current lane's own ID ambiguous.
+    const direct = resolve(directLabels);
+    const matches = direct.length ? direct : resolve(aliasLabels);
     if (matches.length !== 1) return null;
-    blocks.push({ projectId: matches[0].id, text: match[0] });
+    blocks.push({ projectId: matches[0].id, name: match[1], text: match[0] });
     end = match.index + match[0].length;
   }
   return blocks.length && /^(?:\r?\n)*$/.test(message.text.slice(end)) ? blocks : null;
@@ -630,9 +647,15 @@ async function readOptionalBrief(home, id) {
   } finally { await handle?.close(); }
 }
 
-export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader() } = {}) {
+// Claude Code keeps transcripts under the server user's config directory;
+// only this home's encoded project directory inside it is ever read.
+export function claudeConfigDir(env) {
+  return env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path.join(os.homedir(), ".claude");
+}
+
+export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null } = {}) {
   const readFile = reader.text;
-  if (!home) throw new PublicDataError("Lanes offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
+  if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
   try {
     const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision] = await Promise.all([
@@ -640,7 +663,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
       includeHistory ? readCaptainNotes(resolvedHome, reader) : [],
-      includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader }) : { messages: [], coverage: {} },
+      includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir }) : { messages: [], coverage: {} },
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
       includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
     ]);
@@ -740,6 +763,8 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       return blocks?.flatMap((block, index) => block.projectId === projectId ? [{
         ...message,
         text: block.text,
+        // Add display context without changing each block's routing or identity.
+        ...(blocks.length > 1 ? { mixedLaneMessage: { recordId: message.recordId, text: message.text, blocks } } : {}),
         recordId: blocks.length === 1 ? message.recordId : `${message.recordId}:block:${index}`,
         sourceSequence: message.sourceSequence + index / blocks.length,
       }] : []) || [];
@@ -816,9 +841,9 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       },
     };
   } catch (error) {
-    if (error instanceof HistoryLimitError) throw new PublicDataError(`Lanes offline: ${error.message}`);
+    if (error instanceof HistoryLimitError) throw new PublicDataError(`Fleet Chats offline: ${error.message}`);
     if (error instanceof PublicDataError) throw error;
-    throw new PublicDataError("Lanes offline: FM_HOME is unreadable or is not a valid Firstmate home.");
+    throw new PublicDataError("Fleet Chats offline: FM_HOME is unreadable or is not a valid Firstmate home.");
   }
 }
 
@@ -950,7 +975,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
   const server = http.createServer(async (request, response) => {
     let release;
     let used = false;
@@ -1175,7 +1200,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       if (request.method === "GET" && url.pathname === "/api/lanes") {
         const ids = (name) => url.searchParams.getAll(name).filter((id) => id.length <= 250).slice(0, 60);
         const page = (name) => Math.min(20, Math.max(0, Number.parseInt(url.searchParams.get(name) || "0", 10) || 0));
-        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier });
+        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env) });
         await sendJson(request, response, 200, {
           generatedAt: new Date().toISOString(),
           source: firstmate.source,

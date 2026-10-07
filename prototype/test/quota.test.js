@@ -53,7 +53,7 @@ test("quota CLI uses the configured max age with existing live-read safety argum
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0][0], "quota-axi");
   assert.deepEqual(calls[0][1], ["--full", "--json", "--no-credential-refresh", "--max-age", "7m"]);
-  assert.equal(calls[0][2].timeout, 6000);
+  assert.equal(calls[0][2].timeout, 15000);
   let fallbackArgs;
   const capped = await createQuotaReader({ maxAge: "90m", execute: async (_command, args) => {
     fallbackArgs = args;

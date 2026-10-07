@@ -49,6 +49,6 @@ export function inboxReviewState(receipts, batchId) {
   const note = handled || pending;
   if (!note) return null;
   const reply = receipts.replies.find((entry) => entry.id === note.id || entry.note_id === note.id || entry.in_reply_to === note.id);
-  if (reply) return { state: "replied", reply: typeof reply.text === "string" ? reply.text : null };
+  if (reply) return { state: "replied", reply: typeof reply.body === "string" ? reply.body : typeof reply.text === "string" ? reply.text : null };
   return { state: handled ? "received" : "accepted", announced: note.announced === true };
 }

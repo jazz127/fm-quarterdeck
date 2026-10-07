@@ -45,6 +45,13 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   browser = await openBrowser();
   const { command, evaluate, until } = browser;
+  const reload = async () => {
+    // Page.reload acknowledges the command before replacing the document.
+    // Otherwise a readiness predicate can match the previous page's state.
+    await evaluate("window.syntheticReloadPending = true");
+    await command("Page.reload");
+    await until("!window.syntheticReloadPending && document.readyState === 'complete'");
+  };
   const navigation = await command("Page.navigate", { url: base });
   assert.equal(navigation.errorText, undefined, `Fixture navigation failed: ${JSON.stringify(navigation)}`);
   await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#projects')?.children.length > 0");
@@ -93,8 +100,20 @@ try {
     const outside = await evaluate("(() => { const r = document.querySelector('button.primary-tab[data-view=overview]').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()");
     await command("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...outside });
     await command("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...outside });
+    await until("!document.querySelector('#review-gesture-popover').matches(':popover-open') && !document.querySelector('#review-annotation').hidden");
+    assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), true, "plain outside click annotates without changing the toggle");
+    await escape();
+    await until("document.querySelector('#review-annotation').hidden");
+    await evaluate("document.querySelector('#review-gesture-help').click()");
+    await until("document.querySelector('#review-gesture-popover').matches(':popover-open')");
+    // Annotation mode captures plain clicks, including navigation controls.
+    // Alt-click is the interaction gesture while the toggle is on; use real
+    // pointer input so native popover light dismissal is still exercised.
+    await command("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, modifiers: 1, ...outside });
+    await command("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, modifiers: 1, ...outside });
     await until("!document.querySelector('#review-gesture-popover').matches(':popover-open')");
-    assert.equal(await evaluate("document.querySelector('#review-annotation').hidden"), true, "outside dismissal uses a normal navigation control");
+    assert.equal(await evaluate("document.querySelector('#review-annotation').hidden"), true, "outside Alt-click interacts instead of annotating with the toggle on");
+    assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), true, "outside dismissal preserves annotation mode");
     await evaluate("document.querySelector('#review-toggle').click()");
     assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), false);
     await evaluate("document.querySelector('#projects').dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1, altKey: true }))");
@@ -142,6 +161,9 @@ try {
       await evaluate("document.querySelector('#review-panel-toggle').click(); document.querySelector('#review-annotation-tab').click(); document.querySelector('#review-select-location').click()");
       await until("document.querySelector('#review-panel').hasAttribute('data-picking')");
     }
+    // Opening annotation/panel schedules composer autofocus. Let that finish
+    // before moving focus to search, rather than racing it across CDP calls.
+    if (state !== "idle") await until("document.activeElement.id === 'review-message'");
     await evaluate("window.syntheticSearchEscapes = []; document.querySelector('#review-message').value = 'Synthetic search-focus draft'; document.querySelector('#review-message').dispatchEvent(new Event('input', { bubbles: true }))");
     const reviewState = `({ annotationHidden: document.querySelector('#review-annotation').hidden,
       picking: document.querySelector('#review-panel').hasAttribute('data-picking'),
@@ -177,19 +199,27 @@ try {
     const sent = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, receiptId: 'local:' + id, state: 'accepted', entries: [entry] }; });
     sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false }));
   })()`);
-  await command("Page.reload");
+  await reload();
   await until("document.querySelector('#review-message')?.value === 'Unsent draft'");
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
-  assert.equal(await evaluate("document.querySelector('#review-thread').children.length"), 70);
+  assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
   await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
-  await command("Page.reload");
-  await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");
-  let loseNext = true, newConfig = false, eventError;
+  let loseNext = true, newConfig = false, serverDown = false, eventError;
+  // Board rendering is not review readiness: loadConfig() is an independent
+  // fetch. Hold its response to force the ordering that used to flake in CI.
+  let holdConfig = true;
+  const configPaused = Promise.withResolvers();
   browser.onEvent((event) => {
     if (event.method !== "Fetch.requestPaused") return;
     const { requestId, request } = event.params;
     let action;
-    if (request.method === "POST" && loseNext) {
+    if (request.method === "GET" && serverDown) {
+      action = command("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" });
+    } else if (request.method === "GET" && holdConfig) {
+      holdConfig = false;
+      configPaused.resolve(requestId);
+      return;
+    } else if (request.method === "POST" && loseNext) {
       loseNext = false;
       action = command("Fetch.failRequest", { requestId, errorReason: "Failed" });
     } else if (request.method === "GET" && newConfig) {
@@ -199,13 +229,24 @@ try {
     action.catch((error) => { eventError = error; });
   });
   await command("Fetch.enable", { patterns: [{ urlPattern: "*/api/review", requestStage: "Response" }] });
-  await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit(); document.querySelector('#review-send').click()");
-  await until("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches.length === 1");
+  await reload();
+  await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");
+  const configRequestId = await configPaused.promise;
+  await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit()");
+  assert.equal(await evaluate("document.querySelector('#review-send').disabled"), true, "rendered board cannot send before review configuration arrives");
+  await evaluate("document.querySelector('#review-send').click()");
+  assert.equal(deliveries, 0, "an early click is ignored, not a simulated lost delivery");
+  assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue.length"), 1, "early click preserves the queued note");
+  await command("Fetch.continueRequest", { requestId: configRequestId });
+  await until("document.querySelector('#review-context')?.textContent.includes('Version') && !document.querySelector('#review-send').disabled");
+  await evaluate("document.querySelector('#review-send').click()");
+  await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 1 && !s.inFlight; })()");
+  assert.equal(loseNext, false, "the POST response was intercepted and lost");
   const original = await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]");
   assert.equal(deliveries, 1, "receipt persisted before losing its response");
   newConfig = true;
-  await command("Page.reload");
-  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb')");
+  await reload();
+  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
   assert.deepEqual(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]"), original);
   await evaluate("document.querySelector('#review-send').click()");
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 0 && !s.inFlight && s.sent.length === 1; })()");
@@ -217,8 +258,8 @@ try {
   const delayed = { schema: "fm-agentos-review.v1", batchId: delayedId, sessionId: "", version: "a".repeat(40), route: "#overview", end: false,
     entries: [{ kind: "message", text: "Synthetic delayed publication", region: null, route: "#overview", version: "a".repeat(40) }] };
   await evaluate(`sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: ${JSON.stringify(delayedId)}, payload: ${JSON.stringify(delayed)} }] }))`);
-  await command("Page.reload");
-  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb')");
+  await reload();
+  await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
   await evaluate("document.querySelector('#review-send').click()");
   await until("Boolean(JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]?.rejected)");
   await deliverLocalReview({ ...delayed, provenance: { commit: delayed.version, branch: "uat" } }, receipts);
@@ -226,6 +267,51 @@ try {
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return !s.inFlight && s.retryBatches.length === 0 && s.sent.length === 1; })()");
   assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent[0].id"), delayedId);
   assert.equal(deliveries, 1, "conversion reconciles a delayed original instead of duplicate delivery");
+  // Phone send through real touch input: type and send, then keep the open composer
+  // usable across an unreachable server without reloading the tab.
+  newConfig = false;
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await command("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
+  await reload();
+  await until("document.querySelector('.mobile-dock #review-panel-toggle') && document.querySelector('#review-context')?.textContent.includes('Version')");
+  const tap = async (selector) => {
+    const point = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+      return { x, y, hit: Boolean(document.elementFromPoint(x, y)?.closest(${JSON.stringify(selector)})) }; })()`);
+    assert.ok(point.hit, `${selector} receives the phone tap`);
+    await command("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+    await command("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  const phoneDraft = "JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1') || '{}')";
+  await tap(".mobile-dock #review-panel-toggle");
+  await until("!document.querySelector('#review-panel').hidden && document.querySelector('#review-panel').contains(document.querySelector('#review-send'))");
+  await tap("#review-message");
+  await command("Input.insertText", { text: "Synthetic phone message" });
+  await until("!document.querySelector('#review-send').disabled");
+  await tap("#review-send");
+  await until(`${phoneDraft}.sent?.length === 1 && document.querySelector('#review-message').value === ''`);
+  assert.equal(deliveries, 2, "phone Send delivers the typed message");
+  assert.deepEqual(await evaluate(`${phoneDraft}.sent[0].entries.map((entry) => entry.text)`), ["Synthetic phone message"]);
+  serverDown = true;
+  await tap("#review-close");
+  await tap(".mobile-dock #review-panel-toggle");
+  await until("document.querySelector('#review-send').disabled && document.querySelector('#review-state').textContent.includes('server down or restarting')");
+  await tap("#review-message");
+  await command("Input.insertText", { text: "Synthetic offline phone note" });
+  assert.equal(await evaluate("document.querySelector('#review-send').disabled"), true, "Send stays greyed while the server is unreachable");
+  await tap("#review-queue");
+  await until(`${phoneDraft}.queue?.length === 1`);
+  serverDown = false;
+  // Returning to a backgrounded phone tab re-reads review configuration.
+  await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+  await until("!document.querySelector('#review-send').disabled && !document.querySelector('#review-state').textContent.includes('server down')");
+  await tap("#review-send");
+  await until(`${phoneDraft}.sent?.length === 2 && ${phoneDraft}.queue.length === 0`);
+  assert.equal(deliveries, 3, "queued phone note sends once the server is back");
+  await tap("#review-close");
+  await command("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 844, deviceScaleFactor: 1, mobile: false });
+  console.log("PASS: phone 390×844 touch type-and-send; unreachable server greys Send with a reason, Queue stays local, tab return reconnects and sends");
   await command("Fetch.disable");
   if (eventError) throw eventError;
   // Exercise history through actual controls: six older-page clicks retain 60 IDs.
