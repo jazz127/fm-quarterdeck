@@ -7,6 +7,7 @@ const escapeHtml = (value) => String(value)
   .replaceAll("'", "&#039;");
 
 const stateLabel = (state) => state.replaceAll("-", " ");
+const statusChoiceLabel = (state) => stateLabel(state).replace(/^./, (letter) => letter.toUpperCase());
 const money = ({ currency, amount }) => `${currency} ${amount}`;
 const { KEY: MESSAGE_TYPES_KEY, TYPES: MESSAGE_TYPES, LEGACY_KEY: MESSAGE_TYPES_LEGACY_KEY, stored: storedMessageTypes, typeId: messageTypeId, label: messageTypeLabel, icon: messageTypeIcon, svg: messageTypeSvg } = window.messageKinds;
 const MESSAGE_FORMAT_KEY = "fm-agentos-message-format-v1";
@@ -712,6 +713,9 @@ function renderWorkSplit(split = workSplitData) {
     node.classList.toggle("hidden", !warning);
   }
   const state = $("#work-state");
+  for (const selector of [".work-tools .scan-controls", '#work-view section[aria-labelledby="tight-heading"]', '#work-view section[aria-labelledby="large-heading"]']) {
+    $(selector).hidden = !split;
+  }
   if (!split) {
     state.classList.remove("hidden");
     state.textContent = "Work split unavailable: connect a readable Firstmate home.";
@@ -809,14 +813,14 @@ function renderProjects(projects = overviewProjects) {
   const choices = [...statuses].sort((a, b) => a === "active" ? -1 : b === "active" ? 1 : a.localeCompare(b));
   // Keep an in-use filter visible across refreshes even if its last agent disappears.
   if (overviewStatus !== "all" && !statuses.has(overviewStatus)) choices.push(overviewStatus);
-  $("#overview-status").innerHTML = '<option value="all">All statuses</option>' + choices.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(stateLabel(status))}</option>`).join("");
+  $("#overview-status").innerHTML = '<option value="all">All statuses</option>' + choices.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(statusChoiceLabel(status))}</option>`).join("");
   $("#overview-status").value = overviewStatus;
   renderStatusFilterButtons($("#overview-status-buttons"), [
     { value: "all", label: "All", fullLabel: "All statuses" },
     ...choices.map((status) => ({
       value: status,
-      label: (statusConciseLabels && statusConciseLabels[status]) || stateLabel(status),
-      fullLabel: stateLabel(status)
+      label: (statusConciseLabels && statusConciseLabels[status]) || statusChoiceLabel(status),
+      fullLabel: statusChoiceLabel(status)
     }))
   ], overviewStatus);
 
@@ -931,9 +935,13 @@ async function refreshCosts() {
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed");
+  let response;
+  try { response = await fetch(url, { cache: "no-store" }); }
+  catch { throw new Error("Server unreachable"); }
+  let data;
+  try { data = await response.json(); }
+  catch { throw new Error(`HTTP ${response.status}`); }
+  if (!response.ok) throw new Error(typeof data?.error === "string" && data.error ? data.error : `HTTP ${response.status}`);
   return data;
 }
 
@@ -1339,6 +1347,8 @@ function renderQuota(data) {
 function renderPreferences(data) {
   const state = $("#preferences-state");
   const list = $("#preferences-list");
+  state.classList.toggle("error", Boolean(data.error));
+  $("#preferences-view .scan-controls").hidden = !(data.error ? preferenceEntries : data.entries).length;
   if (data.error) {
     state.textContent = data.error;
     if (!preferenceEntries.length) list.innerHTML = "";
@@ -1386,11 +1396,16 @@ function renderFreshness() {
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");
   el.dataset.state = condition;
-  el.textContent = `${freshLabels[key]} · ${condition} · ${last}${duration}${item.error ? ` · ${item.error}` : ""}`;
-  el.title = el.textContent;
+  // The pill shows the condition; the visible line adds only the time.
+  const full = `${freshLabels[key]} · ${condition} · ${last}${duration}${item.error ? ` · ${item.error}` : ""}`;
+  el.textContent = item.lastSuccess ? new Date(item.lastSuccess).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "no reading yet";
+  el.title = full;
+  el.setAttribute("aria-label", full);
   const pill = $("#fleet-state");
   pill.classList.toggle("offline", condition === "disconnected" || condition === "stale");
-  $("#fleet-state b").textContent = `${freshLabels[key]} ${condition}`;
+  $("#fleet-state b").textContent = condition;
+  pill.title = full;
+  pill.setAttribute("aria-label", full);
 }
 
 function lanesQuery() {

@@ -17,12 +17,40 @@ export async function cleanupBrowserProfile(chrome, profile, { removeProfile = r
   }
 }
 
+// A cold Chrome/profile on a shared CI runner can take longer than a page/CDP
+// operation. Keep launch readiness separately bounded; never retry a failed
+// browser or relax the behavioral command/condition deadlines below.
+export async function waitForBrowserPort(chrome, profile, {
+  timeoutMs = 30000, now = () => performance.now(),
+  readActivePort = () => readFile(path.join(profile, "DevToolsActivePort"), "utf8"),
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  spawnError = () => undefined, diagnostics = () => "",
+} = {}) {
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    if (spawnError()) throw spawnError();
+    if (chrome.exitCode !== null || chrome.signalCode !== null) {
+      throw Error(`Chromium exited ${chrome.exitCode ?? chrome.signalCode}${diagnostics() ? `: ${diagnostics()}` : ""}`);
+    }
+    try {
+      const port = Number((await readActivePort()).split("\n")[0]);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await wait(Math.min(100, Math.max(0, deadline - now())));
+  }
+  throw Error(`Chromium startup timed out after ${timeoutMs}ms${diagnostics() ? `: ${diagnostics()}` : ""}`);
+}
+
 export async function openBrowser() {
   const profile = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-browser-"));
   const chrome = spawn(process.env.CHROMIUM || "chromium", ["--headless=new", "--no-sandbox", "--disable-gpu",
-    "--disable-dev-shm-usage", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: "ignore" });
-  let spawnError, ws;
+    "--disable-dev-shm-usage", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  let spawnError, ws, startupDiagnostics = "";
   chrome.on("error", (error) => { spawnError = error; });
+  const captureStartup = (chunk) => { startupDiagnostics = (startupDiagnostics + chunk.toString()).slice(-2000); };
+  chrome.stderr.on("data", captureStartup);
   const pending = new Map(), listeners = new Set(), diagnostics = [];
   let id = 0;
   const close = async () => {
@@ -32,14 +60,11 @@ export async function openBrowser() {
     await cleanupBrowserProfile(chrome, profile);
   };
   try {
-    let port;
-    for (let i = 0; i < 100; i++) {
-      if (spawnError) throw spawnError;
-      if (chrome.exitCode !== null) throw Error(`Chromium exited ${chrome.exitCode}`);
-      try { port = Number((await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]); break; }
-      catch { await new Promise((resolve) => setTimeout(resolve, 100)); }
-    }
-    if (!port) throw Error("Chromium startup timed out");
+    const port = await waitForBrowserPort(chrome, profile, {
+      spawnError: () => spawnError, diagnostics: () => startupDiagnostics.trim(),
+    });
+    chrome.stderr.removeListener("data", captureStartup);
+    chrome.stderr.resume();
     // Own a dedicated page rather than racing Chrome's initial startup tab.
     const pageResponse = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" });
     if (!pageResponse.ok) throw Error(`Cannot create browser fixture page: ${pageResponse.status}`);

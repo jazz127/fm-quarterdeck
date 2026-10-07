@@ -637,7 +637,7 @@ export function claudeConfigDir(env) {
 
 export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null } = {}) {
   const readFile = reader.text;
-  if (!home) throw new PublicDataError("Lanes offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
+  if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
   try {
     const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision] = await Promise.all([
@@ -821,9 +821,9 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       },
     };
   } catch (error) {
-    if (error instanceof HistoryLimitError) throw new PublicDataError(`Lanes offline: ${error.message}`);
+    if (error instanceof HistoryLimitError) throw new PublicDataError(`Fleet Chats offline: ${error.message}`);
     if (error instanceof PublicDataError) throw error;
-    throw new PublicDataError("Lanes offline: FM_HOME is unreadable or is not a valid Firstmate home.");
+    throw new PublicDataError("Fleet Chats offline: FM_HOME is unreadable or is not a valid Firstmate home.");
   }
 }
 

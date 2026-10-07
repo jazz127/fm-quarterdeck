@@ -8,6 +8,83 @@ import { createHash } from "node:crypto";
 const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
+test("opt-in compact headers preserve Quota markup and expose full descriptions", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const headers = [...html.matchAll(/<header class="feature-head compact-head">[\s\S]*?<\/header>/g)];
+  assert.equal(headers.length, 5);
+  for (const [header] of headers) {
+    assert.doesNotMatch(header, /eyebrow/);
+    for (const [, title, text] of header.matchAll(/<p title="([^"]+)">([^<]+)<\/p>/g)) assert.equal(title, text);
+    assert.equal((header.match(/<p\b/g) || []).length, (header.match(/<p title=/g) || []).length);
+  }
+  assert.equal(html.match(/id="quota-view"[\s\S]*?(<header[\s\S]*?<\/header>)/)[1], '<header class="feature-head"><div><p class="eyebrow">QUOTA</p><h1>Subscription limits</h1><p>Read-only quota evidence from quota-axi. Missing limits remain unknown.</p></div><span class="source-badge">quota-axi</span></header>');
+  assert.match(css, /\.feature-head\.compact-head \{ flex-wrap: nowrap;/);
+  assert.match(css, /\.compact-head h1 \{[^}]*font-size: 22px; white-space: nowrap/);
+  assert.match(css, /\.compact-head p:not\(\.eyebrow\) \{[^}]*text-overflow: ellipsis; white-space: nowrap/);
+});
+
+test("freshness shows only condition and time while preserving accessible evidence", () => {
+  const app = ui();
+  app.node(".workspace").dataset.view = "overview";
+  app.run("freshness.dashboard.lastSuccess = Date.now(); freshness.dashboard.duration = 70; freshness.dashboard.refreshing = false; renderFreshness()");
+  const reading = app.node("#view-freshness"), pill = app.node("#fleet-state");
+  assert.doesNotMatch(reading.textContent, /Overview|fresh|Last success/);
+  assert.equal(app.node("#fleet-state b").textContent, "fresh");
+  assert.match(reading.title, /^Overview · fresh · Last success.* · 70ms$/);
+  assert.equal(reading.getAttribute("aria-label"), reading.title);
+  assert.equal(pill.title, reading.title);
+  assert.equal(pill.getAttribute("aria-label"), reading.title);
+  app.run("freshness.dashboard.lastSuccess = null; renderFreshness()");
+  assert.equal(reading.textContent, "no reading yet");
+});
+
+test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
+  const app = ui(), controls = app.node("#preferences-view .scan-controls"), state = app.node("#preferences-state");
+  app.run("renderPreferences({error: 'Unavailable'})");
+  assert.equal(state.classList.contains("error"), true);
+  assert.equal(controls.hidden, true);
+  app.run(`renderPreferences({source: 'data/captain.md', entries: [{title: 'Behavior', source: 'synthetic', content: 'Example'}]})`);
+  assert.equal(state.classList.contains("error"), false);
+  assert.equal(controls.hidden, false);
+  const previous = app.node("#preferences-list").innerHTML;
+  app.run("renderPreferences({error: 'Refresh failed'})");
+  assert.equal(state.classList.contains("error"), true);
+  assert.equal(controls.hidden, false);
+  assert.equal(app.node("#preferences-list").innerHTML, previous);
+  app.run("renderPreferences({source: 'data/captain.md', entries: []})");
+  assert.equal(state.classList.contains("error"), false);
+  assert.equal(controls.hidden, true);
+});
+
+test("unavailable work hides controls and empty sections, then restores them", () => {
+  const app = ui();
+  const selectors = ['.work-tools .scan-controls', '#work-view section[aria-labelledby="tight-heading"]', '#work-view section[aria-labelledby="large-heading"]'];
+  app.run("renderWorkSplit(null)");
+  for (const selector of selectors) assert.equal(app.node(selector).hidden, true);
+  app.run("renderWorkSplit({items: []})");
+  for (const selector of selectors) assert.equal(app.node(selector).hidden, false);
+});
+
+test("request failures use readable HTTP or network messages", async () => {
+  for (const [fetchImpl, expected] of [
+    [async () => ({ok: false, status: 502, json: async () => { throw new SyntaxError('HTML'); }}), 'HTTP 502'],
+    [async () => ({ok: false, status: 503, json: async () => ({error: 'Serving revision unavailable'})}), 'Serving revision unavailable'],
+    [async () => { throw new TypeError('fetch failed'); }, 'Server unreachable'],
+  ]) {
+    const app = ui({fetchImpl: (url, options) => url === '/synthetic-error' ? fetchImpl() : new Promise(() => {})});
+    await assert.rejects(app.run("fetchJson('/synthetic-error')"), {message: expected});
+  }
+});
+
+test("fallback overview status buttons and options are sentence case", () => {
+  const app = ui();
+  app.run(`renderProjects([{id: 'example', name: 'Example', status: 'complete', items: [{state: 'complete'}]}, {id: 'review', name: 'Review', status: 'review', items: [{state: 'review'}]}])`);
+  assert.match(app.node("#overview-status").innerHTML, />Complete<\/option>/);
+  assert.match(app.node("#overview-status").innerHTML, />Review<\/option>/);
+  assert.match(app.node("#overview-status-buttons").innerHTML, />Complete<\/span>/);
+  assert.match(app.node("#overview-status-buttons").innerHTML, />Review<\/span>/);
+});
+
 test("phone shell preserves navigation and leaves feed clear of fixed controls", () => {
   const phone = css.slice(css.lastIndexOf("@media (max-width: 720px) {"), css.indexOf("@media (max-width: 720px) and (min-width: 600px)"));
   assert.match(phone, /\.primary-nav \{[^}]*repeat\(5, minmax\(0, 1fr\)\)[^}]*48px 48px/);
@@ -448,22 +525,22 @@ test("slow large lane response cannot block Overview or Quota, and refreshes do 
   assert.equal(app.run("freshness.dashboard.refreshing"), false);
   assert.equal(app.run("freshness.lanes.refreshing"), true);
   app.run('showView("quota"); renderFreshness()');
-  assert.match(app.node("#view-freshness").textContent, /^Quota · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Quota · fresh · Last success/);
   app.run('showView("conversations"); loadDashboard();');
   assert.equal(calls.lanes.length, 1, "manual and automatic refresh must skip in-flight history");
   assert.equal(calls.dashboard.length, 2, "Overview can update while lanes are slow");
   calls.lanes[0].resolve({ lanes: [lane("general", Array.from({ length: 1000 }, (_, i) => record({ text: `History ${i}` })))], source: "synthetic", transcript: { sessions: [], warnings: [], note: "" } });
   await flush();
-  assert.match(app.node("#view-freshness").textContent, /^Fleet Chats · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Fleet Chats · fresh · Last success/);
   assert.equal(app.run("messagesForSelection().length"), 1000);
   assert.equal((app.node("#messages").innerHTML.match(/<article/g) || []).length, 200);
   calls.dashboard[1].resolve({ fleet: { summary: { activeAgents: 3 }, projects: [] }, expenses: { entries: [], projects: [], categories: [], overall: [], entryCount: 0 }, refreshMs: 0 });
   calls.quota[1].resolve({ providers: [], readAt: null, stale: true, error: "source unavailable" });
   await flush();
   app.run('showView("quota")');
-  assert.match(app.node("#view-freshness").textContent, /^Quota · disconnected · Last success.*source unavailable/);
+  assert.match(app.node("#view-freshness").title, /^Quota · disconnected · Last success.*source unavailable/);
   app.run('showView("overview")');
-  assert.match(app.node("#view-freshness").textContent, /^Overview · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Overview · fresh · Last success/);
 });
 
 test("preference density, sorting and expansion persist through rendering", () => {

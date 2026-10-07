@@ -143,7 +143,7 @@
         </section>
 
         <section id="overview-view" class="product-view feature-view active" aria-label="Fleet overview">
-          <header class="feature-head"><div><p class="eyebrow">OVERVIEW</p><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge"></span></header>
+          <header class="feature-head compact-head"><div><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge"></span></header>
           <div id="summary" class="summary-grid"></div>
           <p id="overview-state" class="notice hidden" role="status"></p>
           <div class="section-tools"><h2 class="section-heading">Repositories → fleets → voyages</h2><div class="scan-controls"><div id="overview-status-buttons" class="status-button-filter" role="group" aria-label="Filter work by status"></div><label class="sr-only-select">Work status <select id="overview-status" aria-label="Filter work by status"><option value="all">All statuses</option></select></label><label>Sort <select id="overview-sort"><option value="name">Name</option><option value="activity">Active crew</option></select></label><button type="button" id="overview-expand">Expand all</button><button type="button" id="overview-collapse">Collapse all</button></div></div>
@@ -151,7 +151,7 @@
         </section>
 
         <section id="work-view" class="product-view feature-view" aria-label="Work split">
-          <header class="feature-head"><div><p class="eyebrow">WORK SPLIT</p><h1>Workstreams &amp; implementation slices</h1><p>Firstmate records stay read-only. Quarterdeck classification and understood acknowledgements change presentation only.</p></div><span class="source-badge">data/backlog.md</span></header>
+          <header class="feature-head compact-head"><div><h1>Workstreams &amp; implementation slices</h1><p title="Firstmate records stay read-only. Quarterdeck classification and understood acknowledgements change presentation only.">Firstmate records stay read-only. Quarterdeck classification and understood acknowledgements change presentation only.</p></div><span class="source-badge">data/backlog.md</span></header>
           <div class="section-tools work-tools"><h2 class="section-heading">Organize work</h2><div class="scan-controls"><div id="work-phase-buttons" class="status-button-filter" role="group" aria-label="Filter work by phase"></div><label>Group by <select id="work-group-by" aria-label="Group work by"><option value="repository">Repository → fleet → voyage</option></select></label><label>Repository <select id="work-repository" aria-label="Filter work by repository"><option value="all">All repositories</option></select></label><label class="sr-only-select">Phase <select id="work-phase" aria-label="Filter work by phase"><option value="all">All phases</option><option value="active">Active</option><option value="waiting">Waiting / external delay</option><option value="captain-action">Captain action</option><option value="cleanup">Retained / cleanup</option><option value="unknown">Unknown evidence</option><option value="backlog">Backlog</option><option value="newly-done">Newly done</option><option value="previously-done">Previously done</option></select></label></div></div>
           <p id="work-state" class="notice hidden" role="status"></p>
           <section aria-labelledby="tight-heading"><h2 id="tight-heading" class="section-heading">Expeditions</h2><p class="muted">Completion attention is separate from execution, retained cleanup and delivery. Newly done is ready for review, not a claim of live code. Pressure and completion counts can overlap without duplicate expeditions.</p><div id="tight-work" class="work-grid"></div></section>
@@ -159,7 +159,7 @@
         </section>
 
         <section id="expenses-view" class="product-view feature-view" aria-label="Expenses">
-          <header class="feature-head"><div><p class="eyebrow">EXPENSES</p><h1>Operating costs</h1><p>Review every recorded charge and see where operating spend is going.</p></div><span id="expense-source" class="source-badge"></span></header>
+          <header class="feature-head compact-head"><div><h1>Operating costs</h1><p title="Review every recorded charge and see where operating spend is going.">Review every recorded charge and see where operating spend is going.</p></div><span id="expense-source" class="source-badge"></span></header>
           <p id="expense-notice" class="notice hidden"></p>
           <section class="cost-panels" aria-label="Read-only live billing evidence">
             <h2>Provider billing · read-only</h2>
@@ -212,15 +212,15 @@
         </section>
 
         <section id="preferences-view" class="product-view feature-view" aria-label="Firstmate preferences">
-          <header class="feature-head"><div><p class="eyebrow">PREFERENCES</p><h1>Working preferences</h1><p>Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.</p></div><span id="preferences-source" class="source-badge">data/captain.md</span></header>
+          <header class="feature-head compact-head"><div><h1>Working preferences</h1><p title="Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.">Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.</p></div><span id="preferences-source" class="source-badge">data/captain.md</span></header>
           <p id="preferences-state" class="notice" role="status" aria-live="polite">Loading preferences…</p>
           <div class="scan-controls" aria-label="Preference navigation"><label>Show <select id="preferences-density"><option value="titles">Titles only</option><option value="reasons">Titles and reasons</option><option value="details" selected>Titles, reasons and details</option></select></label><label>Sort <select id="preferences-sort"><option value="source">Source order</option><option value="newest">Newest evidence</option><option value="oldest">Oldest evidence</option></select></label><button type="button" id="preferences-expand">Expand all</button><button type="button" id="preferences-collapse">Collapse all</button></div>
           <div id="preferences-list" class="preferences-list"></div>
         </section>
 
         <section id="closed-view" class="product-view feature-view closed-view" aria-label="Closed fleets">
-          <header class="feature-head">
-            <div><p class="eyebrow">FLEET CHATS</p><h1>Closed fleets</h1><p>Browse completed fleets and open their historical conversations.</p></div>
+          <header class="feature-head compact-head">
+            <div><h1>Closed fleets</h1><p title="Browse completed fleets and open their historical conversations.">Browse completed fleets and open their historical conversations.</p></div>
             <button id="closed-back" type="button">Back to Fleet Chats</button>
           </header>
           <label class="closed-search"><span>Filter closed fleets</span><input id="closed-search" type="search" placeholder="Search fleets or tasks" autocomplete="off"></label>
