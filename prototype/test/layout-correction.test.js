@@ -39,7 +39,7 @@ test('all nine emitted kind glyphs remain visible expanded, collapsed, hovered a
   assert.equal(computed(css, glyph, 320).display, 'inline');
 });
 
-test('collapsed lane rail emits pinned All first and named SVG-only lane controls in native focus order', () => {
+test('collapsed lane rail emits pinned All first and named vertical-label lane controls in native focus order', () => {
   const lanes = [{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }];
   const controls = buttons(window.filterView.collapsedRailHtml(lanes, new Set(['alpha']), String));
   assert.equal(controls.length, 3);
@@ -49,7 +49,8 @@ test('collapsed lane rail emits pinned All first and named SVG-only lane control
   assert.deepEqual(controls.slice(1).map(control => control.attrs['data-lane-id']), ['alpha', 'beta']);
   for (const control of controls.slice(1)) {
     assert.ok(control.attrs['aria-label']);
-    assert.ok(control.body.includes('<svg class="lane-rail-icon"'));
+    assert.ok(control.body.includes('<span class="lane-rail-label"'));
+    assert.ok(!control.body.includes('<svg'));
     assert.equal(control.attrs.tabindex, undefined);
   }
   assert.equal(buttons(window.filterView.collapsedRailHtml(lanes, new Set(['alpha', 'beta']), String))[0].attrs['aria-pressed'], 'true');
@@ -62,8 +63,10 @@ test('collapsed lane rail emits pinned All first and named SVG-only lane control
   assert.equal(computed(css, all)['writing-mode'], 'horizontal-tb');
   assert.equal(computed(css, all).transform, 'none');
   assert.equal(computed(css, element('span', [], {}, all)).display, 'block');
-  assert.equal(computed(css, element('span', [], {}, lane)).display, 'none');
-  assert.equal(computed(css, element('svg', ['lane-rail-icon'], {}, lane)).display, 'block');
+  const label = element('span', ['lane-rail-label'], {}, lane);
+  assert.equal(computed(css, label).display, 'block');
+  assert.equal(computed(css, label)['writing-mode'], 'vertical-rl');
+  assert.equal(computed(css, all)['writing-mode'], 'horizontal-tb');
   assert.equal(computed(css, rail, 320).display, 'none');
 });
 

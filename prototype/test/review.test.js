@@ -459,12 +459,12 @@ test("native review stays available with panel hidden and click precedence toggl
   assert.match(html, /id="review-send"/);
   assert.match(html, /id="review-end"/);
   assert.match(script, /annotateByDefault === event\.altKey/);
-  assert.match(script, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*selectRegion/);
+  assert.match(script, /event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);\s*if \(!regionFor\(event\.target\)\) return;\s*selectRegion/);
   assert.doesNotMatch(script, /active = false/);
   assert.match(script, /entry\.region/);
   assert.match(html, /Enter: queue · Shift\+Enter: new line · Ctrl\/Cmd\+Enter: send/);
   assert.match(html, /Queue message \(Enter\)/);
-  assert.match(html, /Send batch \(Ctrl\/Cmd\+Enter\)/);
+  assert.match(html, /data-hint="Ctrl\/Cmd\+Enter">Send batch/);
 });
 
 // Minimal DOM with real ancestry and event listeners: catches a control being
@@ -503,7 +503,7 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   const tab = node("button", "", "", nav);
   const tabLabel = node("span", "", "Overview", tab);
   const content = node("article", "", "Card", sidebar);
-  for (const id of ["review-annotation", "review-toggle", "review-panel", "review-panel-toggle", "review-message", "review-count", "review-awaiting", "review-inline-summary", "review-history", "review-history-summary", "review-target", "review-queue", "review-context", "review-send", "review-end", "review-pick", "review-thread", "review-state", "review-close", "review-form-close", "review-form"]) if (!nodes.has(id)) node("button", id);
+  for (const id of ["review-annotation", "review-toggle", "review-panel", "review-panel-toggle", "review-message", "review-count", "review-awaiting", "review-inline-summary", "review-history", "review-history-summary", "review-target", "review-queue", "review-context", "review-send", "review-end", "review-pick", "review-thread", "review-phone-thread", "review-sent", "review-sent-list", "review-sent-summary", "review-sent-count", "review-queued-count", "review-state", "review-close", "review-form-close", "review-form"]) if (!nodes.has(id)) node("button", id);
   const documentListeners = new Map();
   const document = { body: { append() {} }, createElement: () => node("div"), getElementById: (id) => nodes.get(id), querySelector: () => ({ textContent: "" }), addEventListener: (type, fn) => documentListeners.set(type, fn) };
   const sent = [];
@@ -530,12 +530,12 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   assert.equal(region.id, "refresh");
   assert.equal(vm.runInContext("regionFor", context)(sidebar), null);
   // Alt-click on the nested icon selects the button, not the sidebar or icon.
-  documentListeners.get("click")({ target: content, button: 0, detail: 1, altKey: false, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: content, button: 0, detail: 1, altKey: false, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.match(nodes.get("review-target").textContent, /Annotating Card/);
-  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.match(nodes.get("review-target").textContent, /Annotating Card/, "Alt-click interacts when annotation mode is on");
   vm.runInContext("annotateByDefault = false", context);
-  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.match(nodes.get("review-target").textContent, /Annotating Refresh data/);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(nodes.get("review-message").focused, true);
@@ -548,33 +548,41 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   assert.equal(vm.runInContext("regionFor", context)(quotaBar).label, "agy · 5h: 42% remaining. Open Quota page");
   assert.equal(vm.runInContext("regionFor", context)(strip).label, "Quota snapshot");
   let interceptedLabel = false;
-  documentListeners.get("click")({ target: gestureText, button: 0, detail: 1, altKey: false, preventDefault() { interceptedLabel = true; }, stopPropagation() {} });
+  documentListeners.get("click")({ target: gestureText, button: 0, detail: 1, altKey: false, preventDefault() { interceptedLabel = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.equal(interceptedLabel, false); // label remains a usable checkbox on ordinary click
-  documentListeners.get("click")({ target: gestureText, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: gestureText, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.match(nodes.get("review-target").textContent, /Annotating Alt-click annotation control/);
-  documentListeners.get("click")({ target: quotaBar, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: quotaBar, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.match(nodes.get("review-target").textContent, /Annotating agy · 5h/);
-  documentListeners.get("click")({ target: strip, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: strip, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.match(nodes.get("review-target").textContent, /Annotating Quota snapshot/);
-  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   checkbox.checked = true;
   checkbox.dispatch("change", { target: checkbox });
   assert.equal(checkbox.checked, true);
   let intercepted = false;
-  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {} });
-  assert.equal(intercepted, false); // checked: Refresh remains clickable
-  documentListeners.get("click")({ target: tabLabel, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {} });
-  assert.equal(intercepted, false); // navigation is operational even through nested spans
-  documentListeners.get("click")({ target: content, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {} });
-  assert.equal(intercepted, true); // non-control content remains annotatable
+  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+  assert.equal(intercepted, true); // checked: even controls are captured, not activated
+  documentListeners.get("click")({ target: tabLabel, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+  assert.equal(intercepted, true); // navigation is captured through nested spans too
+  intercepted = false;
+  documentListeners.get("click")({ target: content, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+  assert.equal(intercepted, true); // non-control content is annotated
   intercepted = false;
   checkbox.checked = false;
   checkbox.dispatch("change", { target: checkbox });
-  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {} });
+  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   checkbox.checked = true;
   checkbox.dispatch("change", { target: checkbox });
-  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() { intercepted = true; }, stopPropagation() {} });
+  documentListeners.get("click")({ target: icon, button: 0, detail: 1, altKey: true, preventDefault() { intercepted = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
   assert.equal(intercepted, false); // Alt-click interacts when checked
+  // Regression: annotation click mode owns every click, including non-interactive
+  // areas with no annotatable region; none may reach the page underneath.
+  assert.equal(vm.runInContext("regionFor", context)(sidebar), null);
+  intercepted = false;
+  let stopped = false;
+  documentListeners.get("click")({ target: sidebar, button: 0, detail: 1, altKey: false, preventDefault() { intercepted = true; }, stopPropagation() {}, stopImmediatePropagation() { stopped = true; } });
+  assert.equal(intercepted && stopped, true, "click on a non-annotatable area is still captured in annotation mode");
   assert.match(nodes.get("review-toggle").getAttribute("aria-label"), /Annotation mode on/);
   const message = nodes.get("review-message");
   let prevented = false;
@@ -693,6 +701,7 @@ test("review conversation notes: long notes are collapsed by default and expanda
     return elements.get(id);
   }
   const thread = getElement("review-thread");
+  const sentList = getElement("review-sent-list");
   const context = vm.createContext({
     document: {
       body: { append() {} },
@@ -722,20 +731,18 @@ test("review conversation notes: long notes are collapsed by default and expanda
     update();
   `, context);
 
-  // One ordered, collapsed batch owns both notes even before delivery.
-  assert.equal(thread.children.length, 1);
-  const draft = thread.children[0];
-  assert.equal(draft.className, "review-batch");
-  assert.equal(draft.open, false);
-  assert.match(draft.children[0].textContent, /Queued batch · 2 notes/);
-  const card1 = draft.children[1];
+  // Queued notes are listed directly in the always-visible Queued section.
+  assert.equal(thread.children.length, 2);
+  assert.equal(getElement("review-queued-count").textContent, "2");
+  assert.equal(getElement("review-sent-count").textContent, "0");
+  const card1 = thread.children[0];
   const card1Details = card1.children.find((c) => c.className === "review-note-details");
   assert.equal(card1Details, undefined, "Short note must not use details disclosure");
   const card1Text = card1.children.find((c) => c.className === "review-note-text");
   assert.equal(card1Text.textContent, shortText);
 
   // Card 2 (long note): uses details disclosure, collapsed by default
-  const card2 = draft.children[2];
+  const card2 = thread.children[1];
   const card2Header = card2.children.find((c) => c.className === "review-note-header");
   const card2Details = card2.children.find((c) => c.className === "review-note-details");
   assert.ok(card2Details, "Long note must use details disclosure");
@@ -765,8 +772,11 @@ test("review conversation notes: long notes are collapsed by default and expanda
   vm.runInContext('retryBatches = [inFlight]; inFlight = null; update()', context);
   assert.match(thread.children[0].children[0].textContent, /^Retry needed batch/);
   vm.runInContext('sent.push({ id: "batch-1", receiptId: "receipt-1", entries: retryBatches.pop().payload.entries }); update()', context);
-  assert.equal(thread.children.length, 1);
-  const batch = thread.children[0];
+  assert.equal(sentList.children.length, 1);
+  assert.equal(thread.children.length, 0, "sent batches leave the Queued section");
+  assert.equal(getElement("review-sent-count").textContent, "1");
+  assert.equal(getElement("review-queued-count").textContent, "0");
+  const batch = sentList.children[0];
   assert.equal(batch.className, "review-batch");
   assert.equal(batch.open, false);
   assert.match(batch.children[0].textContent, /Accepted durably · Firstmate intake not yet confirmed · 2 notes · receipt receipt-1/);
@@ -775,16 +785,16 @@ test("review conversation notes: long notes are collapsed by default and expanda
   batch.open = true;
   batch.listeners.get("toggle")();
   vm.runInContext('update()', context);
-  assert.equal(thread.children[0].open, true, "Batch stays expanded across rerenders");
-  const sentLong = thread.children[0].children[2];
+  assert.equal(sentList.children[0].open, true, "Batch stays expanded across rerenders");
+  const sentLong = sentList.children[0].children[2];
   const sentDetails = sentLong.children.find((child) => child.className === "review-note-details");
   assert.equal(sentDetails.open, false);
   sentDetails.open = true;
   sentDetails.listeners.get("toggle")();
   vm.runInContext('update()', context);
-  assert.equal(thread.children[0].children[2].children.find((child) => child.className === "review-note-details").open, true);
-  thread.children[0].open = false;
-  thread.children[0].listeners.get("toggle")();
+  assert.equal(sentList.children[0].children[2].children.find((child) => child.className === "review-note-details").open, true);
+  sentList.children[0].open = false;
+  sentList.children[0].listeners.get("toggle")();
   vm.runInContext('update()', context);
-  assert.equal(thread.children[0].open, false, "Entire batch collapses together");
+  assert.equal(sentList.children[0].open, false, "Entire batch collapses together");
 });

@@ -798,6 +798,10 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .conversation-kind-panel .message-types-actions { flex-wrap: wrap; }
 .conversation-body .messages { padding-inline: var(--space-4); }
 @media (min-width: 1200.01px) {
+  /* Pin each pane to its column so a missing panel can never shift the feed into a side column. */
+  .conversation-body > .lane-filter { grid-column: 1; grid-row: 1; }
+  .conversation-body > .conversation-feed { grid-column: 2; grid-row: 1; }
+  .conversation-body > .conversation-kind-panel { grid-column: 3; grid-row: 1; }
   .conversation-body:has(#lane-options[data-collapsed="true"]) { grid-template-columns: 52px minmax(0, 1fr) minmax(175px, 205px); }
   .conversation-body:has(#conversation-kind-panel[data-collapsed="true"]) { grid-template-columns: minmax(180px, 215px) minmax(0, 1fr) 44px; }
   .conversation-body:has(#lane-options[data-collapsed="true"]):has(#conversation-kind-panel[data-collapsed="true"]) { grid-template-columns: 52px minmax(0, 1fr) 44px; }
@@ -818,8 +822,8 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   #lane-options[data-collapsed="true"] .lane-info-toggle { margin: 0 auto 2px; }
   #lane-options[data-collapsed="true"] .lane-collapsed-rail { display: flex; flex: 1 1 auto; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; padding: 2px 0; scrollbar-width: thin; }
   #lane-options[data-collapsed="true"] .lane-rail-item { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 100%; min-height: 44px; margin: 0; padding: 8px 2px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; writing-mode: horizontal-tb; transform: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; line-height: 1.1; }
-  #lane-options[data-collapsed="true"] .lane-rail-item span { display: none; }
-  #lane-options[data-collapsed="true"] .lane-rail-icon { display: block; flex: 0 0 20px; width: 20px; height: 20px; }
+  #lane-options[data-collapsed="true"] .lane-rail-item:not(.lane-rail-all) { min-height: 64px; max-height: 132px; padding: 10px 2px; }
+  #lane-options[data-collapsed="true"] .lane-rail-label { display: block; max-height: 112px; overflow: hidden; writing-mode: vertical-rl; text-orientation: mixed; white-space: nowrap; letter-spacing: .02em; }
   #lane-options[data-collapsed="true"] .lane-rail-all { position: sticky; top: 0; z-index: 1; background: var(--surface); }
   #lane-options[data-collapsed="true"] .lane-rail-all span { display: block; }
   #lane-options[data-collapsed="true"] .lane-rail-item.is-selected, #lane-options[data-collapsed="true"] .lane-rail-item[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: #9ecab8; box-shadow: inset -3px 0 0 var(--accent); }
@@ -1042,7 +1046,9 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .nav-caption { margin: 0 8px 4px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
 .primary-tab { min-height: 44px; padding: 8px 12px; border-radius: 8px; }
 .primary-tab.active, .lane-chats-row:has(.active) { background: var(--surface); color: var(--accent); box-shadow: inset 3px 0 var(--accent), 0 1px 4px #243c2e12; }
-.lane-chats-row { grid-template-columns: minmax(0, 1fr) 44px 64px; min-height: 48px; border-color: #cddbd2; background: #f5f8f5; }
+/* No select-all cell exists in the row: reserving a column for it left a blank strip beside the tab. */
+.lane-chats-row { grid-template-columns: minmax(0, 1fr) 44px; min-height: 48px; border-color: #cddbd2; background: #f5f8f5; }
+@media (min-width: 1200.01px) { .lane-chats-row { grid-template-columns: minmax(0, 1fr); } }
 .lane-chats-row .primary-tab { min-height: 48px; }
 .lane-chats-row .primary-tab small { display: block; }
 /* H2 — desktop shell: one primary label per nav row; secondary lives in title tooltip */
@@ -1064,7 +1070,11 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .lane-option:has(input:checked) { background: var(--accent-soft); }
 .source-status { padding: 16px 20px 12px; background: #e2ebe5; }
 .source-status button { text-align: left; }
-.sidebar-quota { padding: 12px 20px 16px; background: #e2ebe5; }
+.sidebar-quota { padding: 12px 8px 16px; background: #e2ebe5; }
+.sidebar-quota .sidebar-quota-head { padding: 0 6px; }
+.sidebar-quota-link { white-space: nowrap; }
+/* Cards fill the pane width; a wider (resized) pane flows them into columns. */
+.sidebar-quota .quota-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); align-content: start; scrollbar-width: thin; position: relative; z-index: 36; }
 .conversation-head { min-height: 52px; padding: 6px clamp(16px, 3vw, 40px); background: #fafcf9; border-color: #cddbd2; }
 .conversation-head-identity { flex-wrap: nowrap; gap: 0 8px; overflow: hidden; }
 .conversation-identity { margin-left: -8px; min-height: 40px; }
@@ -1279,6 +1289,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .lane-chats-row:has(.active) .lane-select-all,
 .primary-tab.active .chats-icon { color: #0a6f60; }
 .lane-filter-toggle:hover { background: #1a3a48; color: #9ff0e0; }
+.lane-chats-row .primary-tab:hover:not(.active) { background: #1a3a48; color: #9ff0e0; border-color: transparent; }
 .lane-chats-row:has(.active) .lane-filter-toggle:hover { background: #d5f3ee; color: #0a6f60; }
 .lane-select-all { border-color: #2a4a58; }
 .lane-filter { background: #f4f7f9; color: var(--text); box-shadow: 0 8px 24px #06141c55; }
@@ -1320,21 +1331,29 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 /* One desktop composer remains visible across routes and closed chat. */
 @media (min-width: 721px) {
   .lane-list { grid-column: 1; grid-row: 1 / 3; }
-  #desktop-review-footer { grid-column: 2 / -1; grid-row: 2; z-index: 40; display: flex; align-items: center; gap: 12px; min-width: 0; height: 78px; padding: 8px 16px; border-top: 1px solid var(--line-strong); background: var(--surface); }
+  #desktop-review-footer { grid-column: 2 / -1; grid-row: 2; z-index: 40; display: flex; align-items: center; gap: 12px; min-width: 0; height: 84px; padding: 8px 16px; border-top: 1px solid var(--line-strong); background: var(--surface); }
   #desktop-review-footer .preview-control { flex: 0 1 290px; min-width: 170px; max-width: 320px; padding: 0 12px 0 0; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--text); }
   .uat-deployment-label { display: none; }
   #desktop-review-footer .preview-control .preview-heading { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #desktop-review-footer .preview-control .preview-chat { bottom: 100%; top: auto; }
   #desktop-review-footer .preview-control .preview-details { position: absolute; bottom: 100%; left: 12px; width: min(420px, 90vw); max-height: 55dvh; overflow-y: auto; padding: 12px; border: 1px solid var(--line-strong); background: var(--surface); box-shadow: 0 -8px 20px #0002; }
   #desktop-review-footer .preview-control .preview-details[hidden] { display: none; }
-  #desktop-review-footer #review-form { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(150px, 1fr) minmax(260px, auto); grid-template-rows: 40px auto; align-items: center; gap: 4px 10px; }
+  #desktop-review-footer #review-form { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(150px, 1fr) minmax(260px, auto); grid-template-rows: 48px auto; align-items: center; gap: 4px 10px; }
   #desktop-review-footer #review-form label, #desktop-review-footer .review-shortcuts { display: none; }
   #desktop-review-footer #review-message { grid-column: 1; grid-row: 1; align-self: end; min-height: 40px; max-height: 30dvh; resize: none; overflow-y: auto; background: var(--surface); }
   #desktop-review-footer #review-target { grid-column: 1 / -1; grid-row: 2; margin: 0; font-size: 11px; }
   #desktop-review-footer .review-actions { grid-column: 2; grid-row: 1; display: flex; gap: 6px; }
-  #desktop-review-footer .review-actions button { flex: 1; min-height: 40px; }
-  #desktop-review-footer #review-panel-toggle { position: relative; right: auto; bottom: auto; flex: 0 0 auto; min-height: 40px; box-shadow: none; }
-  .review-panel { bottom: 96px; max-height: calc(100dvh - 96px); }
+  /* One coherent action set: equal height, a primary line plus a smaller hint/count line, width from content within bounds. */
+  #desktop-review-footer .review-actions button, #desktop-review-footer #review-panel-toggle { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; height: 48px; min-height: 48px; min-width: 104px; max-width: 200px; padding: 4px 12px; font-size: 13px; line-height: 1.25; font-weight: 600; text-align: center; white-space: nowrap; overflow-wrap: normal; }
+  #desktop-review-footer .review-actions button { flex: 1 1 auto; }
+  #desktop-review-footer .review-actions button[data-hint]::after { content: attr(data-hint); font-size: 11px; font-weight: 400; opacity: 0.75; }
+  #desktop-review-footer #review-panel-toggle { position: relative; right: auto; bottom: auto; flex: 0 0 auto; min-width: 132px; box-shadow: none; }
+  #desktop-review-footer #review-panel-toggle .mail-icon, #desktop-review-footer #review-panel-toggle .message-icon, #desktop-review-footer #review-panel-toggle .mobile-dock-review-label, #desktop-review-footer #review-panel-toggle #review-count { display: none; }
+  #desktop-review-footer #review-panel-toggle .review-panel-text { display: block; }
+  #desktop-review-footer #review-panel-toggle #review-inline-summary { display: block; font-size: 11px; font-weight: 400; opacity: 0.75; }
+  #desktop-review-footer #review-panel-toggle #review-inline-summary:empty::before { content: "Nothing queued"; }
+  #desktop-review-footer #review-message { min-height: 48px; }
+  .review-panel { bottom: 102px; max-height: calc(100dvh - 102px); }
   #review-pick { display: none !important; }
   .source-status { container-type: inline-size; }
   .source-status .sidebar-control-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 8px; }
@@ -1359,10 +1378,12 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   .source-status .review-gesture:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
 }
 @media (min-width: 721px) and (max-width: 1000px) {
-  #desktop-review-footer { height: 126px; padding: 6px 10px; gap: 4px 8px; flex-wrap: wrap; align-content: center; }
-  #desktop-review-footer .preview-control { flex: 0 0 100%; max-width: none; min-width: 0; height: 28px; padding: 0; border-right: 0; }
+  #desktop-review-footer { height: 136px; padding: 6px 10px; gap: 4px 8px; flex-wrap: wrap; align-content: center; }
+  #desktop-review-footer .preview-control { flex: 1 1 0; max-width: none; min-width: 0; height: 48px; padding: 0; border-right: 0; }
+  #desktop-review-footer #review-form { flex: 1 1 100%; order: 2; }
+  #desktop-review-footer #review-panel-toggle { order: 1; margin-left: auto; }
   #desktop-review-footer #review-form { grid-template-columns: minmax(80px, 1fr) minmax(210px, auto); }
-  .review-panel { bottom: 142px; max-height: calc(100dvh - 142px); }
+  .review-panel { bottom: 152px; max-height: calc(100dvh - 152px); }
 }
 @media (max-width: 720.005px) {
   #sidebar-version, #sidebar-version-detail { display: none; }

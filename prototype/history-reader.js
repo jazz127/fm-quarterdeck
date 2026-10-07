@@ -6,46 +6,99 @@ export class HistoryLimitError extends Error {
 
 // One reader per request, shared by transcript, status and legacy note loaders.
 // Bounds apply to actual bytes (including a file growing after stat), not pages
-// rendered in the browser. Fail the request explicitly rather than omit records.
+// rendered in the browser. Fail the request explicitly rather than omit records;
+// only `recent` windows a source, and it reports what it left unread.
 export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBytes = 32 * 1024 * 1024,
-  maxLineBytes = 1024 * 1024, maxFiles = 2048, maxRecords = 20000, maxMessages = 20000 } = {}) {
+  maxLineBytes = 1024 * 1024, maxFiles = 2048, maxRecords = 20000, maxMessages = 20000,
+  windowReserveBytes = 8 * 1024 * 1024 } = {}) {
   let bytes = 0, files = 0, records = 0, messages = 0;
   const takeMessage = () => { if (++messages > maxMessages) throw new HistoryLimitError(); };
-  async function text(filename, firstOnly = false) {
+  // Bytes a transcript window may still take while leaving the reserve for
+  // status, outcome and note loaders sharing this request.
+  const windowBudget = () => Math.max(0, Math.min(maxFileBytes, maxTotalBytes - windowReserveBytes - bytes));
+  function countRecords(buffer) {
+    let lineBytes = 0;
+    for (const byte of buffer) {
+      if (byte === 10) {
+        if (++records > maxRecords) throw new HistoryLimitError();
+        lineBytes = 0;
+      } else if (++lineBytes > maxLineBytes) throw new HistoryLimitError();
+    }
+    if (lineBytes && ++records > maxRecords) throw new HistoryLimitError();
+  }
+  async function read(filename, { firstOnly = false, window = false } = {}) {
     if (++files > maxFiles) throw new HistoryLimitError();
     const file = await open(filename, "r");
     try {
       const info = await file.stat();
-      if (!info.isFile() || (!firstOnly && (info.size > maxFileBytes || bytes + info.size > maxTotalBytes))) throw new HistoryLimitError();
+      if (!info.isFile()) throw new HistoryLimitError();
+      let position = 0, limit = maxFileBytes;
+      if (window) {
+        limit = windowBudget();
+        if (info.size > limit) {
+          // Too little budget left for even one whole record: leave the source unread.
+          if (limit < Math.min(maxLineBytes, maxFileBytes)) return null;
+          position = info.size - limit;
+        }
+      } else if (!firstOnly && (info.size > maxFileBytes || bytes + info.size > maxTotalBytes)) throw new HistoryLimitError();
+      const start = position;
       const chunks = [];
-      let size = 0, lineBytes = 0;
-      while (true) {
-        const chunk = Buffer.alloc(64 * 1024);
-        const { bytesRead } = await file.read(chunk);
+      let size = 0;
+      while (!window || size < limit) {
+        const chunk = Buffer.alloc(window ? Math.min(64 * 1024, limit - size) : 64 * 1024);
+        const { bytesRead } = await file.read(chunk, 0, chunk.length, position);
         if (!bytesRead) break;
+        position += bytesRead;
         bytes += bytesRead;
         const end = firstOnly ? chunk.subarray(0, bytesRead).indexOf(10) : -1;
         const kept = end < 0 ? bytesRead : end;
         size += kept;
         if (size > maxFileBytes || bytes > maxTotalBytes) throw new HistoryLimitError();
-        for (let i = 0; i < kept; i++) {
-          if (chunk[i] === 10) {
-            if (++records > maxRecords) throw new HistoryLimitError();
-            lineBytes = 0;
-          } else if (++lineBytes > maxLineBytes) throw new HistoryLimitError();
-        }
         chunks.push(chunk.subarray(0, kept));
         if (end >= 0) break;
       }
-      if (lineBytes && ++records > maxRecords) throw new HistoryLimitError();
-      return Buffer.concat(chunks, size).toString("utf8");
+      let buffer = Buffer.concat(chunks, size);
+      // A window that starts mid-file drops the partial leading record so only
+      // whole records are parsed; nothing is reconstructed from a fragment.
+      let omittedBytes = start;
+      if (start > 0) {
+        const newline = buffer.indexOf(10);
+        omittedBytes += newline < 0 ? buffer.length : newline + 1;
+        buffer = newline < 0 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
+      }
+      countRecords(buffer);
+      const text = buffer.toString("utf8");
+      return window ? { text, omittedBytes, totalBytes: start + size } : text;
     } finally { await file.close(); }
   }
-  async function* lines(filename) {
-    for (const line of (await text(filename)).split(/\r?\n/)) {
+  async function* split(text) {
+    for (const line of text.split(/\r?\n/)) {
       if (Buffer.byteLength(line) > maxLineBytes) throw new HistoryLimitError();
       yield line;
     }
   }
-  return { text: (filename) => text(filename), firstLine: (filename) => text(filename, true), lines, takeMessage };
+  // Lines with the file byte offset where each starts: an append-only source
+  // keeps the same offsets as its window moves forward.
+  async function* splitWithOffsets(text, offset) {
+    for (const raw of text.split("\n")) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      const size = Buffer.byteLength(raw);
+      if (size > maxLineBytes + 1) throw new HistoryLimitError();
+      yield { line, offset };
+      offset += size + 1;
+    }
+  }
+  return {
+    text: (filename) => read(filename),
+    firstLine: (filename) => read(filename, { firstOnly: true }),
+    lines: async function* (filename) { yield* split(await read(filename)); },
+    // Newest whole records of a transcript within the remaining window budget.
+    // Null when this request's remaining budget cannot hold a useful window.
+    recent: async (filename) => {
+      const window = await read(filename, { window: true });
+      return window && { lines: splitWithOffsets(window.text, window.omittedBytes), omittedBytes: window.omittedBytes, totalBytes: window.totalBytes };
+    },
+    windowBudget,
+    takeMessage,
+  };
 }

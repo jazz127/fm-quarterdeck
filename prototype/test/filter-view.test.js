@@ -46,8 +46,9 @@ test("filter-view builds kind and lane markup and collapsed rail", () => {
   );
   assert.match(rail, /data-lane-id="alpha"[^>]*aria-pressed="true"/);
   assert.match(rail, /data-lane-id="beta"[^>]*aria-pressed="false"/);
-  assert.match(rail, />Alph</);
-  assert.match(rail, />BeL</);
+  assert.match(rail, />Alpha</);
+  assert.match(rail, />Beta Lane</);
+  assert.equal(view.laneRailLabel("a-very-long-lane-name"), "a-very-long-l\u2026");
 });
 
 test("filter-view kind bulk toggle labels follow Select all/Clear lock", () => {

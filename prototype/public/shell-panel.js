@@ -316,7 +316,6 @@ function syncMobileControls() {
     document.querySelector("#header-search-toggle")?.setAttribute("aria-expanded", "false");
     for (const [node, anchor] of placements) { anchor.replaceWith(node); }
     placements.clear();
-    document.querySelector("#review-send").textContent = "Send batch (Ctrl/Cmd+Enter)";
     const footer = document.querySelector("#desktop-review-footer");
     const previewControl = document.querySelector(".preview-control");
     if (previewControl && previewControl.parentElement !== footer) footer.insertBefore(previewControl, footer.firstChild);
