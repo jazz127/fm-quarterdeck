@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
+import { execFileSync } from "node:child_process";
 import { createAgentStateOwner, emptyAgentState, validateAgentState, fingerprint } from "../agent-state.js";
 import { classifyCurrent, projectWork, verifyDurability, endpointIsLive, executionFingerprint, hasProcessIdentity, shouldProbeLiveness, createConcurrencyLimiter, foldStatusLines } from "../work-model.js";
 import { createServer, loadFirstmateHome } from "../server.js";
@@ -16,10 +17,226 @@ test("explicit taxonomy validation refuses dangling assignments, duplicates and 
   for (const mutate of [(s) => s.repositories.push(s.repositories[0]), (s) => s.repositories[0].lanes[0].name = "/private/path", (s) => s.repositories[0].lanes[0].themes[0].kind = "epic", (s) => s.assignments[fingerprint("task")] = { repositoryId: "repo", laneId: "missing", themeId: "r1" }, (s) => s.secret = "credential"]) { const state = taxonomy(); mutate(state); assert.throws(() => validateAgentState(state)); }
 });
 
-test("current-state classification excludes preserved, completed, dead and unknown workers", () => {
+test("ordinary current-state classification preserves existing status precedence", () => {
   const input = { inFlight: true, endpointLive: true, state: "working" };
   assert.equal(classifyCurrent(input), "active");
-  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
+  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "needs-decision", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", retained: true }, "cleanup"], [{ state: "working", pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
+});
+
+test("review run signal classifies current task records and contributes hierarchy counts", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  await writeFile(path.join(home, "state/review-task.meta"), "project=/synthetic/product\nvalidation_state=running\n");
+  await writeFile(path.join(home, "state/review-task.status"), "paused [at=1]: tests passed; validation pipeline waiting at review gate\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const split = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+  assert.equal(split.workSplit.items[0].status, "review");
+  assert.equal(split.workSplit.counts.review, 1);
+  assert.equal(split.workSplit.repositories[0].counts.review, 1);
+  assert.equal(split.workSplit.repositories[0].lanes[0].themes[0].counts.review, 1);
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  assert.equal(vmContext.window.workHierarchy.statusLabels.review, "In review");
+  assert.equal(vmContext.window.workHierarchy.statusConciseLabels.review, "In review");
+  assert.equal(vmContext.window.workHierarchy.statusAbbreviations.review, "V");
+  assert.equal(vmContext.window.workHierarchy.statusCounts(split.workSplit.items).review, 1);
+  await writeFile(path.join(home, "state/review-task.meta"), "project=/synthetic/product\n");
+  await writeFile(path.join(home, "state/review-task.status"), "paused [at=2]: validation pipeline waiting at review gate\n");
+  assert.equal((await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] })).workSplit.items[0].status, "waiting", "status prose alone does not establish a review run");
+  await writeFile(path.join(home, "state/review-task.status"), "paused [at=3]: waiting for an external dependency\n");
+  assert.equal((await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] })).workSplit.items[0].status, "waiting", "ordinary waits are not review runs");
+  await writeFile(path.join(home, "state/review-task.meta"), "project=/synthetic/product\nvalidation_state=running\n");
+  await writeFile(path.join(home, "state/review-task.status"), "needs-decision [at=4]: choose a route\n");
+  assert.equal((await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] })).workSplit.items[0].status, "captain-action", "captain decisions retain precedence");
+});
+
+test("pipeline prose without structured run state preserves ordinary status and counts", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] pipeline-task - Work (repo: /synthetic/product)\n");
+  await writeFile(path.join(home, "state/pipeline-task.meta"), "project=/synthetic/product\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  for (const text of [
+    "deployment pipeline running",
+    "deployment pipeline in progress",
+    "deployment pipeline waiting at a gate",
+    "pipeline review running",
+    "pipeline validation in progress",
+    "implementing validation pipeline integration",
+  ]) {
+    for (const [state, ordinaryStatus] of [["paused", "waiting"], ["waiting", "waiting"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"]]) {
+      await writeFile(path.join(home, "state/pipeline-task.status"), `${state} [at=1]: ${text}\n`);
+      const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      assert.equal(workSplit.items[0].status, ordinaryStatus, `${state}: ${text}`);
+      const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
+        assert.equal(counts.review, 0, `${state}: ${text}`);
+      }
+    }
+  }
+});
+
+test("structured review run state governs promotion independently of step prose", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  const gateText = "validation pipeline waiting at review gate";
+  const cases = [];
+  for (const value of ["failed", "passed", "complete", "completed", "finished", "cancelled", "canceled", "skipped", "stopped", "inactive", "idle", "false", "unknown", ""]) cases.push([`validation_state=${value}\n`, gateText, 0]);
+  for (const value of ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"]) {
+    for (const text of ["tests passed; validation pipeline waiting at review gate", "review step complete; waiting at the next gate", "tests failed; validation pipeline running the fix round", "waiting for an external dependency"]) cases.push([`validation_state=${value}\n`, text, 1]);
+  }
+  cases.push(["validation_state=running\nreview_step_state=failed\nreview_required=false\n", gateText, 1]);
+  cases.push(["review_state=running\n", gateText, 0]);
+  cases.push(["validation_step_state=running\nreview_notes=running\n", gateText, 0]);
+  cases.push(["", gateText, 0], ["deployment_state=running\n", gateText, 0]);
+  for (const [metadata, text, reviewCount] of cases) {
+    await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\n${metadata}`);
+    for (const [state, ordinaryStatus] of [["paused", "waiting"], ["blocked", "waiting"], ["waiting", "waiting"], ["done", "newly-done"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"], ["cleanup", "cleanup"], ["preserved", "cleanup"], ["retained", "cleanup"], ["unknown", "unknown"]]) {
+      await writeFile(path.join(home, "state/review-task.status"), `paused [at=1]: ${gateText}\n${state} [at=2]: ${text}\n`);
+      const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      const message = `${metadata}${state}: ${text}`;
+      assert.equal(workSplit.items[0].status, reviewCount ? "review" : ordinaryStatus, message);
+      assert.equal(workSplit.items[0].completionAttention, state === "done" ? "newly-done" : null, message);
+      const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
+        assert.equal(counts.review, reviewCount, message);
+        assert.equal(counts["newly-done"], state === "done" ? 1 : 0, message);
+      }
+    }
+  }
+});
+
+test("review promotion preserves ordinary pending-wait precedence and captain decisions", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  for (const [lines, ordinary, reviewing, completion] of [
+    [["paused [key=gate]: waiting", "needs-decision: choose a route"], "waiting", "waiting", null],
+    [["paused [key=gate]: waiting", "needs-decision [key=choice]: choose a route"], "captain-action", "captain-action", null],
+    [["needs-decision: choose a route"], "captain-action", "captain-action", null],
+    [["needs-decision [key=choice]: choose a route", "done: candidate ready"], "captain-action", "captain-action", "newly-done"],
+    [["paused [key=gate]: waiting", "blocked: waiting at review gate"], "waiting", "review", null],
+    [["paused [key=gate]: waiting", "done: candidate ready"], "waiting", "review", "newly-done"],
+    [["done: candidate ready"], "newly-done", "review", "newly-done"],
+  ]) {
+    await writeFile(path.join(home, "state/review-task.status"), `${lines.join("\n")}\n`);
+    for (const [runState, expected] of [["", ordinary], ["running", reviewing], ["passed", ordinary]]) {
+      await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\nvalidation_state=${runState}\n`);
+      const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      const message = `${runState}: ${lines.join("; ")}`;
+      assert.equal(workSplit.items[0].status, expected, message);
+      assert.equal(workSplit.items[0].completionAttention, completion, message);
+      const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
+        assert.equal(counts[expected], 1, message);
+        assert.equal(counts.review, expected === "review" ? 1 : 0, message);
+        assert.equal(counts["newly-done"], completion === "newly-done" ? 1 : 0, message);
+      }
+    }
+  }
+});
+
+test("review status retains separate new, acknowledged and unknown completion attention", async () => {
+  const state = taxonomy(), task = record({ reviewRun: true });
+  const initial = await projectWork([task], state);
+  const { taskFingerprint, completionFingerprint } = initial.items[0];
+  const acknowledged = { ...state, acknowledgements: { [completionFingerprint]: { taskFingerprint, acknowledgedAt: "2026-10-08T00:00:00.000Z" } } };
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  for (const [model, attention] of [[initial, "newly-done"], [await projectWork([task], acknowledged), "previously-done"], [await projectWork([task], state, { acknowledgementsAvailable: false }), "unknown"]]) {
+    assert.equal(model.items[0].status, "review");
+    assert.equal(model.items[0].completionAttention, attention);
+    const repository = model.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+    for (const counts of [model.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(model.items)]) {
+      assert.equal(counts.review, 1);
+      assert.equal(counts[attention], 1);
+    }
+  }
+});
+
+test("review display preserves verified worker counts and shared incarnation deduplication", async () => {
+  const rows = Array.from({ length: 9 }, (_, index) => record({ id: `worker-${index}`, state: ["working", "active", "in-progress"][index % 3], inFlight: true, endpointLive: true, endpointEvidence: "live process incarnation", executionFingerprint: `incarnation-${index}`, reviewRun: true }));
+  const model = await projectWork(rows, emptyAgentState());
+  assert.equal(model.counts.review, 9);
+  assert.equal(model.counts.active, 0);
+  assert.equal(model.activeWorkerCount, 9);
+  assert.equal(model.activeReviewRequired, true);
+  assert.ok(model.items.every((item) => item.isLive));
+  const shared = await projectWork(rows.map((row) => ({ ...row, executionFingerprint: "same-incarnation" })), emptyAgentState());
+  assert.equal(shared.activeWorkerCount, 1);
+  assert.equal(shared.activeReviewRequired, false);
+  const ordinary = await projectWork(rows.map((row) => ({ ...row, reviewRun: false })), emptyAgentState());
+  assert.equal(ordinary.activeWorkerCount, 9);
+  assert.equal(ordinary.counts.active, 9);
+  const unverified = await projectWork([
+    { state: "paused" }, { state: "done" }, { retained: true }, { inFlight: false },
+    { endpointLive: false }, { endpointLive: null },
+    { endpointEvidence: "live terminal pane (weaker evidence; worker process unverified)" },
+    { pendingIssues: [{ state: "paused" }] }, { pendingIssues: [{ state: "needs-decision" }] },
+  ].map((extras, index) => ({ ...rows[index], ...extras })), emptyAgentState());
+  assert.equal(unverified.activeWorkerCount, 0);
+  assert.equal(unverified.activeReviewRequired, false);
+  assert.ok(unverified.items.every((item) => !item.isLive));
+});
+
+test("loader preserves verified execution through review promotion in sessions, crew and summary", async (context) => {
+  let processMetadata;
+  if (process.platform === "darwin") {
+    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
+    processMetadata = `worker_pid=${process.pid}\nworker_start_identity=${new Date(`${started} UTC`).toISOString()}\n`;
+  } else if (process.platform === "linux") {
+    const stat = await readFile(`/proc/${process.pid}/stat`, "utf8");
+    const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    processMetadata = `worker_pid=${process.pid}\nworker_start_ticks=${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}\nworker_boot_id=${boot}\n`;
+  } else { context.skip("Local process incarnation evidence requires macOS or Linux"); return; }
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- product - Product work\n");
+  const ids = ["review-worker", "plain-worker", "gate-task"];
+  await writeFile(path.join(home, "data/backlog.md"), `## In flight\n${ids.map((id) => `- [ ] ${id} - Work (repo: /synthetic/product)`).join("\n")}\n`);
+  for (const id of ids) {
+    await writeFile(path.join(home, `state/${id}.meta`), `project=/synthetic/product\n${id === "gate-task" ? "" : processMetadata}${id === "plain-worker" ? "" : "validation_state=running\n"}`);
+    await writeFile(path.join(home, `state/${id}.status`), id === "gate-task" ? "paused: validation pipeline waiting at review gate\n" : "working: implementing validation pipeline integration\n");
+  }
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  for (const reviewing of [false, true]) {
+    await writeFile(path.join(home, "state/plain-worker.meta"), `project=/synthetic/product\n${processMetadata}${reviewing ? "validation_state=running\n" : ""}`);
+    const { lanes, workSplit, summary } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+    const fleet = lanes[0];
+    assert.equal(fleet.status, reviewing ? "review" : "active");
+    assert.equal(fleet.crew, 2);
+    assert.equal(workSplit.activeWorkerCount, 1);
+    assert.equal(summary.activeAgents, 1);
+    assert.equal(summary.activeReviewRequired, false);
+    assert.equal(workSplit.counts.review, reviewing ? 3 : 2);
+    assert.equal(workSplit.items.find((item) => item.id === "plain-worker").status, reviewing ? "review" : "active");
+    for (const id of ids) {
+      assert.equal(fleet.items.find((item) => item.title === id).isLive, id !== "gate-task");
+      assert.equal(fleet.sessions.find((session) => session.id === id).isLive, id !== "gate-task");
+    }
+  }
+});
+
+test("review-only fleets report review until the structured run terminates", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  for (const state of ["paused", "blocked", "done"]) {
+    await writeFile(path.join(home, "state/review-task.status"), `${state}: validation pipeline waiting at review gate\n`);
+    for (const running of [true, false]) {
+      await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\nvalidation_state=${running ? "running" : "passed"}\n`);
+      const { lanes, workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      assert.equal(lanes[0].status, running ? "review" : state === "done" ? "closed" : "waiting");
+      assert.equal(lanes[0].closed, !running && state === "done");
+      assert.equal(lanes[0].crew, 0);
+      assert.equal(workSplit.counts.review, running ? 1 : 0);
+    }
+  }
 });
 
 test("liveness probes are gated to executing in-flight work and bounded concurrently", async () => {
