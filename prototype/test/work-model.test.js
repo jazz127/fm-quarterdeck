@@ -75,6 +75,41 @@ test("only explicit review or validation pipeline text promotes work status and 
   }
 });
 
+test("inactive review evidence overrides retained gate text and stale active metadata", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  const gateText = "validation pipeline waiting at review gate";
+  const inactiveValues = ["failed", "passed", "complete", "completed", "finished", "cancelled", "canceled", "skipped", "stopped", "inactive", "idle", "false", "not running", "not in progress", "not validating", "not reviewing", "not waiting at a gate"];
+  const metadataKeys = ["validation_state", "review_state", "no-mistakes_state", "no_mistakes_state"];
+  const cases = [];
+  for (const value of inactiveValues) {
+    for (const key of metadataKeys) cases.push([`${key}=${value}\n`, gateText, 0]);
+    for (const text of [`validation pipeline ${value}; waiting for a fix`, `pipeline review ${value}`, `no-mistakes pipeline ${value}`]) {
+      cases.push(["", text, 0], ["validation_state=validating (running)\n", text, 0]);
+    }
+  }
+  cases.push(["validation_state=failed\nreview_state=running\n", gateText, 0]);
+  cases.push(["validation_state=validating (running); failed\n", gateText, 0]);
+  for (const key of metadataKeys) {
+    for (const value of ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"]) cases.push([`${key}=${value}\n`, "waiting for an external dependency", 1]);
+  }
+  cases.push(["", gateText, 1], ["validation_state=\n", gateText, 1], ["deployment_state=failed\n", gateText, 1]);
+  for (const [metadata, text, reviewCount] of cases) {
+    await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\n${metadata}`);
+    for (const [state, ordinaryStatus] of [["paused", "waiting"], ["waiting", "waiting"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"]]) {
+      await writeFile(path.join(home, "state/review-task.status"), `paused [at=1]: ${gateText}\n${state} [at=2]: ${text}\n`);
+      const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      const message = `${metadata}${state}: ${text}`;
+      assert.equal(workSplit.items[0].status, reviewCount ? "review" : ordinaryStatus, message);
+      const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) assert.equal(counts.review, reviewCount, message);
+    }
+  }
+});
+
 test("liveness probes are gated to executing in-flight work and bounded concurrently", async () => {
   assert.equal(shouldProbeLiveness("working", true), true);
   for (const state of ["done", "paused", "blocked", "waiting", "unknown"]) assert.equal(shouldProbeLiveness(state, true), false);

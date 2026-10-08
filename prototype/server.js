@@ -319,11 +319,10 @@ function parseStatusLine(line) {
 }
 
 function isReviewRun(meta, latest) {
-  const activeMetadata = Object.entries(meta).some(([key, value]) =>
-    /(?:no[-_]mistakes|validation|review)/i.test(key)
-    && /\b(?:running|in progress|validating|reviewing|waiting at (?:a )?gate)\b/i.test(value)
-    && !/\b(?:not\s+(?:running|in progress|validating|reviewing)|failed|passed|complete|finished|cancelled|canceled|skipped)\b/i.test(value));
-  if (activeMetadata) return true;
+  const reviewMetadata = Object.entries(meta).filter(([key]) => /(?:no[-_]mistakes|validation|review)/i.test(key)).map(([, value]) => value);
+  const inactive = /\b(?:not\s+(?:running|in progress|validating|reviewing|waiting at (?:a )?gate)|failed|passed|complete(?:d)?|finished|cancelled|canceled|skipped|stopped|inactive|idle|false)\b/i;
+  if (reviewMetadata.some((value) => inactive.test(value)) || (latest && inactive.test(latest.text))) return false;
+  if (reviewMetadata.some((value) => /\b(?:running|in progress|validating|reviewing|waiting at (?:a )?gate)\b/i.test(value))) return true;
   if (!latest || !["paused", "waiting", "working", "active", "in-progress"].includes(latest.state)) return false;
   return /(?:no[-_]mistakes[^\n]{0,100}(?:review|validat|pipeline|running|in progress|gate)|(?:review|validat)[^\n]{0,100}(?:no[-_]mistakes|pipeline|run(?:ning)?|in progress|gate)|pipeline[^\n]{0,100}(?:review|validat))/i.test(latest.text);
 }
