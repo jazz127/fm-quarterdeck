@@ -7,6 +7,7 @@ import { validateRegistry, previewPath, proxyPreview } from "./previews.js";
 import { validChatView } from "./chat-view.js";
 import { createAgentStateOwner, configuredStatePath, emptyAgentState, fingerprint } from "./agent-state.js";
 import { projectWork, endpointIsLive, executionFingerprint, hasProcessIdentity, shouldProbeLiveness, createConcurrencyLimiter, verifyDurability, resolveRepositoryIdentity, foldStatusLines, safeWorkNote } from "./work-model.js";
+import { readSecondmates } from "./secondmates.js";
 import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
@@ -570,7 +571,7 @@ async function readBacklog(home, reader = createHistoryReader()) {
 }
 
 // The backlog remains the only ledger. Briefs supply classification evidence, never a second task list.
-async function workSplit(home, backlogTasks, stateNames, agentState, projects, repositoryPaths, durability, acknowledgementsAvailable, reader) {
+async function workSplit(home, backlogTasks, stateNames, agentState, projects, repositoryPaths, durability, acknowledgementsAvailable, reader, metaById) {
   const readFile = reader.text;
   const tight = { backlog: [], inProgress: [], justLanded: [] };
   const large = [];
@@ -595,8 +596,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     // queued work falls back to the backlog's explicit repo field.
     let repository = task.projectName;
     if (stateNames.includes(`${task.id}.meta`)) {
-      const meta = await readFile(path.join(home, "state", `${task.id}.meta`), "utf8");
-      repository = path.basename(parseMeta(meta).project || "") || repository;
+      repository = path.basename(metaById.get(task.id)?.project || "") || repository;
     }
     const identity = { id: task.id, name, repository: repository || null, workGroup: task.workGroup };
     const phase = task.state === "done" ? task.doneDate === today ? "justLanded" : "earlierLanded"
@@ -616,7 +616,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
   const ids = new Set([...backlogTasks.keys(), ...stateNames.filter((name) => /\.(meta|status)$/.test(name) && !name.startsWith(".")).map((name) => name.replace(/\.(meta|status)$/, ""))]);
   const records = await Promise.all([...ids].sort().map(async (id) => {
     const task = backlogTasks.get(id);
-    const meta = stateNames.includes(`${id}.meta`) ? parseMeta(await readFile(path.join(home, "state", `${id}.meta`), "utf8")) : {};
+    const meta = metaById.get(id) || {};
     const lines = stateNames.includes(`${id}.status`) ? (await readFile(path.join(home, "state", `${id}.status`), "utf8")).split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
     const folded = foldStatusLines(lines);
     const latest = folded.latest;
@@ -685,16 +685,19 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     let taxonomyWarning = null;
     try { agentState = await agentStateOwner.read(); }
     catch { agentState = emptyAgentState(); taxonomyWarning = "Quarterdeck classification state unavailable; showing explicit unclassified fallback. Changes disabled until the state is repaired."; }
-    const split = await workSplit(resolvedHome, backlogTasks, stateNames, agentState, projects, repositoryPaths, durability, !taxonomyWarning, reader);
+    const secondmates = await readSecondmates(resolvedHome, stateNames, { reader, parseMeta, probe: (meta) => probeLiveness(() => endpointIsLive(meta)) });
+    const workBacklog = new Map([...backlogTasks].filter(([id]) => !secondmates.ids.has(id)));
+    const workStateNames = stateNames.filter((name) => !secondmates.ids.has(name.replace(/\.(meta|status)$/, "")));
+    const split = await workSplit(resolvedHome, workBacklog, workStateNames, agentState, projects, repositoryPaths, durability, !taxonomyWarning, reader, secondmates.metaById);
     split.warning = taxonomyWarning;
     const currentWork = new Map(split.items.map((item) => [item.id, item]));
     if (!projects.length) throw new Error("data/projects.md has no project entries");
 
     const metaNames = stateNames.filter((name) => name.endsWith(".meta") && !name.startsWith(".")).sort();
     const metaTaskIds = new Set(metaNames.map((name) => name.slice(0, -5)));
-    const taskIdsToLoad = new Set(metaTaskIds);
+    const taskIdsToLoad = new Set([...metaTaskIds].filter((id) => !secondmates.ids.has(id)));
     for (const [taskId, task] of backlogTasks) {
-      if (task.inFlight || stateNames.includes(`${taskId}.status`)) taskIdsToLoad.add(taskId);
+      if (!secondmates.ids.has(taskId) && (task.inFlight || stateNames.includes(`${taskId}.status`))) taskIdsToLoad.add(taskId);
     }
     const taskResults = await Promise.all([...taskIdsToLoad].sort().map(async (taskId) => {
       const metaPresent = metaTaskIds.has(taskId);
@@ -702,8 +705,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       const backlogTask = backlogTasks.get(taskId);
       let projectName = backlogTask?.projectName || "";
       if (metaPresent) {
-        const metaText = await readFile(path.join(resolvedHome, "state", `${taskId}.meta`), "utf8");
-        projectName = path.basename(parseMeta(metaText).project || "") || projectName;
+        projectName = path.basename(secondmates.metaById.get(taskId)?.project || "") || projectName;
       }
       if (!projectName) return null;
 
@@ -844,6 +846,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       source: "Firstmate home",
       transcript: { ...transcript.coverage, outcomeSources: supervision.sources },
       workSplit: split,
+      secondmates: secondmates.view,
       summary: {
         workCounts: split.counts,
         activeReviewRequired: split.activeReviewRequired,
@@ -863,6 +866,7 @@ function fleetFromFirstmate(firstmate) {
   return {
     summary: firstmate.summary,
     workSplit: firstmate.workSplit,
+    secondmates: firstmate.secondmates,
     projects: firstmate.lanes.map((lane) => ({
       id: lane.id,
       name: lane.name,

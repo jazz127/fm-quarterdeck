@@ -13,6 +13,29 @@ This is Quarterdeck-owned classification and presentation. It does not change st
 
 ## Explicit three-level navigation
 
+Persistent second mates appear in their own Overview section. The selected home's
+`data/secondmates.md` registry and `kind=secondmate` in `state/<id>.meta` identify them;
+all known identities are excluded from work projections, task sessions and worker
+counts, including malformed, duplicate or undisplayed registrations. Cards are
+sorted by ID and limited to 64; the section is hidden when it has neither cards nor warnings.
+A missing registry still permits metadata-only identities; an unreadable registry
+shows a warning and uses only those runtime identities.
+
+Registry entries use `- <id> - <summary> (home: <absolute path>; scope: <scope>; projects: <projects>; added YYYY-MM-DD)`.
+Remote entries insert `host: <hostname>; root: <absolute path>; ` before `home:`.
+Valid local entries, or metadata-only identities with an absolute `home` field,
+supply read-only backlog counts: unchecked work outside Done/Completed/Closed
+sections, excluding known second-mate IDs; captain calls require `(hold-kind: captain)`.
+Registry and child backlog reads require confined regular files, refuse final
+symlinks and are capped at 256 KiB each. Unavailable local backlogs show a warning
+and **Not read**, never zero. Remote homes are never read or probed and show **Not read**.
+
+Process evidence uses the incarnation checks below; a legacy terminal pane is
+explicitly weaker evidence. A live endpoint plus a folded working/active/in-progress
+status shows **Working**; other recorded statuses show **Idle**. Missing status or
+unavailable liveness stays **Unknown**; an endpoint proved not live shows **Unreachable**.
+These card states do not contribute to ordinary work's Active count.
+
 Overview and Work Split use repository → lane/workstream → theme/iteration, with native disclosures, rollups, status/repository filters and stable task-session links. Lane Chat keeps its existing flat transcript routes and checked message filters; current focus and task history carry the same task classification. A theme is scoped to a lane in exactly one repository.
 
 Repository resolution normalizes absolute paths and preserves operator-declared exact aliases before looking up bare names. Discovery maps direct directory children of `FM_HOME/projects` by name, including a registry spelling when it has one case-insensitive clone match. Bare-name lookup prefers exact spelling; otherwise case-insensitive matches must resolve to one path. `firstmate` maps to `FM_HOME` unless a direct clone named `firstmate` supplies that mapping; an exact saved alias still takes precedence. Registry membership alone does not prove a clone exists. Unmatched or ambiguous names, missing references and unaliased relative path fragments remain unknown; name splitting, substrings and prose never supply identity. Projection and classification writes use the same resolution.

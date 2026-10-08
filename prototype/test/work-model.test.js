@@ -376,7 +376,7 @@ test("macOS liveness matches recorded process start identity and distinguishes d
   assert.equal(await endpointIsLive(withPane, { platform: "darwin", run: async (...args) => { if (args[0] === "ps") return ps(...args); paneFallbackCalls++; return { stdout: "" }; } }), true);
   assert.equal(paneFallbackCalls, 0, "process identity remains preferred to pane fallback");
   assert.equal(executionFingerprint(meta, true), fingerprint("execution.v1", null, pid, identity));
-  for (const [stat, expected] of [["S", true], ["SX", true], ["SX+", true], ["R<X", true], ["TX", true], ["Z", false], ["ZX+", false], ["X", false]]) {
+  for (const [stat, expected] of [["S", true], ["Ss", true], ["Ss+", true], ["S<", true], ["SN", true], ["SX", true], ["SX+", true], ["R<X", true], ["TX", true], ["Z", false], ["ZX+", false], ["X", false]]) {
     const endpointLive = await endpointIsLive(meta, { platform: "darwin", run: async () => ({ stdout: `${lstart} ${stat}\n` }) });
     assert.equal(endpointLive, expected, `${stat} is classified by its primary state, not its tracing modifier`);
     const execution = executionFingerprint(meta, endpointLive);
