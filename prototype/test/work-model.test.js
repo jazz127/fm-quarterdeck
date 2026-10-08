@@ -49,6 +49,32 @@ test("review run signal classifies current task records and contributes hierarch
   assert.equal((await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] })).workSplit.items[0].status, "captain-action", "captain decisions retain precedence");
 });
 
+test("only explicit review or validation pipeline text promotes work status and hierarchy counts", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] pipeline-task - Work (repo: /synthetic/product)\n");
+  await writeFile(path.join(home, "state/pipeline-task.meta"), "project=/synthetic/product\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  for (const [text, reviewCount] of [
+    ["deployment pipeline running", 0],
+    ["deployment pipeline in progress", 0],
+    ["deployment pipeline waiting at a gate", 0],
+    ["pipeline review running", 1],
+    ["pipeline validation in progress", 1],
+  ]) {
+    for (const [state, ordinaryStatus] of [["paused", "waiting"], ["waiting", "waiting"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"]]) {
+      await writeFile(path.join(home, "state/pipeline-task.status"), `${state} [at=1]: ${text}\n`);
+      const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      assert.equal(workSplit.items[0].status, reviewCount ? "review" : ordinaryStatus, `${state}: ${text}`);
+      const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
+        assert.equal(counts.review, reviewCount, `${state}: ${text}`);
+      }
+    }
+  }
+});
+
 test("liveness probes are gated to executing in-flight work and bounded concurrently", async () => {
   assert.equal(shouldProbeLiveness("working", true), true);
   for (const state of ["done", "paused", "blocked", "waiting", "unknown"]) assert.equal(shouldProbeLiveness(state, true), false);

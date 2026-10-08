@@ -325,7 +325,7 @@ function isReviewRun(meta, latest) {
     && !/\b(?:not\s+(?:running|in progress|validating|reviewing)|failed|passed|complete|finished|cancelled|canceled|skipped)\b/i.test(value));
   if (activeMetadata) return true;
   if (!latest || !["paused", "waiting", "working", "active", "in-progress"].includes(latest.state)) return false;
-  return /(?:no[-_]mistakes[^\n]{0,100}(?:review|validat|pipeline|running|in progress|gate)|(?:review|validat)[^\n]{0,100}(?:no[-_]mistakes|pipeline|run(?:ning)?|in progress|gate)|pipeline[^\n]{0,100}(?:review|validat|running|in progress|gate))/i.test(latest.text);
+  return /(?:no[-_]mistakes[^\n]{0,100}(?:review|validat|pipeline|running|in progress|gate)|(?:review|validat)[^\n]{0,100}(?:no[-_]mistakes|pipeline|run(?:ning)?|in progress|gate)|pipeline[^\n]{0,100}(?:review|validat))/i.test(latest.text);
 }
 
 function laneStatus(tasks) {
