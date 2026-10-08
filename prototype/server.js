@@ -324,7 +324,7 @@ function isReviewRun(meta) {
 
 function laneStatus(tasks) {
   const states = tasks.map((task) => task.classification?.status || "unknown");
-  for (const status of ["captain-action", "active", "waiting", "cleanup", "unknown", "backlog", "newly-done"]) {
+  for (const status of ["captain-action", "active", "review", "waiting", "cleanup", "unknown", "backlog", "newly-done"]) {
     if (states.includes(status)) return status === "captain-action" ? "needs-decision" : status === "newly-done" ? "ready-for-review" : status;
   }
   return tasks.length ? "steady" : "idle";
@@ -737,7 +737,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         id: taskId,
         projectName,
         inFlight: Boolean(backlogTask?.inFlight),
-        isLive: currentWork.get(taskId)?.status === "active",
+        isLive: currentWork.get(taskId)?.isLive === true,
         state: currentWork.get(taskId)?.sourceState || "unknown",
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),

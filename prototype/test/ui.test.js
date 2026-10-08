@@ -81,9 +81,9 @@ test("fallback overview status buttons and options are sentence case", () => {
   const app = ui();
   app.run(`renderProjects([{id: 'example', name: 'Example', status: 'complete', items: [{state: 'complete'}]}, {id: 'review', name: 'Review', status: 'review', items: [{state: 'review'}]}])`);
   assert.match(app.node("#overview-status").innerHTML, />Complete<\/option>/);
-  assert.match(app.node("#overview-status").innerHTML, />Review<\/option>/);
+  assert.match(app.node("#overview-status").innerHTML, />In review<\/option>/);
   assert.match(app.node("#overview-status-buttons").innerHTML, />Complete<\/span>/);
-  assert.match(app.node("#overview-status-buttons").innerHTML, />Review<\/span>/);
+  assert.match(app.node("#overview-status-buttons").innerHTML, />In review<\/span>/);
 });
 
 test("phone shell preserves navigation and leaves feed clear of fixed controls", () => {
@@ -1379,6 +1379,19 @@ test("message-kind filters keep authoritative labels without shell class collisi
   }
   assert.doesNotMatch(filters, /class="message-type-option conversation"/);
   assert.match(css, /\.conversation \{[^}]*flex-direction: column/); // The former class collision stacked the checkbox, icon and label.
+});
+
+test("review fleet labels and reported-status filter show In review", () => {
+  const app = ui();
+  seed(app, [{ ...lane("review", [record({ text: "Review work" })]), status: "review" }, { ...lane("waiting", [record({ text: "Waiting work" })]), status: "waiting" }]);
+  app.run("renderLaneFilters()");
+  assert.match(app.node("#lane-status").innerHTML, /<option value="review">In review<\/option>/);
+  assert.match(app.node("#lane-filter-rows").innerHTML, /<small>In review<\/small>/);
+  const filter = app.node("#lane-status");
+  filter.value = "review";
+  filter.dispatchEvent({ type: "change", target: filter });
+  assert.equal(app.run("selectedLanes().map((lane) => lane.id).join(',')"), "review");
+  assert.equal(app.node("#lane-status").value, "review");
 });
 
 test("reported lane status filtering never invents stale options or per-user pin/unread data", () => {

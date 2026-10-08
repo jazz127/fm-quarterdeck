@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
+import { execFileSync } from "node:child_process";
 import { createAgentStateOwner, emptyAgentState, validateAgentState, fingerprint } from "../agent-state.js";
 import { classifyCurrent, projectWork, verifyDurability, endpointIsLive, executionFingerprint, hasProcessIdentity, shouldProbeLiveness, createConcurrencyLimiter, foldStatusLines } from "../work-model.js";
 import { createServer, loadFirstmateHome } from "../server.js";
@@ -62,6 +63,7 @@ test("pipeline prose without structured run state preserves ordinary status and 
     "deployment pipeline waiting at a gate",
     "pipeline review running",
     "pipeline validation in progress",
+    "implementing validation pipeline integration",
   ]) {
     for (const [state, ordinaryStatus] of [["paused", "waiting"], ["waiting", "waiting"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"]]) {
       await writeFile(path.join(home, "state/pipeline-task.status"), `${state} [at=1]: ${text}\n`);
@@ -153,6 +155,86 @@ test("review status retains separate new, acknowledged and unknown completion at
     for (const counts of [model.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(model.items)]) {
       assert.equal(counts.review, 1);
       assert.equal(counts[attention], 1);
+    }
+  }
+});
+
+test("review display preserves verified worker counts and shared incarnation deduplication", async () => {
+  const rows = Array.from({ length: 9 }, (_, index) => record({ id: `worker-${index}`, state: ["working", "active", "in-progress"][index % 3], inFlight: true, endpointLive: true, endpointEvidence: "live process incarnation", executionFingerprint: `incarnation-${index}`, reviewRun: true }));
+  const model = await projectWork(rows, emptyAgentState());
+  assert.equal(model.counts.review, 9);
+  assert.equal(model.counts.active, 0);
+  assert.equal(model.activeWorkerCount, 9);
+  assert.equal(model.activeReviewRequired, true);
+  assert.ok(model.items.every((item) => item.isLive));
+  const shared = await projectWork(rows.map((row) => ({ ...row, executionFingerprint: "same-incarnation" })), emptyAgentState());
+  assert.equal(shared.activeWorkerCount, 1);
+  assert.equal(shared.activeReviewRequired, false);
+  const ordinary = await projectWork(rows.map((row) => ({ ...row, reviewRun: false })), emptyAgentState());
+  assert.equal(ordinary.activeWorkerCount, 9);
+  assert.equal(ordinary.counts.active, 9);
+  const unverified = await projectWork([
+    { state: "paused" }, { state: "done" }, { retained: true }, { inFlight: false },
+    { endpointLive: false }, { endpointLive: null },
+    { endpointEvidence: "live terminal pane (weaker evidence; worker process unverified)" },
+    { pendingIssues: [{ state: "paused" }] }, { pendingIssues: [{ state: "needs-decision" }] },
+  ].map((extras, index) => ({ ...rows[index], ...extras })), emptyAgentState());
+  assert.equal(unverified.activeWorkerCount, 0);
+  assert.equal(unverified.activeReviewRequired, false);
+  assert.ok(unverified.items.every((item) => !item.isLive));
+});
+
+test("loader preserves verified execution through review promotion in sessions, crew and summary", async (context) => {
+  let processMetadata;
+  if (process.platform === "darwin") {
+    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
+    processMetadata = `worker_pid=${process.pid}\nworker_start_identity=${new Date(`${started} UTC`).toISOString()}\n`;
+  } else if (process.platform === "linux") {
+    const stat = await readFile(`/proc/${process.pid}/stat`, "utf8");
+    const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    processMetadata = `worker_pid=${process.pid}\nworker_start_ticks=${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}\nworker_boot_id=${boot}\n`;
+  } else { context.skip("Local process incarnation evidence requires macOS or Linux"); return; }
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- product - Product work\n");
+  const ids = ["review-worker", "plain-worker", "gate-task"];
+  await writeFile(path.join(home, "data/backlog.md"), `## In flight\n${ids.map((id) => `- [ ] ${id} - Work (repo: /synthetic/product)`).join("\n")}\n`);
+  for (const id of ids) {
+    await writeFile(path.join(home, `state/${id}.meta`), `project=/synthetic/product\n${id === "gate-task" ? "" : processMetadata}${id === "plain-worker" ? "" : "validation_state=running\n"}`);
+    await writeFile(path.join(home, `state/${id}.status`), id === "gate-task" ? "paused: validation pipeline waiting at review gate\n" : "working: implementing validation pipeline integration\n");
+  }
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  for (const reviewing of [false, true]) {
+    await writeFile(path.join(home, "state/plain-worker.meta"), `project=/synthetic/product\n${processMetadata}${reviewing ? "validation_state=running\n" : ""}`);
+    const { lanes, workSplit, summary } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+    const fleet = lanes[0];
+    assert.equal(fleet.status, reviewing ? "review" : "active");
+    assert.equal(fleet.crew, 2);
+    assert.equal(workSplit.activeWorkerCount, 1);
+    assert.equal(summary.activeAgents, 1);
+    assert.equal(summary.activeReviewRequired, false);
+    assert.equal(workSplit.counts.review, reviewing ? 3 : 2);
+    assert.equal(workSplit.items.find((item) => item.id === "plain-worker").status, reviewing ? "review" : "active");
+    for (const id of ids) {
+      assert.equal(fleet.items.find((item) => item.title === id).isLive, id !== "gate-task");
+      assert.equal(fleet.sessions.find((session) => session.id === id).isLive, id !== "gate-task");
+    }
+  }
+});
+
+test("review-only fleets report review until the structured run terminates", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  for (const state of ["paused", "blocked", "done"]) {
+    await writeFile(path.join(home, "state/review-task.status"), `${state}: validation pipeline waiting at review gate\n`);
+    for (const running of [true, false]) {
+      await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\nvalidation_state=${running ? "running" : "passed"}\n`);
+      const { lanes, workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      assert.equal(lanes[0].status, running ? "review" : state === "done" ? "closed" : "waiting");
+      assert.equal(lanes[0].closed, !running && state === "done");
+      assert.equal(lanes[0].crew, 0);
+      assert.equal(workSplit.counts.review, running ? 1 : 0);
     }
   }
 });
