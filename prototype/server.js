@@ -318,9 +318,13 @@ function parseStatusLine(line) {
   return match ? { state: match[1].toLowerCase(), text: match[2] } : { state: "update", text: line };
 }
 
+function isReviewRun(meta) {
+  return ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"].includes(meta.validation_state);
+}
+
 function laneStatus(tasks) {
   const states = tasks.map((task) => task.classification?.status || "unknown");
-  for (const status of ["captain-action", "active", "waiting", "cleanup", "unknown", "backlog", "newly-done"]) {
+  for (const status of ["captain-action", "active", "review", "waiting", "cleanup", "unknown", "backlog", "newly-done"]) {
     if (states.includes(status)) return status === "captain-action" ? "needs-decision" : status === "newly-done" ? "ready-for-review" : status;
   }
   return tasks.length ? "steady" : "idle";
@@ -624,7 +628,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const completionIdentity = { source: lastCompletion ? "status" : "backlog", line: lastCompletion?.line, occurrence: lastCompletion?.index, doneDate: task?.doneDate || null };
     const inFlight = Boolean(task?.inFlight);
     const endpointLive = shouldProbeLiveness(state, inFlight) ? await probeLiveness(() => endpointIsLive(meta)) : null;
-    return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive,
+    return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive, reviewRun: isReviewRun(meta),
       endpointEvidence: endpointLive === true ? hasProcessIdentity(meta) ? "live process incarnation" : "live terminal pane (weaker evidence; worker process unverified)" : endpointLive === false ? "endpoint not live" : "liveness unknown",
       executionFingerprint: executionFingerprint(meta, endpointLive),
       retained: meta.preserved === "true" || meta.cleanup_pending === "true", workGroup: task?.workGroup || null,
@@ -733,7 +737,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         id: taskId,
         projectName,
         inFlight: Boolean(backlogTask?.inFlight),
-        isLive: currentWork.get(taskId)?.status === "active",
+        isLive: currentWork.get(taskId)?.isLive === true,
         state: currentWork.get(taskId)?.sourceState || "unknown",
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),

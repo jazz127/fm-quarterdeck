@@ -2246,6 +2246,13 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   border: 1px solid #b2e2cd;
 }
 
+.state-chip[data-count-status="review"],
+.work-slice[data-status="review"] .work-slice-head .state-chip {
+  background: #f0edff;
+  color: #5941a8;
+  border: 1px solid #d0c7fa;
+}
+
 .state-chip[data-count-status="waiting"],
 .work-slice[data-status="waiting"] .work-slice-head .state-chip {
   background: #fdf5e6;

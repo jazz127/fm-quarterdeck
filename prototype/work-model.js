@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fingerprint } from "./agent-state.js";
 const exec = promisify(execFile);
-export const WORK_STATUSES = ["active", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
+export const WORK_STATUSES = ["active", "review", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
 const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
 const PANE_EVIDENCE = "live terminal pane (weaker evidence; worker process unverified)";
@@ -275,7 +275,8 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     // Explicit legacy metadata remains useful, but does not fabricate a workstream.
     const theme = assignedTheme || (record.workGroup ? { id: `legacy-${fingerprint(record.workGroup).slice(0, 24)}`, name: record.workGroup.name, kind: record.workGroup.kind, legacy: true } : { id: "unclassified", name: "Voyage unclassified", kind: "theme" });
     let status = classifyCurrent(record);
-    if (status === "active") activeExecutions.add(record.executionFingerprint || taskFingerprint);
+    const isLive = status === "active";
+    if (isLive) activeExecutions.add(record.executionFingerprint || taskFingerprint);
     const completionSourceFingerprint = record.state === "done" ? fingerprint("completion-source.v1", taskFingerprint, record.completionIdentity) : null;
     const bound = completionSourceFingerprint && state.completionRecords?.[completionSourceFingerprint];
     const commit = bound?.taskFingerprint === taskFingerprint ? bound.commit : record.commit || null;
@@ -297,9 +298,10 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     }
     const completionAttention = completionFingerprint ? evidence.length ? "previously-done" : acknowledgementsAvailable ? "newly-done" : "unknown" : null;
     if (status === "newly-done") status = completionAttention;
+    if (record.reviewRun && status !== "captain-action" && record.state !== "needs-decision") status = "review";
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
-      lane, theme, status, sourceState: record.state,
+      lane, theme, status, isLive, sourceState: record.state,
       endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
       retained: Boolean(record.retained), pendingIssues: record.pendingIssues || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
