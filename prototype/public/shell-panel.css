@@ -70,7 +70,7 @@
   .workspace .product-identity #header-search-toggle svg { display: block; }
   .workspace #shell-panel-toggle:not([hidden]), .workspace[data-shell-panel-collapsed="true"] #shell-panel-toggle { top: calc(8px + env(safe-area-inset-top, 0px)); right: 8px; left: auto; width: 44px; height: 44px; min-height: 44px; border-radius: 12px; box-shadow: none; }
   .mobile-dock { position: fixed; z-index: 73; inset: auto 0 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 6px max(8px, env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px)); background: #0b1f2a; border-top: 1px solid #2a4a58; }
-  .mobile-dock button, .mobile-dock #review-panel-toggle { position: relative; inset: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 100%; min-width: 0; min-height: 56px; margin: 0; padding: 4px; font-size: 12px; line-height: 1.2; font-weight: 600; color: #bed0db; background: transparent; border: 1px solid transparent; border-radius: 12px; box-shadow: none; }
+  .mobile-dock button, .mobile-dock #review-panel-toggle, .mobile-dock .mobile-dock-quota { position: relative; inset: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 100%; min-width: 0; min-height: 56px; margin: 0; padding: 4px; font-size: 12px; line-height: 1.2; font-weight: 600; color: #bed0db; background: transparent; border: 1px solid transparent; border-radius: 12px; box-shadow: none; }
   .mobile-dock button > span[aria-hidden] { font-size: 23px; line-height: 24px; }
   .mobile-dock button[aria-current="page"], .mobile-dock button[aria-expanded="true"] { background: #17443f; color: #b7f9e8; border-color: #28665a; }
   .mobile-dock #review-panel-toggle .mail-icon, .mobile-dock #review-panel-toggle .review-panel-text { display: none; }
@@ -81,7 +81,7 @@
   .mobile-dock #review-panel-toggle #review-inline-summary { display: none; }
   .mobile-dock #review-awaiting { position: absolute; top: 0; right: 0; min-width: 16px; height: 17px; padding: 0 3px; font-size: 10px; line-height: 17px; }
   .mobile-dock button:focus-visible, .mobile-dock .mobile-dock-quota:focus-visible { outline: 3px solid #9ff0e0; outline-offset: -3px; }
-  .mobile-dock .mobile-dock-quota { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 100%; min-width: 0; min-height: 56px; margin: 0; padding: 4px 2px; text-decoration: none; color: #bed0db; background: transparent; border: 1px solid transparent; border-radius: 12px; box-sizing: border-box; font: inherit; cursor: pointer; }
+  .mobile-dock .mobile-dock-quota { text-decoration: none; box-sizing: border-box; cursor: pointer; }
   .mobile-dock .mobile-dock-quota[aria-expanded="true"] { background: #17443f; color: #b7f9e8; border-color: #28665a; }
   .mobile-dock-quota-label { font-size: 12px; font-weight: 600; line-height: 1.2; }
   .mobile-quota-mark { display: grid; place-items: center; width: 28px; height: 24px; color: inherit; }
