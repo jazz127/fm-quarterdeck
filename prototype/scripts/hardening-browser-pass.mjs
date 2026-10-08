@@ -291,7 +291,7 @@ try {
   await tap("#review-send");
   await until(`${phoneDraft}.sent?.length === 1 && document.querySelector('#review-message').value === ''`);
   assert.equal(deliveries, 2, "phone Send delivers the typed message");
-  assert.deepEqual(await evaluate(`${phoneDraft}.sent[0].entries.map((entry) => entry.text)`), ["Synthetic phone message"]);
+  assert.deepEqual(await evaluate(`${phoneDraft}.sent[0].entries.map((entry) => entry.prompt)`), ["Synthetic phone message"]);
   serverDown = true;
   await tap("#review-close");
   await tap(".mobile-dock #review-panel-toggle");

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
 
-const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+const script = await readFile(new URL("../public/review-target.js", import.meta.url), "utf8") + "\n" + await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
 const openSent = (page, open) => { const sent = page.element("review-sent"); sent.open = open; sent.listeners.toggle(); };
 const tick = () => new Promise(setImmediate);
 function harness() {
@@ -389,14 +389,15 @@ test("Send Batch snapshots multiple kinds, later queue and rapid second send rem
   p.q("same", "region"); p.q("same", "lane"); p.q("plain");
   h.setMode("hold"); p.send(); p.send(); await tick();
   assert.equal(h.posts.length, 1);
-  assert.deepEqual(h.posts[0].entries.map((e) => e.kind), ["annotation", "lane-message-annotation", "message"]);
-  assert.deepEqual(h.posts[0].entries.map((e) => e.text), ["same", "same", "plain"]);
+  assert.equal(h.posts[0].schema, "fm-agentos-review.v2");
+  assert.deepEqual(h.posts[0].entries.map((e) => e.tag), ["element", "element", "message"]);
+  assert.deepEqual(h.posts[0].entries.map((e) => e.prompt), ["same", "same", "plain"]);
   p.q("later"); p.send(); // Pending action must not copy or submit the next queue.
-  assert.deepEqual(p.state().queue.map((e) => e.text), ["later"]);
-  assert.deepEqual(h.posts[0].entries.map((e) => e.text), ["same", "same", "plain"]);
+  assert.deepEqual(p.state().queue.map((e) => e.prompt), ["later"]);
+  assert.deepEqual(h.posts[0].entries.map((e) => e.prompt), ["same", "same", "plain"]);
   h.release(); await tick();
   assert.equal(p.state().sent.length, 1);
-  assert.deepEqual(p.state().queue.map((e) => e.text), ["later"]);
+  assert.deepEqual(p.state().queue.map((e) => e.prompt), ["later"]);
   h.setMode("success"); p.send(); await tick();
   assert.equal(h.posts.length, 2);
   assert.notEqual(h.posts[0].batchId, h.posts[1].batchId);
@@ -410,8 +411,8 @@ test("failed captured identity retries without merging later notes, including af
   p.q("old"); h.setMode("hold"); p.send(); await tick();
   p.q("new"); h.release(true); await tick();
   const failed = p.state().retryBatches[0];
-  assert.deepEqual(failed.payload.entries.map((e) => e.text), ["old"]);
-  assert.deepEqual(p.state().queue.map((e) => e.text), ["new"]);
+  assert.deepEqual(failed.payload.entries.map((e) => e.prompt), ["old"]);
+  assert.deepEqual(p.state().queue.map((e) => e.prompt), ["new"]);
   const reloaded = h.page(); await tick();
   assert.equal(reloaded.state().retryBatches[0].id, failed.id);
   h.setMode("success");
@@ -433,7 +434,7 @@ test("Send and End drains recovered board once by item identity, not by equal te
   assert.equal(recovered.element("review-panel").hidden, true);
   h.setMode("fail"); recovered.send(true); await tick();
   assert.equal(recovered.element("review-panel").hidden, true);
-  assert.deepEqual(h.posts[0].entries.map((e) => e.text), ["identical", "identical", "third"]);
+  assert.deepEqual(h.posts[0].entries.map((e) => e.prompt), ["identical", "identical", "third"]);
   assert.equal(h.posts[0].end, true);
   assert.equal(recovered.state().retryBatches.length, 1);
   h.setMode("success"); recovered.send(true); await tick();
@@ -448,12 +449,12 @@ test("Send and End drains failed prior identities separately from its recovered 
   p.q("old"); h.setMode("fail"); p.send(); await tick();
   p.q("next"); h.setMode("hold"); p.send(true); await tick();
   assert.equal(h.posts.length, 2);
-  assert.deepEqual(h.posts[1].entries.map((e) => e.text), ["old"]);
-  assert.deepEqual(p.state().retryBatches.map((b) => b.payload.entries[0].text), ["next"]);
+  assert.deepEqual(h.posts[1].entries.map((e) => e.prompt), ["old"]);
+  assert.deepEqual(p.state().retryBatches.map((b) => b.payload.entries[0].prompt), ["next"]);
   h.release(true); await tick();
   assert.equal(h.posts.length, 2, "failure stops the drain without losing the later cutoff");
   h.setMode("success"); p.send(true); await tick();
-  assert.deepEqual(h.posts.slice(2).map((b) => b.entries[0].text), ["old", "next"]);
+  assert.deepEqual(h.posts.slice(2).map((b) => b.entries[0].prompt), ["old", "next"]);
   assert.equal(h.posts[2].batchId, h.posts[0].batchId);
   assert.notEqual(h.posts[3].batchId, h.posts[2].batchId);
   assert.equal(p.state().sent.length, 0);
@@ -466,8 +467,8 @@ test("reload during an uncertain drain preserves retry order and later queue", a
   p.q("second"); h.setMode("hold"); p.send(true); await tick();
   p.q("third");
   const reloaded = h.page(); await tick();
-  assert.deepEqual(reloaded.state().retryBatches.map((b) => b.payload.entries[0].text), ["first", "second"]);
-  assert.deepEqual(reloaded.state().queue.map((e) => e.text), ["third"]);
+  assert.deepEqual(reloaded.state().retryBatches.map((b) => b.payload.entries[0].prompt), ["first", "second"]);
+  assert.deepEqual(reloaded.state().queue.map((e) => e.prompt), ["third"]);
   h.release(true); await tick();
 });
 
@@ -486,6 +487,19 @@ test("reload retains more than thirty independent retries and receipt batches", 
   const again = h.page(); await tick();
   assert.deepEqual(again.state().sent, history);
   assert.equal(again.state().retryBatches.length, 35);
+});
+
+test("unsent v1 drafts convert while captured v1 retries stay byte-for-byte unchanged", async () => {
+  const h = harness();
+  const entry = { kind: "annotation", text: "Legacy draft", route: "#overview", version: "old", region: { id: "card", label: "Card" } };
+  const id = "00000000-0000-4000-8000-000000000009";
+  const retry = { id, payload: { schema: "fm-agentos-review.v1", batchId: id, sessionId: "", version: "old", route: "#overview", end: false, entries: [entry] } };
+  h.data.set("fm-agentos-review-draft-v1", JSON.stringify({ queue: [entry], retryBatches: [retry] }));
+  const p = h.page(); await tick();
+  assert.equal(p.state().queue[0].prompt, "Legacy draft");
+  assert.equal(p.state().queue[0].text, "");
+  assert.equal(p.state().queue[0].label, "Card");
+  assert.deepEqual(p.state().retryBatches[0], retry);
 });
 
 test("revision changes never replace an uncertain delivery identity on reload", async () => {
@@ -518,7 +532,7 @@ test("Send and End captures the whole board, keeps newer items and does not doub
   assert.equal(h.posts.length, 1);
   p.q("after end cutoff"); h.release(); await tick();
   assert.equal(p.state().sent.length, 0, "accepted end clears history while later notes remain");
-  assert.deepEqual(p.state().queue.map((e) => e.text), ["after end cutoff"]);
+  assert.deepEqual(p.state().queue.map((e) => e.prompt), ["after end cutoff"]);
   assert.equal(p.element("review-panel").hidden, false, "later annotation keeps board open");
   h.setMode("success"); p.send(true); await tick();
   assert.equal(p.element("review-panel").hidden, true);
@@ -653,6 +667,6 @@ test("phone composer re-enables Send when an unreachable server returns", async 
   assert.equal(p.element("review-state").textContent, "Review delivery reconnected.");
   p.send(); await tick(); await tick();
   assert.equal(h.posts.length, 1);
-  assert.deepEqual(h.posts[0].entries.map((entry) => entry.text), ["Synthetic phone message"]);
+  assert.deepEqual(h.posts[0].entries.map((entry) => entry.prompt), ["Synthetic phone message"]);
   assert.equal(p.element("review-message").value, "");
 });

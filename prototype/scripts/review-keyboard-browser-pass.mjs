@@ -41,7 +41,7 @@ try {
     // Captain's sequence on Work split: second Send Batch, then Send & End.
     await evaluate(`(() => {const e=document.querySelector('#review-message');e.value='Second ordinary Send ${width}';e.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#review-send').click();})()`);
     for(let i=0;i<100;i++){if(await evaluate(`JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent.length===2`))break;await sleep(100);}
-    const ordinary=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,text:d.sent.at(-1)?.entries[0]?.text};})()`);
+    const ordinary=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,text:d.sent.at(-1)?.entries[0]?.prompt};})()`);
     assert.deepEqual(ordinary,{sent:2,retry:0,text:`Second ordinary Send ${width}`});
     await evaluate(`(() => {const e=document.querySelector('#review-message');e.value='Third Send & End ${width}';e.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#review-end').click();})()`);
     for(let i=0;i<100;i++){if(await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return !d.sent.length&&!d.retryBatches.length&&!d.queue.length;})()`))break;await sleep(100);}

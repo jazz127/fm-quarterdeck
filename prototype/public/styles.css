@@ -2304,6 +2304,28 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   .message-content :is(pre, table) { display: block; max-width: 100%; overflow-x: auto; }
 }
 
+/* Review metadata stays out of the conversation until explicitly disclosed. */
+.review-prompts { min-width: 0; }
+.review-prompts > .review-meta { margin-left: auto; }
+.review-prompts ol { margin: 0; padding-left: 1.6em; }
+.review-prompt-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+.review-prompt-line > span { white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-meta { min-width: 0; color: var(--muted); }
+.review-meta > summary { list-style: none; cursor: pointer; width: 16px; height: 16px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--accent); background: var(--accent-soft); font: 14px Georgia, serif; }
+.review-meta > summary::-webkit-details-marker { display: none; }
+.review-meta > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.review-meta[open] { grid-column: 1 / -1; width: 100%; }
+.review-meta > summary { margin-left: auto; }
+.review-meta-card { margin: 6px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); min-width: 0; }
+.message-content .review-meta-card pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 12px; }
+.review-copy-target { min-height: 32px; font-size: 12px; padding: 4px 8px; }
+.review-compact-count { color: var(--accent); padding-left: 6px; font: 12px Georgia, serif; }
+@media screen and (max-width: 720px) {
+  .review-meta > summary { box-sizing: border-box; width: 32px; height: 32px; background: radial-gradient(circle, var(--accent-soft) 8px, transparent 9px); border: 0; }
+  .review-meta-card { width: 100%; box-sizing: border-box; }
+  .review-meta > summary { margin-left: auto; }
+}
+
 /* Help shares the annotation toggle's footer cell and uses native light dismissal. */
 .review-gesture-controls { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .review-gesture-controls .review-gesture { flex: 0 0 auto; }

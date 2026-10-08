@@ -1,3 +1,4 @@
+import { parseReviewNote } from "./review-note.js";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { watch, readFileSync } from "node:fs";
@@ -47,6 +48,7 @@ const STATIC_FILES = new Map([
   ["/message-font-size.js", ["message-font-size.js", "text/javascript; charset=utf-8"]],
   ["/quota-view-model.js", ["quota-view-model.js", "text/javascript; charset=utf-8"]],
   ["/cost-view-model.js", ["cost-view-model.js", "text/javascript; charset=utf-8"]],
+  ["/review-target.js", ["review-target.js", "text/javascript; charset=utf-8"]],
   ["/review-client.js", ["review-client.js", "text/javascript; charset=utf-8"]],
   ["/panel-resize.js", ["panel-resize.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel.js", ["shell-panel.js", "text/javascript; charset=utf-8"]],
@@ -356,8 +358,8 @@ function parseHeaderRecord(text) {
   return { headers, body: lines.slice(separator + 1).join("\n").trim() };
 }
 
-function publicMessage({ author, role, source, text, timestamp, timestampSource = "explicit", sourceSequence = 0, taskId = null, state = "update", kind = "conversation" }) {
-  return { author, role, source, text, timestamp, timestampSource, sourceSequence, taskId, state, kind, time: formatEventTime(timestamp) };
+function publicMessage({ author, role, source, text, timestamp, timestampSource = "explicit", sourceSequence = 0, taskId = null, state = "update", kind = "conversation", review }) {
+  return { ...(review !== undefined ? { review } : {}), author, role, source, text, timestamp, timestampSource, sourceSequence, taskId, state, kind, time: formatEventTime(timestamp) };
 }
 
 function messageOrder(message) {
@@ -407,6 +409,7 @@ async function readRecordFile(filePath, source, role, defaultAuthor, reader) {
     kind: isSteer ? "steer" : "conversation",
     source,
     text: parsed.body,
+    ...(/^agentos-review:[0-9a-f-]{36}$/i.test(parsed.headers.request_id || "") ? { review: parseReviewNote(parsed.body) } : {}),
     timestamp,
     timestampSource,
     taskId: parsed.headers.task_id || parsed.headers.work_id || parsed.headers.endpoint_task_id || null,
@@ -976,7 +979,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
   const server = http.createServer(async (request, response) => {
     let release;
     let used = false;

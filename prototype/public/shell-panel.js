@@ -179,6 +179,7 @@ function openChatOptions() {
   moveControl(document.querySelector(".conversation-head-actions"), chatTools);
   moveControl(document.querySelector(".feed-pagination"), chatTools);
   moveControl(document.querySelector(".feed-jump-controls"), chatTools);
+  moveControl(document.querySelector("#transcript-window-status"), chatTools);
   if (!chatSheet.open) {
     chatSheet.showModal();
     shortcutButton()?.setAttribute("aria-expanded", "true");
@@ -382,6 +383,7 @@ function syncMobileControls() {
   moveControl(document.querySelector(".conversation-head-actions"), chatTools);
   moveControl(document.querySelector(".feed-pagination"), chatTools);
   moveControl(document.querySelector(".feed-jump-controls"), chatTools);
+  moveControl(document.querySelector("#transcript-window-status"), chatTools);
   moveControl(document.querySelector(".preview-chat-control"), chatTools);
   toggle.setAttribute("aria-controls", "mobile-tools");
   toggle.setAttribute("aria-label", "Open workspace tools");

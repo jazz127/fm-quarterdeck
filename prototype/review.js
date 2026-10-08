@@ -1,3 +1,4 @@
+import { validV2Entry, validRecordId } from "./review-v2.js";
 import { createGitIdentity } from "./git-identity.js";
 import { appendFile, mkdir, open, readFile, lstat, link, unlink, readdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -25,9 +26,10 @@ const onlyKeys = (value, keys) => value && typeof value === "object" && !Array.i
 
 export function validateReviewPayload(body, version, sessionId) {
   if (!onlyKeys(body, ["schema", "batchId", "sessionId", "version", "route", "end", "entries"]) || typeof version !== "string" ||
-      body.schema !== "fm-agentos-review.v1" || !/^[0-9a-f-]{36}$/i.test(body.batchId || "") || body.version !== version || body.sessionId !== sessionId ||
+      !["fm-agentos-review.v1", "fm-agentos-review.v2"].includes(body.schema) || !/^[0-9a-f-]{36}$/i.test(body.batchId || "") || body.version !== version || body.sessionId !== sessionId ||
       !validRoute(body.route) ||
       typeof body.end !== "boolean" || !Array.isArray(body.entries) || body.entries.length < 1 || body.entries.length > 30) return false;
+  if (body.schema === "fm-agentos-review.v2") return body.entries.every(validV2Entry);
   return body.entries.every((entry) => onlyKeys(entry, ["kind", "text", "route", "version", "region", "target"]) && ["annotation", "message", "lane-message-annotation"].includes(entry.kind) &&
     typeof entry.text === "string" && entry.text.trim().length > 0 && entry.text.length <= 4000 &&
     validRoute(entry.route) &&
@@ -57,9 +59,7 @@ function validMessageTarget(target) {
   if (!target || typeof target !== "object" || Array.isArray(target)) return false;
   if (target.type === "record") {
     if (Object.keys(target).sort().join(",") !== "recordId,type" || typeof target.recordId !== "string" || target.recordId.length > 1000) return false;
-    const id = target.recordId.match(/^((?:main-pi-session|state)\/[a-zA-Z0-9._/\-]+\.jsonl):([1-9]\d*)(?::(0|[1-9]\d*))?(?::block:(0|[1-9]\d*))?$/);
-    if (!id || id[1].split("/").some((segment) => segment === "." || segment === "..")) return false;
-    return id[1] === "state/branch-outcomes.jsonl" || id[1] === "state/terminal-outcomes.jsonl" ? id[3] === undefined && id[4] === undefined : id[3] !== undefined;
+    return validRecordId(target.recordId);
   }
   if (target.type === "quote") return Object.keys(target).sort().join(",") === "lanes,text,time,type" &&
     typeof target.time === "string" && target.time.length > 0 && target.time.length <= 120 &&
@@ -79,7 +79,7 @@ function statusExcerpt(value, length) {
 
 export function reviewStatusLine(payload) {
   return JSON.stringify({ type: "agentos-review", batchId: payload.batchId, route: payload.route,
-    notes: payload.entries.map((entry) => ({ text: statusExcerpt(entry.text, 64), region: statusExcerpt(entry.target?.type === "record" ? entry.target.recordId : entry.target ? "Lane Chat message (quoted in receipt)" : entry.region?.label || "(message)", 32) })),
+    notes: payload.entries.map((entry) => ({ text: statusExcerpt(entry.prompt ?? entry.text, 64), region: statusExcerpt(payload.schema === "fm-agentos-review.v2" ? entry.record ? entry.record.recordId || "Fleet Chat message (anchored in receipt)" : entry.label || (entry.tag === "message" ? "(message)" : `<${entry.tag}> \"${entry.text}\"`) : entry.target?.type === "record" ? entry.target.recordId : entry.target ? "Lane Chat message (quoted in receipt)" : entry.region?.label || "(message)", 32) })),
   });
 }
 
@@ -96,7 +96,7 @@ export async function awaitingReviewCount(directory = localReviewDir, receipts =
     const status = await localReviewStatus(batch, directory);
     const received = receipts && [...receipts.handled, ...receipts.replies].some((note) => note.request_id === `agentos-review:${batch}`);
     if (status.state === "accepted" && !received)
-      count += receipt.payload.entries.filter((entry) => ["annotation", "lane-message-annotation"].includes(entry.kind)).length;
+      count += receipt.payload.entries.filter((entry) => receipt.payload.schema === "fm-agentos-review.v2" ? entry.tag !== "message" : ["annotation", "lane-message-annotation"].includes(entry.kind)).length;
   }
   return count;
 }

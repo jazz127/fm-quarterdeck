@@ -19,7 +19,7 @@ const receiver = http.createServer((req, res) => {
     const batch = JSON.parse(body);
     batches.push(batch);
     const reply = () => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"receiptId":"chromium-receipt"}'); };
-    if (batch.entries.some((entry) => entry.text === "Cutoff first")) releaseHeld = reply;
+    if (batch.entries.some((entry) => entry.prompt === "Cutoff first")) releaseHeld = reply;
     else reply();
   });
 });
@@ -175,7 +175,9 @@ try {
   assert.equal(outcome.hash, "#overview");
   for (let i = 0; i < 100 && batches.length < 2; i++) await wait(50);
   assert.equal(batches.length, 2, 'Send & end delivers the second batch before closing');
-  assert.deepEqual(batches[0].entries.map((entry) => entry.kind), ["annotation", "message"]);
+  assert.equal(batches[0].schema, "fm-agentos-review.v2");
+  assert.notEqual(batches[0].entries[0].tag, "message");
+  assert.equal(batches[0].entries[1].tag, "message");
   assert.match(batches[0].entries[0].region.id, /^project:/);
   assert.equal(batches[0].end, false);
   assert.equal(batches[1].end, true);
@@ -202,7 +204,7 @@ try {
     const retained = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));
     Array.from(q('#review-thread').querySelectorAll('button')).find((button) => button.textContent === 'Retry batch').click();
     for (let i = 0; i < 100 && !q('#review-state').textContent.includes('chromium-receipt'); i++) await new Promise(r => setTimeout(r, 50));
-    return { warning, retainedCount: retained.retryBatches.length, version: retained.retryBatches[0]?.payload.entries[0]?.version, receipt: q('#review-state').textContent, remaining: q('#review-count').textContent };
+    return { warning, retainedCount: retained.retryBatches.length, version: retained.retryBatches[0]?.payload.version, receipt: q('#review-state').textContent, remaining: q('#review-count').textContent };
   })()`);
   assert.match(recovered.warning, /Preview updated.*check annotation targets.*press Send again/);
   assert.equal(recovered.retainedCount, 1);
@@ -244,8 +246,8 @@ try {
     assert.equal(localBatch.route, "#overview");
     assert.ok(localBatch.width <= localBatch.viewport, "phone receipt has no horizontal overflow");
     const receipt = JSON.parse(await readFile(path.join(localReviewDir, `${localBatch.id}.json`), "utf8"));
-    assert.equal(receipt.payload.entries[0].kind, "annotation");
-    assert.equal(receipt.payload.entries[0].text, "Synthetic local lifecycle annotation");
+    assert.notEqual(receipt.payload.entries[0].tag, "message");
+    assert.equal(receipt.payload.entries[0].prompt, "Synthetic local lifecycle annotation");
     for (const state of ["received", "handling", "failed"]) {
       await writeFile(path.join(localReviewDir, `${localBatch.id}.status.json`), JSON.stringify({ schema: "fm-agentos-review-status.v1", receiptId: receipt.receiptId, state, updatedAt: new Date().toISOString() }));
       await evalJs(`document.querySelector('#review-panel-toggle').click(); document.querySelector('#review-panel-toggle').click()`);
@@ -274,34 +276,35 @@ try {
       await cmd("Page.navigate", { url: `http://127.0.0.1:${messageApp.address().port}/#lanes` });
       for (let i = 0; i < 100 && !await evalJs('document.querySelectorAll("#messages .message").length === 3'); i++) await wait(100);
       assert.equal(await evalJs('document.querySelectorAll("#messages .message").length'), 3, `${width}px exact build renders all three messages`);
-      const selection = await evalJs(`(() => {
+      const selection = await evalJs(`(async () => {
         const q = (s) => document.querySelector(s);
         const click = (node, altKey = false) => node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1, altKey }));
-        const pick = (index, selector, alt = false) => {
+        const pick = async (index, selector, alt = false) => {
           click(q('#messages .message[data-lane-message-index="' + index + '"] ' + selector), alt);
+          for(let i=0;i<100;i++){ const selected=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).selected; if(!selected?.record || selected.record.recordId || selected.record.sha256) break; await new Promise(r=>setTimeout(r,10)); }
           q('#review-message').value = 'Synthetic message annotation ' + index; q('#review-queue').click();
           if (${width} === 390) q('#review-close').click();
         };
         const summary = q('#messages .message[data-lane-message-index="0"] summary');
         click(summary); // Ordinary clicks on nested controls still interact.
         const controlOpened = summary.parentElement.open;
-        pick(0, 'summary', true); // With click-to-interact default, Alt-click annotates a control.
+        await pick(0, 'summary', true); // With click-to-interact default, Alt-click annotates a control.
         q('#review-toggle').click(); // Then enable ordinary click-to-annotate for content.
-        pick(1, 'strong');
-        pick(2, '.message-content');
+        await pick(1, 'strong');
+        await pick(2, '.message-content');
         click(q('#messages'));
         q('#review-message').value = 'Synthetic feed background'; q('#review-queue').click();
         return { queue: JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue, controlOpened };
       })()`);
       assert.equal(selection.controlOpened, true, "ordinary nested summary click interacts");
       const selected = selection.queue;
-      assert.deepEqual(selected.slice(0, 2).map((entry) => entry.target), [
-        { type: "record", recordId: records[0].recordId }, { type: "record", recordId: records[1].recordId },
+      assert.deepEqual(selected.slice(0, 2).map((entry) => entry.record), [
+        { recordId: records[0].recordId }, { recordId: records[1].recordId },
       ]);
-      assert.equal(selected[2].target.type, "quote");
-      assert.equal(selected[2].target.text, records[2].text);
-      assert.deepEqual(selected[2].target.lanes, ["Alpha"]);
-      assert.equal(selected[3].kind, "annotation", "feed background remains a generic region");
+      assert.equal(selected[2].text, records[2].text);
+      assert.match(selected[2].record.sha256, /^[a-f0-9]{16}$/);
+      assert.deepEqual(selected[2].record.lanes, ["Alpha"]);
+      assert.notEqual(selected[3].tag, "message", "feed background remains a generic region");
       assert.equal(selected[3].target, undefined);
       await cmd("Page.reload");
       for (let i = 0; i < 100 && !await evalJs('document.querySelector("#review-count")?.textContent.includes("4 queued")'); i++) await wait(100);
@@ -310,9 +313,9 @@ try {
       await evalJs("document.querySelector('#review-send').click()");
       for (let i = 0; i < 100 && batches.length === prior; i++) await wait(50);
       assert.equal(batches.length, prior + 1);
-      assert.deepEqual(batches.at(-1).entries, selected);
+      assert.deepEqual(batches.at(-1).entries, selected.map(({version,route,...entry}) => entry));
     }
-    console.log("Chromium Lane Chat message annotation PASS: exact build on phone and desktop; distinct records, quoted fallback, nested content, background and reload");
+    console.log("Chromium Lane Chat message annotation PASS: exact build on phone and desktop; distinct records, bounded fingerprints, nested content, background and reload");
   } finally { await close(messageApp); }
   // Hold an actual network delivery after the send action to expose the cutoff on both layouts.
   for (const width of [390, 1280]) {
@@ -334,15 +337,15 @@ try {
       return { draft: JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')), disabled: q('#review-queue').disabled };
     })()`);
     assert.equal(during.disabled, false, "a note can be queued while the captured batch is in flight");
-    assert.deepEqual(during.draft.queue.map((item) => item.text), ["Cutoff later"]);
+    assert.deepEqual(during.draft.queue.map((item) => item.prompt), ["Cutoff later"]);
   } finally { releaseHeld(); releaseHeld = null; }
   for (let i = 0; i < 100 && !await evalJs('document.querySelector("#review-state")?.textContent.includes("chromium-receipt")'); i++) await wait(50);
-  const after = await evalJs(`(() => { const draft = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return { sent: draft.sent.at(-1), queued: draft.queue.map((entry) => entry.text) }; })()`);
-  assert.deepEqual(after.sent.entries.map((entry) => entry.text), ["Cutoff first"]);
+  const after = await evalJs(`(() => { const draft = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return { sent: draft.sent.at(-1), queued: draft.queue.map((entry) => entry.prompt) }; })()`);
+  assert.deepEqual(after.sent.entries.map((entry) => entry.prompt), ["Cutoff first"]);
   assert.deepEqual(after.queued, ["Cutoff later"]);
   await evalJs("document.querySelector('#review-send').click()");
-  for (let i = 0; i < 100 && batches.at(-1)?.entries[0]?.text !== "Cutoff later"; i++) await wait(50);
-  assert.deepEqual(batches.at(-1).entries.map((entry) => entry.text), ["Cutoff later"]);
+  for (let i = 0; i < 100 && batches.at(-1)?.entries[0]?.prompt !== "Cutoff later"; i++) await wait(50);
+  assert.deepEqual(batches.at(-1).entries.map((entry) => entry.prompt), ["Cutoff later"]);
   assert.notEqual(batches.at(-1).batchId, after.sent.id);
   for (let i = 0; i < 100 && !await evalJs('document.querySelector("#review-state")?.textContent.includes("chromium-receipt")'); i++) await wait(50);
   console.log(`Chromium cutoff PASS: ${width}px in-flight queue remains distinct from receipt on exact UAT path`);

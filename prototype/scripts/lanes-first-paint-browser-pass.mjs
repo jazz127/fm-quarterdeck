@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createServer, loadFirstmateHome } from "../server.js";
-import { openBrowser } from "./browser-harness.mjs";
+import { openBrowser, openReadingControls, closeReadingControls } from "./browser-harness.mjs";
 
 const home = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-first-paint-"));
 await mkdir(path.join(home, "data"));
@@ -37,6 +37,7 @@ try {
   const {command, evaluate, until} = browser;
   await command("Page.addScriptToEvaluateOnNewDocument", {source: "localStorage.clear()"});
   for (const [width, height] of [[1600, 900], [390, 844]]) {
+    failExpansion = true;
     await command("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: width < 720});
     const origin = await evaluate("performance.timeOrigin");
     await command("Page.navigate", {url: `http://127.0.0.1:${server.address().port}/?width=${width}#lanes`});
@@ -47,22 +48,47 @@ try {
     const recentKey = await evaluate("document.querySelector('article.message:last-of-type').dataset.recordKey");
     assert.equal(await evaluate("document.querySelector('#transcript-window-status').hidden"), false);
     assert.match(await evaluate("document.querySelector('#transcript-window-status').textContent"), /Search covers loaded records/);
+    assert.match(await evaluate("document.querySelector('#transcript-load-more').textContent"), /2 MiB\/source/);
+    assert.equal(await evaluate("document.querySelectorAll('#transcript-load-more').length"), 1);
+    assert.equal(await evaluate(`!!document.querySelector('#transcript-window-status').closest('${width < 720 ? '#mobile-chat-options' : '.conversation-feed'}')`), true);
+    if (width < 720) assert.equal(await evaluate("document.querySelector('#transcript-window-status').getBoundingClientRect().height"), 0, 'no closed-options source-window row on phone');
+    if (process.env.SCREENSHOT_DIR) {
+      await mkdir(process.env.SCREENSHOT_DIR, {recursive:true});
+      const {data} = await command('Page.captureScreenshot',{format:'png'});
+      await writeFile(path.join(process.env.SCREENSHOT_DIR, `source-window-feed-${width}.png`),Buffer.from(data,'base64'));
+    }
     // The visible fleet name is the solo control. Keep its selection, query and
     // raw formatting unchanged through a failed expansion and its exact retry.
     await evaluate("document.querySelector('.lane-option[data-lane-id=alpha] .lane-option-copy').click(); document.querySelector('#message-format-toggle').click(); {const q=document.querySelector('#transcript-search'); q.value='archive-only'; q.dispatchEvent(new Event('input',{bubbles:true}))}");
     await until("document.querySelector('#messages').textContent.includes('No records match')");
-    await evaluate("document.querySelector('#transcript-load-more').click()");
-    if (width === 1600) {
-      await until("document.querySelector('#transcript-load-more').textContent.includes('Retry')");
-      assert.equal(await evaluate("document.querySelector('#transcript-search').value"), "archive-only");
-      await evaluate("document.querySelector('#transcript-load-more').click()");
+    await openReadingControls(browser);
+    const buttonBox = await evaluate("(() => {const r=document.querySelector('#transcript-load-more').getBoundingClientRect();return {height:r.height,left:r.left,right:r.right};})()");
+    assert.ok(buttonBox.height >= (width < 720 ? 44 : 28) && buttonBox.left >= 0 && buttonBox.right <= width);
+    if (process.env.SCREENSHOT_DIR) {
+      const {data} = await command('Page.captureScreenshot',{format:'png'});
+      await writeFile(path.join(process.env.SCREENSHOT_DIR, `source-window-options-${width}.png`),Buffer.from(data,'base64'));
     }
+    await evaluate("document.querySelector('#transcript-load-more').click()");
+    assert.equal(await evaluate("document.querySelector('#transcript-load-more').disabled"), true);
+    assert.match(await evaluate("document.querySelector('#transcript-load-more').textContent"), /Loading more records/);
+    await until("document.querySelector('#transcript-load-more').textContent.includes('Retry')");
+    assert.equal(await evaluate("document.querySelector('#transcript-load-more').disabled"), false);
+    assert.equal(await evaluate("document.querySelector('#transcript-search').value"), "archive-only");
+    await evaluate("document.querySelector('#transcript-load-more').click()");
     await until("document.querySelector('article.message')?.textContent.includes('archive-only sentinel')");
-    if (width === 1600) assert.deepEqual(requests.slice(-2), [2 * 1024 * 1024, 2 * 1024 * 1024], "failure retries the same window, not the next size");
+    assert.deepEqual(requests.slice(-2), [2 * 1024 * 1024, 2 * 1024 * 1024], "failure retries the same window, not the next size");
     assert.equal(await evaluate("location.hash"), "#lanes/alpha");
     assert.equal(await evaluate("document.querySelector('#transcript-search').value"), "archive-only");
     assert.equal(await evaluate("document.querySelector('.message-content').classList.contains('raw')"), true);
     assert.equal(await evaluate("document.querySelector('#transcript-window-status').hidden"), true);
+    await closeReadingControls(browser);
+    if (width < 720) {
+      await command('Emulation.setDeviceMetricsOverride',{width:1280,height,deviceScaleFactor:1,mobile:false});
+      await until("document.querySelector('.conversation-feed').contains(document.querySelector('#transcript-window-status'))");
+      assert.equal(await evaluate("document.querySelectorAll('#transcript-load-more').length"), 1);
+      await command('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:true});
+      await until("document.querySelector('#mobile-chat-options').contains(document.querySelector('#transcript-window-status'))");
+    }
     await evaluate("{const q=document.querySelector('#transcript-search'); q.value=''; q.dispatchEvent(new Event('input',{bubbles:true}))}");
     await until("document.querySelectorAll('article.message').length === 160");
     assert.equal(await evaluate(`!!document.querySelector('article[data-record-key="${recentKey}"]')`), true, "source identity survives whole-file expansion");

@@ -239,8 +239,8 @@ try {
       assert.equal(await evaluate('document.querySelector(".review-pick-notice").hidden'), true, 'selection is one-shot');
       await evaluate('document.querySelector("#review-queue").click()');
       const queued = await evaluate('JSON.parse(sessionStorage.getItem("fm-agentos-review-draft-v1")).queue.at(-1)');
-      assert.equal(queued.kind, 'annotation');
-      assert.equal(queued.text, 'Draft survives dismissal');
+      assert.notEqual(queued.tag, 'message');
+      assert.equal(queued.prompt, 'Draft survives dismissal');
       assert.ok(queued.region?.id, 'queued draft carries the selected page target');
       await evaluate('document.querySelector("#review-history-tab").click()');
       await evaluate('[...document.querySelectorAll("#review-thread .review-batch")].find(batch => batch.querySelector("summary").textContent.startsWith("Queued batch")).open = true');
@@ -270,7 +270,7 @@ try {
         await wait(100);
         const sent = await evaluate('window.testReviewPayload');
         assert.ok(sent.entries.length > 0);
-        assert.ok(sent.entries.every(entry => entry.text !== 'Hidden unsent draft'), 'Review sends only queued notes');
+        assert.ok(sent.entries.every(entry => entry.prompt !== 'Hidden unsent draft'), 'Review sends only queued notes');
         assert.equal(await evaluate('document.querySelector("#review-message").value'), 'Hidden unsent draft', 'batch sending preserves hidden draft');
         await evaluate('window.fetch = window.testOriginalFetch');
       }

@@ -1,5 +1,6 @@
 // Native review overlay. Annotation is always available; the toggle swaps click precedence.
 const el = (id) => document.getElementById(id);
+const capture = window.QuarterdeckReviewTarget;
 // Content taps/clicks annotate immediately, including on touch devices with no hover.
 // The pen toggles interaction mode; while it is on every click annotates, Alt-click interacts.
 let annotateByDefault = false;
@@ -12,6 +13,8 @@ function showAwaitingReview(count) {
   updateReviewControl();
 }
 let selected = null;
+let pointerTextRange = null;
+const recordTexts = new WeakMap(); // Never persist whole no-ID message bodies in drafts.
 let activeReviewTab = "conversation";
 // Sent history is a collapsed section; expanding it never replaces the queue or composer.
 let sentOpen = false;
@@ -80,13 +83,14 @@ function restoreDraft() {
   try {
     const draft = JSON.parse(sessionStorage.getItem(DRAFT_KEY));
     if (!draft || !Array.isArray(draft.queue) || draft.queue.length > 30) return;
-    const valid = (entry) => entry && ["message", "annotation", "lane-message-annotation"].includes(entry.kind)
+    const valid = (entry) => entry && (typeof entry.prompt === "string" && entry.prompt.length <= 4000 && typeof entry.selector === "string" && typeof entry.tag === "string" && typeof entry.text === "string" || ["message", "annotation", "lane-message-annotation"].includes(entry.kind)
       && typeof entry.text === "string" && entry.text.length <= 4000
       && typeof entry.route === "string" && typeof entry.version === "string"
       && (entry.kind === "lane-message-annotation"
         ? entry.region === null && (entry.target?.type === "record" && typeof entry.target.recordId === "string"
           || entry.target?.type === "quote" && typeof entry.target.time === "string" && typeof entry.target.text === "string" && Array.isArray(entry.target.lanes))
-        : !Object.hasOwn(entry, "target") && (entry.kind === "message" ? entry.region === null : entry.region && typeof entry.region.id === "string" && typeof entry.region.label === "string"));
+        : !Object.hasOwn(entry, "target") && (entry.kind === "message" ? entry.region === null : entry.region && typeof entry.region.id === "string" && typeof entry.region.label === "string")));
+
     if (!draft.queue.every(valid)) return;
     // Older drafts had no item IDs. Dedupe only repeated IDs, never equal text.
     const ids = Array.isArray(draft.queueIds) && draft.queueIds.length === draft.queue.length
@@ -99,6 +103,7 @@ function restoreDraft() {
       seen.add(id);
       return true;
     });
+    if (capture) queue = queue.map(capture.migrateEntry);
     queueIds = ids.filter((id, index) => ids.indexOf(id) === index);
     if (Array.isArray(draft.sent)) sent = draft.sent.filter((batch) =>
       batch && typeof batch.id === "string" && typeof batch.receiptId === "string" &&
@@ -107,10 +112,10 @@ function restoreDraft() {
     if (typeof draft.message === "string") el("review-message").value = draft.message.slice(0, 4000);
     if (draft.selected && draft.selected.route === route() && typeof draft.selected.label === "string"
       && typeof draft.selected.version === "string"
-      && (typeof draft.selected.id === "string" || draft.selected.target?.type === "record" || draft.selected.target?.type === "quote")) selected = draft.selected;
+      && (typeof draft.selected.selector === "string" || typeof draft.selected.id === "string" || draft.selected.target?.type === "record" || draft.selected.target?.type === "quote")) selected = draft.selected;
     batchId = typeof draft.batchId === "string" ? draft.batchId : null;
     const validBatch = (captured) => captured && typeof captured.id === "string" && /^[0-9a-f-]{36}$/i.test(captured.id)
-      && captured.payload?.batchId === captured.id && captured.payload.schema === "fm-agentos-review.v1"
+      && captured.payload?.batchId === captured.id && ["fm-agentos-review.v1", "fm-agentos-review.v2"].includes(captured.payload.schema)
       && typeof captured.payload.version === "string" && typeof captured.payload.route === "string"
       && typeof captured.payload.sessionId === "string" && typeof captured.payload.end === "boolean"
       && Array.isArray(captured.payload.entries) && captured.payload.entries.length > 0 && captured.payload.entries.length <= 30
@@ -131,22 +136,32 @@ function targetFor(node) {
   const surface = node?.closest?.(".product-view, .lane-list, .context-rail");
   if (!surface) return null;
   const target = node.closest(controls);
-  const named = node.closest('[data-review-id], [aria-label], [id]');
-  const message = node.closest('.message[data-lane-message-index]');
-  const actual = target && surface.contains(target) ? target : message && surface.contains(message) ? node : named && surface.contains(named) && named !== surface ? named : node;
+  const actual = target && surface.contains(target) ? target : node;
   // Empty background in a broad region is not an annotation target.
   return actual === surface ? null : actual;
 }
 
 function regionFor(node) {
-  const actual = targetFor(node);
+  const range = pointerTextRange || capture?.textRangeTarget(window.getSelection?.());
+  const actual = range?.element || targetFor(node);
   if (!actual) return null;
+  const accessibleName = (actual.getAttribute("aria-label") || actual.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const precise = capture ? { selector: capture.cssSelector(actual), tag: actual.tagName.toLowerCase(), text: capture.excerpt(actual), ...(accessibleName ? { wireLabel: accessibleName } : {}) } : null;
+  if (precise) {
+    const table = capture.tableCellTarget(actual);
+    if (table) precise.target = table;
+    if (range) { Object.assign(precise, range); delete precise.element; }
+  }
   const message = actual.closest(".message[data-lane-message-index]");
   if (message) {
     const index = Number(message.dataset.laneMessageIndex);
     const target = window.quarterdeckMessageTargets?.[index];
     if (!Number.isSafeInteger(index) || !target) return null;
-    return { target, label: "Fleet Chat message", route: route(), version: config.version };
+    if (!precise) return { target, label: "Fleet Chat message", route: route(), version: config.version };
+    const record = target.recordId ? { recordId: target.recordId } : { source: target.source, at: target.occurredAt, lanes: target.lanes };
+    const result = { ...precise, record, label: label(actual), route: route(), version: config.version };
+    if (!record.recordId) recordTexts.set(result, target.text);
+    return result;
   }
   const surface = actual.closest(".product-view, .lane-list, .context-rail");
   const anchor = actual.closest("[data-review-id], [id]") || surface;
@@ -159,7 +174,7 @@ function regionFor(node) {
     if (!parent) break;
     path.unshift(`${child.tagName.toLowerCase()}:${Array.from(parent.children).indexOf(child)}`);
   }
-  return { id: `${anchorId}${path.length ? `/${path.join("/")}` : ""}`.slice(0, 300), label: label(actual), route: route(), version: config.version };
+  return { id: `${anchorId}${path.length ? `/${path.join("/")}` : ""}`.slice(0, 300), ...precise, label: label(actual), route: route(), version: config.version };
 }
 
 const highlight = document.createElement("div");
@@ -288,6 +303,7 @@ function update() {
   el("review-queued-count").textContent = String(queuedCount);
   saveDraft();
   function renderNote(entry, key, removeIndex = null) {
+    if (entry.prompt !== undefined) entry = { ...entry, text: entry.prompt, kind: entry.tag === "message" ? "message" : "annotation", target: null, region: entry.label ? { label: entry.label } : null, version: entry.version || config.version, route: entry.route || route() };
     const card = document.createElement("article");
     const header = document.createElement("div");
     header.className = "review-note-header";
@@ -369,7 +385,8 @@ function update() {
       retry.textContent = "Requeue as new batch";
       retry.disabled = pending || queue.length + batch.entries.length > 30;
       retry.addEventListener("click", () => {
-        queue.push(...batch.entries.map((entry) => ({ ...entry })));
+        queue.push(...batch.entries.map((entry) => ({ ...(capture ? capture.migrateEntry(entry) : entry), route: entry.route || batch.route || route(), version: config.version })));
+        queueIds.push(...batch.entries.map(() => crypto.randomUUID()));
         batchId = crypto.randomUUID();
         el("review-state").textContent = "Failed notes requeued with a new ID. Check targets and press Send; original receipt remains failed.";
         update();
@@ -420,7 +437,7 @@ function update() {
           const id = crypto.randomUUID();
           captured.id = id;
           captured.payload = { ...captured.payload, batchId: id, version: config.version, sessionId: config.sessionId,
-            entries: captured.payload.entries.map((entry) => ({ ...entry, version: config.version })) };
+            entries: captured.payload.entries.map((entry) => captured.payload.schema === "fm-agentos-review.v2" ? { ...entry } : { ...entry, version: config.version }) };
           delete captured.rejected;
           el("review-state").textContent = "Targets rechecked. New version-bound batch retained; press Retry batch to send.";
           update();
@@ -446,6 +463,8 @@ function selectRegion(node, point) {
   if (!next) return;
   returnToArmed = pickingRegion;
   selected = next;
+  pointerTextRange = null;
+  if (next.record && !next.record.recordId) capture.recordFingerprint(recordTexts.get(next)).then((sha256) => { next.record.sha256 = sha256; saveDraft(); }).catch(() => { el("review-state").textContent = "Message identity unavailable; reselect the target before sending."; });
   hovered = null;
   hoveredNode = null;
   endPicking();
@@ -695,6 +714,11 @@ document.addEventListener("pointerover", (event) => {
 });
 el("review-pick").addEventListener("click", () => { if (hovered && hoveredNode) selectRegion(hoveredNode); });
 document.addEventListener("pointerdown", (event) => {
+  pointerTextRange = null;
+  if (event.button === 0 && (pickingRegion || annotateByDefault !== event.altKey) && targetFor(event.target)) {
+    pointerTextRange = capture?.textRangeTarget(window.getSelection?.());
+    if (pointerTextRange) event.preventDefault(); // Capture before a click collapses native selection.
+  }
   if (pickingRegion) touchStart = { x: event.clientX, y: event.clientY, moved: false };
 }, true);
 document.addEventListener("pointermove", (event) => {
@@ -734,9 +758,15 @@ el("review-message").addEventListener("keydown", (event) => {
 function enqueue() {
   const text = el("review-message").value.trim();
   if (!text || queue.length >= 30) { el("review-state").textContent = !text ? "Write a note first." : "Send this batch before adding more."; return false; }
-  queue.push(selected?.target
-    ? { kind: "lane-message-annotation", text, target: selected.target, region: null, route: selected.route, version: selected.version }
-    : { kind: selected ? "annotation" : "message", text, region: selected && { id: selected.id, label: selected.label }, route: selected?.route || route(), version: selected?.version || config.version });
+  if (selected?.target?.type === "quote") { el("review-state").textContent = "This old target must be selected again before queuing."; return false; }
+  if (selected?.record && !selected.record.recordId && !selected.record.sha256) { el("review-state").textContent = "Capturing message identity; try Queue again shortly."; return false; }
+  const note = { prompt: text, tag: selected?.tag || (selected ? "element" : "message"), selector: selected?.selector || "", text: selected?.text || "", route: selected?.route || route(), version: selected?.version || config.version };
+  if (selected?.target?.type === "record") note.record = { recordId: selected.target.recordId };
+  else if (selected?.record) note.record = selected.record;
+  if (["text-range", "table-cell"].includes(selected?.target?.type)) note.target = selected.target;
+  const targetLabel = selected?.wireLabel || (selected?.selector === undefined ? selected?.label : "");
+  if (targetLabel && targetLabel !== note.text) note.label = targetLabel;
+  queue.push(note);
   queueIds.push(crypto.randomUUID());
   batchId ||= crypto.randomUUID();
   el("review-message").value = "";
@@ -763,9 +793,14 @@ async function send(end) {
   const previous = end ? [...retryBatches] : [];
   let captured = null;
   if (queue.length) {
+    if (queue.some((entry) => entry.record && !entry.record.recordId && !entry.record.sha256)) { el("review-state").textContent = "Message identity is still being captured. Check targets before sending."; return; }
     const id = batchId || crypto.randomUUID();
-    captured = { id, payload: { schema: "fm-agentos-review.v1", batchId: id, sessionId: config.sessionId, version: config.version, route: route(), end,
-      entries: queue.map((entry) => JSON.parse(JSON.stringify(entry))) } };
+    captured = { id, payload: { schema: "fm-agentos-review.v2", batchId: id, sessionId: config.sessionId, version: config.version, route: route(), end,
+      entries: queue.map((entry) => {
+        const { version, route: entryRoute, ...wire } = capture ? capture.migrateEntry(entry) : entry;
+        if (entryRoute && entryRoute !== route()) wire.route = entryRoute;
+        return JSON.parse(JSON.stringify(wire));
+      }) } };
     queue = [];
     queueIds = [];
     batchId = null;
@@ -813,7 +848,7 @@ async function submitBatch(captured) {
     // Only a confirmed receipt closes a review; keep later queued notes and
     // independent unconfirmed identities available for their own delivery.
     if (captured.payload.end) { sent = []; openBatches.clear(); openNotes.clear(); }
-    else sent.push({ id: captured.id, receiptId: result.receiptId, state: result.delivery === "local" ? "accepted" : null, entries: captured.payload.entries, end: false });
+    else sent.push({ id: captured.id, receiptId: result.receiptId, state: result.delivery === "local" ? "accepted" : null, entries: captured.payload.entries, route: payload.route, version: payload.version, end: false });
     void loadConfig();
     retryBatches = retryBatches.filter((batch) => batch.id !== captured.id);
     openBatches.delete(captured.id);

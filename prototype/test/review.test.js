@@ -9,6 +9,7 @@ import test from "node:test";
 import { createServer } from "../server.js";
 import { deliverReview, deliverLocalReview, reconcileLocalReview, reviewStatusLine, reviewVersion, awaitingReviewCount, localReviewStatus } from "../review.js";
 
+const reviewClientScript = await readFile(new URL("../public/review-target.js", import.meta.url), "utf8") + "\n" + await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
 const entry = { kind: "annotation", text: "Improve this card", route: "#overview", version: reviewVersion, region: { id: "project:abc/header:0", label: "Project" } };
 const payload = { schema: "fm-agentos-review.v1", batchId: "123e4567-e89b-12d3-a456-426614174000", sessionId: "review-1", version: reviewVersion, route: "#overview", end: false, entries: [entry, { kind: "message", text: "And the menu", region: null, route: "#preferences", version: reviewVersion }] };
 const wirePayload = ({ provenance, ...wire }) => wire;
@@ -321,7 +322,7 @@ test("Lavish adapter only accepts receipt-confirmed delivery and never follows r
 });
 
 test("local Send uses an unqueued draft and keeps a failed send available to retry", async () => {
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
@@ -351,7 +352,7 @@ test("local Send uses an unqueued draft and keeps a failed send available to ret
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(attempts.length, 1);
   assert.equal(attempts[0].sessionId, "");
-  assert.equal(attempts[0].entries[0].text, "Please improve this card");
+  assert.equal(attempts[0].entries[0].prompt, "Please improve this card");
   assert.equal(element("review-send").disabled, false, "Send can retry a failed batch without a fresh draft");
   assert.equal(element("review-end").disabled, false, "Send & end can drain a failed board");
   assert.match(element("review-state").textContent, /disk error/);
@@ -362,7 +363,7 @@ test("local Send uses an unqueued draft and keeps a failed send available to ret
 });
 
 test("retained old-page annotation requires explicit target review while retries preserve the original identity", async () => {
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   const values = new Map();
   const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
   let current = "old-revision";
@@ -397,22 +398,22 @@ test("retained old-page annotation requires explicit target review while retries
   await new Promise(setImmediate);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].version, "old-revision");
-  assert.equal(posts[0].entries[0].kind, "annotation");
+  assert.equal(posts[0].entries[0].tag, "element");
   assert.equal(element("review-count").textContent, "");
   assert.match(element("review-state").textContent, /Preview updated.*Unconfirmed deliveries retain their original IDs/);
-  assert.equal(vm.runInContext("retryBatches[0].payload.entries[0].version", context), "old-revision");
+  assert.equal(vm.runInContext("retryBatches[0].payload.version", context), "old-revision");
   assert.equal(vm.runInContext("retryBatches[0].id", context), posts[0].batchId, "uncertain identity is preserved");
   await vm.runInContext("submitBatch(retryBatches[0])", context);
   await new Promise(setImmediate);
   assert.equal(posts.length, 2);
   assert.equal(posts[1].batchId, posts[0].batchId);
-  assert.equal(posts[1].entries[0].version, "old-revision");
+  assert.equal(posts[1].version, "old-revision");
   assert.match(element("review-state").textContent, /retain.*original IDs|same batch ID/);
   assert.equal(element("review-count").textContent, "");
 });
 
 test("queued local batch enables both Send actions while an empty queue stays disabled", async () => {
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
@@ -450,7 +451,7 @@ test("queued local batch enables both Send actions while an empty queue stays di
 
 test("native review stays available with panel hidden and click precedence toggle", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   assert.match(html, /id="review-panel"[^>]+hidden/);
   assert.match(html, /id="review-toggle"[^>]+type="checkbox" aria-label="Annotation mode off/);
   assert.match(script, /let annotateByDefault = false;/);
@@ -470,7 +471,7 @@ test("native review stays available with panel hidden and click precedence toggl
 // Minimal DOM with real ancestry and event listeners: catches a control being
 // silently relabeled as the broad sidebar's "Conversation lanes" region.
 test("annotation addresses the clicked control, never its enclosing sidebar", async () => {
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   const nodes = new Map();
   function node(tag, id = "", text = "", parent = null) {
     const listeners = new Map();
@@ -597,7 +598,7 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   badgeState(12);
   assert.match(nodes.get("review-panel-toggle").getAttribute("aria-label"), /12 annotations awaiting Firstmate receipt; 1 note queued locally/);
   assert.match(nodes.get("review-toggle").getAttribute("aria-label"), /Annotation mode on: tap or click content to annotate/);
-  assert.equal(vm.runInContext("queue[0].region.label", context), "Refresh data");
+  assert.equal(vm.runInContext("queue[0].label || queue[0].text", context), "Refresh data");
   let rerenders = 0;
   nodes.get("review-thread").replaceChildren = () => { rerenders++; };
   documentListeners.get("pointerover")({ target: content, pointerType: "mouse" });
@@ -608,7 +609,7 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   message.value = "second note";
   message.dispatch("keydown", { key: "Enter", ctrlKey: true, preventDefault() {} });
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].entries.map((e) => e.text), ["first note", "second note"]);
+  assert.deepEqual(sent[0].entries.map((e) => e.prompt), ["first note", "second note"]);
   await new Promise(setImmediate);
   assert.equal(vm.runInContext("queue.length", context), 0);
   assert.equal(vm.runInContext("pending", context), false);
@@ -617,11 +618,11 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   message.dispatch("keydown", { key: "Enter", metaKey: true, preventDefault() {} });
   await new Promise(setImmediate);
   assert.equal(sent.length, 2);
-  assert.equal(sent[1].entries[0].text, "third note");
+  assert.equal(sent[1].entries[0].prompt, "third note");
 });
 
 test("review draft, queue, open panel and retry ID survive a document reload", async () => {
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   const values = new Map();
   let currentVersion = reviewVersion;
   const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
@@ -660,7 +661,7 @@ test("review draft, queue, open panel and retry ID survive a document reload", a
   assert.equal(restored.element("review-panel-toggle")["aria-expanded"], "true");
   assert.equal(restored.element("review-count").textContent, "· 1 queued");
   assert.equal(restored.element("review-message").value, "unsent follow-up");
-  assert.equal(vm.runInContext("queue[0].text", restored.context), "queued note");
+  assert.equal(vm.runInContext("queue[0].prompt", restored.context), "queued note");
   assert.equal(vm.runInContext("batchId", restored.context), "retry-this-batch");
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(restored.element("review-message").focused, true);
@@ -674,7 +675,7 @@ test("review draft, queue, open panel and retry ID survive a document reload", a
 });
 
 test("review conversation notes: long notes are collapsed by default and expandable", async () => {
-  const script = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  const script = reviewClientScript;
   function createTestNode(tag) {
     const listeners = new Map();
     const children = [];

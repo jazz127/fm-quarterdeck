@@ -863,6 +863,17 @@ test("preference density, sorting and expansion persist through rendering", () =
   assert.match(css, /\.density-reasons \.preference-content[^}]+display: none/);
 });
 
+test("phone source-window controls move as one stateful item into Fleet Chat options", async () => {
+  const shell = await readFile(new URL('../public/shell-panel.js', import.meta.url), 'utf8');
+  const shellCss = await readFile(new URL('../public/shell-panel.css', import.meta.url), 'utf8');
+  const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.equal(shell.split('moveControl(document.querySelector("#transcript-window-status"), chatTools);').length - 1, 2, 'rehome on phone setup and immediately before opening options');
+  assert.match(shell, /anchor\.replaceWith\(node\)/, 'desktop restores the original node');
+  assert.match(shellCss, /\.mobile-chat-tools \.transcript-window-status button \{ min-height: 44px; width: 100%; \}/);
+  assert.match(html, /id="transcript-load-more"[^>]*aria-describedby="transcript-window-hint"/);
+  assert.equal(html.split('id="transcript-load-more"').length - 1, 1, 'no duplicated stateful button');
+});
+
 test("full history is retained across bounded pages and disk-session selection", () => {
   const app = ui();
   const messages = Array.from({ length: 451 }, (_, i) => record({ text: `Turn ${i}`, recordId: `session:${i}`, transcriptSessionId: i < 250 ? "old.jsonl" : "new.jsonl" }));
@@ -880,6 +891,25 @@ test("full history is retained across bounded pages and disk-session selection",
   assert.doesNotMatch(app.node("#messages").innerHTML, /Turn 250</);
 });
 
+test("review notes show prompts with accessible native metadata chips and prompt compact previews", () => {
+  const app = ui();
+  const review = { batch: "123e4567-e89b-12d3-a456-426614174000", route: "#lanes/alpha", end: false, version: "a".repeat(40), preview: "uat", prompts: [{ prompt: "Fix the value", tag: "span", selector: "#secret-selector", text: "target" }, { prompt: "Looks good", tag: "message", selector: "", text: "" }] };
+  seed(app, [lane("alpha", [record({ role: "captain", text: "Quarterdeck review: raw metadata", review })])]);
+  app.run("renderFeed()");
+  const html = app.node("#messages").innerHTML;
+  assert.match(html, /Fix the value/);
+  assert.match(html, /Looks good/);
+  assert.match(html, /<details class="review-meta" data-review-chip="batch"/);
+  assert.match(html, /aria-label="Review batch information"/);
+  assert.match(html, /aria-label="Annotation target for note 1:/);
+  assert.doesNotMatch(html, /Annotation target for note 2:/);
+  assert.doesNotMatch(html, /Quarterdeck review: raw metadata/);
+  app.run('compactViews.add(renderedReadingScope); renderFeed()');
+  assert.match(app.node("#messages").innerHTML, /compact-line-preview[^]*Fix the value; Looks good/);
+  app.run('messageFormat = "raw"; renderFeed()');
+  assert.match(app.node("#messages").innerHTML, /Quarterdeck review: raw metadata/);
+});
+
 test("Lane Chat renders original IDs and exact quote snapshots without fabricating identities", () => {
   const app = ui();
   const one = record({ recordId: "main-pi-session/a.jsonl:12:0", text: "First message" });
@@ -892,7 +922,7 @@ test("Lane Chat renders original IDs and exact quote snapshots without fabricati
     { type: "record", recordId: one.recordId }, { type: "record", recordId: two.recordId },
   ]);
   assert.equal(targets.length, 4, "identical no-ID events in one lane remain separate rows");
-  assert.deepEqual(targets.slice(2), Array(2).fill({ type: "quote", time: "12:00", text: "working: repeated", lanes: ["alpha", "general"] }));
+  assert.deepEqual(targets.slice(2), Array(2).fill({ source: "state/alpha.status", occurredAt: "2026-02-01T12:00:00.000Z", text: "working: repeated", lanes: ["alpha", "general"] }));
   assert.match(app.node("#messages").innerHTML, /data-lane-message-index="3"/);
   assert.doesNotMatch(app.node("#messages").innerHTML, /data-review-id="record:/);
 });

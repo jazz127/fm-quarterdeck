@@ -1,3 +1,4 @@
+import { formatReviewNote } from "./review-note.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -24,7 +25,7 @@ export async function inboxReady(home) {
   return ready.schema === "fm-primary-ready.v1" && ready.can_receive === true;
 }
 export async function announceReview(home, payload) {
-  const body = `Quarterdeck review annotation batch ${payload.batchId}\nVersion: ${payload.version}\nRoute: ${payload.route}\nEnd: ${payload.end}\nPreview: ${payload.provenance ? `${payload.provenance.preview} · ${payload.provenance.branch} · ${payload.provenance.commit} · ${payload.provenance.remoteCheckpoint || "no remote checkpoint"}` : "standalone"}\nEntries:\n${payload.entries.map((entry, i) => `${i + 1}. ${entry.kind} · ${entry.route} · ${entry.target?.type === "record" ? `Lane Chat record ${entry.target.recordId}` : entry.target?.type === "quote" ? `Lane Chat message quote ${JSON.stringify({ time: entry.target.time, text: entry.target.text, lanes: entry.target.lanes })}` : entry.region ? `${entry.region.label} (${entry.region.id})` : "message"}\n${entry.text}`).join("\n\n")}`;
+  const body = payload.schema === "fm-agentos-review.v2" ? formatReviewNote(payload) : `Quarterdeck review annotation batch ${payload.batchId}\nVersion: ${payload.version}\nRoute: ${payload.route}\nEnd: ${payload.end}\nPreview: ${payload.provenance ? `${payload.provenance.preview} · ${payload.provenance.branch} · ${payload.provenance.commit} · ${payload.provenance.remoteCheckpoint || "no remote checkpoint"}` : "standalone"}\nEntries:\n${payload.entries.map((entry, i) => `${i + 1}. ${entry.kind} · ${entry.route} · ${entry.target?.type === "record" ? `Lane Chat record ${entry.target.recordId}` : entry.target?.type === "quote" ? `Lane Chat message quote ${JSON.stringify({ time: entry.target.time, text: entry.target.text, lanes: entry.target.lanes })}` : entry.region ? `${entry.region.label} (${entry.region.id})` : "message"}\n${entry.text}`).join("\n\n")}`;
   const result = await call(home, ["note", "--request-id", requestId(payload.batchId), "--json", "-"], body);
   if (![0, 3].includes(result.code)) throw new Error("Firstmate note not saved");
   const note = JSON.parse(result.stdout);

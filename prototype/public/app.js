@@ -121,6 +121,29 @@ function syncExpandedMessageTarget() {
 const expandedFullViews = new Set();
 const fullDetailChoices = new Map();
 function messageRecordKey(message) { return message.recordId || reviewId([message.source, message.occurredAt, message.text].join("\n")); }
+function reviewChip(glyph, key, title, value, query) {
+  const json = JSON.stringify(value, null, 2);
+  const match = query.trim() && json.toLowerCase().includes(query.trim().toLowerCase());
+  let content = `<pre>${highlightSearchMatches(escapeHtml(json), query)}</pre>`;
+  if (glyph === "a") {
+    const record = value.record;
+    const context = record?.recordId || (record ? [record.lanes?.join(", ") || record.quoteLanes?.join(", "), record.at || record.quoteTime, record.source, record.sha256].filter(Boolean).join(" · ") : "");
+    const excerpt = value.target?.text || value.text || record?.quoteExcerpt || "";
+    const quote = value.target?.type === "text-range" ? `${value.target.prefix}[${excerpt}]${value.target.suffix}` : excerpt;
+    const readable = [value.label || `<${value.tag}>`, context, quote, value.selector].filter(Boolean).join("\n");
+    content = `<pre>${highlightSearchMatches(escapeHtml(readable), query)}</pre><details class="review-target-exact" data-review-chip="${key}-exact"${match ? " open" : ""}><summary>Exact target metadata</summary><pre>${highlightSearchMatches(escapeHtml(json), query)}</pre></details>`;
+  }
+  return `<details class="review-meta" data-review-chip="${key}"${match ? " open" : ""}><summary aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}">${glyph}</summary><div class="review-meta-card">${content}<button type="button" class="review-copy-target" data-review-copy="${escapeHtml(JSON.stringify(value))}">Copy ${glyph === "a" ? "target" : "information"}</button></div></details>`;
+}
+function renderReviewContent(review, query) {
+  const { prompts, ...batch } = review;
+  return `<div class="review-prompts">${reviewChip("i", "batch", "Review batch information", { ...batch, receipt: `local:${batch.batch}`, receiptState: "Intake status not recorded in this note" }, query)}<ol>${prompts.map((entry, i) => {
+    const { prompt, ...target } = entry;
+    const title = `Annotation target for note ${i + 1}: ${entry.tag} ${entry.text || entry.label || ""}`;
+    return `<li><div class="review-prompt-line"><span>${highlightSearchMatches(escapeHtml(prompt), query)}</span>${entry.tag !== "message" ? reviewChip("a", `note-${i}`, title, target, query) : ""}</div></li>`;
+  }).join("")}</ol></div>`;
+}
+
 function compactPreview(text) {
   const value = String(text || "");
   const envelope = value.match(/^\[fm-lane ([^\]\r\n]+)\]\r?\n([\s\S]*)\r?\n\[end \1\]\s*$/);
@@ -772,7 +795,7 @@ function renderFeed() {
   // The overlay reads this exact rendered-page snapshot, not a hashed DOM address.
   window.quarterdeckMessageTargets = pageMessages.map((message) => message.recordId
     ? { type: "record", recordId: message.recordId }
-    : { type: "quote", time: message.time, text: message.text, lanes: message.laneNames });
+    : { source: message.source, occurredAt: message.occurredAt, text: message.text, lanes: message.laneNames });
   // Fingerprint the bounded page before Markdown rendering or DOM work.
   const fingerprint = JSON.stringify([pageMessages, messageFormat, transcriptQuery, emptyMessage, start, showingAllLive, laneSelection().all, laneStatusFilter, feedLaneOverrideId, dense]);
   if (fingerprint !== lastFeedFingerprint) {
@@ -786,10 +809,12 @@ function renderFeed() {
       ? `<span class="avatar-status">${escapeHtml(statusIcon(message.state))}</span>`
       : (messageTypeSvg(typeId) || `<span class="avatar-mono">${escapeHtml(message.author.slice(0, 1).toUpperCase())}</span>`);
     const rawOrRendered = kind !== "tools" && messageFormat === "markdown" ? renderMarkdown(message.text) : escapeHtml(message.text);
-    const content = message.mixedLaneMessage ? renderMixedLaneContent(message) : highlightSearchMatches(rawOrRendered, transcriptQuery);
+    const content = message.review && messageFormat !== "raw" ? renderReviewContent(message.review, transcriptQuery) : message.mixedLaneMessage ? renderMixedLaneContent(message) : highlightSearchMatches(rawOrRendered, transcriptQuery);
     const compact = (kind === "thinking" || kind === "tools") && !(dense && message.mixedLaneMessage);
     const detailOpen = fullDetailChoices.get(JSON.stringify([renderedReadingScope, recordKey(message)])) ?? expandedFullViews.has(renderedReadingScope);
-    const preview = highlightSearchMatches(escapeHtml(dense ? compactPreview(message.text) : String(message.text).replace(/\s+/g, " ").trim().slice(0, 120)), transcriptQuery);
+    const previewText = message.review && messageFormat !== "raw" ? message.review.prompts.map((entry) => entry.prompt).join("; ") : message.text;
+    const annotationCount = message.review?.prompts.filter((entry) => entry.tag !== "message").length || 0;
+    const preview = highlightSearchMatches(escapeHtml(dense ? compactPreview(previewText) : String(previewText).replace(/\s+/g, " ").trim().slice(0, 120)), transcriptQuery) + (annotationCount ? `<span class="review-compact-count" title="${annotationCount} annotation targets">a${annotationCount}</span>` : "");
     const metadata = `<strong>${escapeHtml(message.author)}</strong><span class="message-origin origin-${escapeHtml(typeId)}">${escapeHtml(messageTypeLabel(typeId))}</span>${kind === "crew" ? `<span class="message-state">${escapeHtml(stateLabel(message.state))}</span>` : ""}<span class="message-lane">${escapeHtml(laneLabel)}</span><time datetime="${escapeHtml(message.occurredAt)}">${escapeHtml(message.time)}</time>`;
     const body = `<div class="message-content ${kind === "tools" ? "raw" : messageFormat}">${content}</div><small class="message-source">${escapeHtml(message.source)}${message.transcriptOrigin ? ` · ${escapeHtml(message.transcriptOrigin)}` : ""}</small>`;
     return `
@@ -804,13 +829,13 @@ function renderFeed() {
   });
   const feedHtml = messages.length ? messageHtml.join("") : `<div class="empty compact">${emptyMessage}</div>`;
   // Don't discard disclosure/annotation DOM or reset scroll for identical pages.
-    const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].map((node) => node.closest("article.message").dataset.recordKey));
+    const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].map((node) => `${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`));
     const visibleAnchor = [...messagesEl.querySelectorAll("article.message")].find((node) => node.getBoundingClientRect().bottom > messagesEl.getBoundingClientRect().top);
     const anchorKey = visibleAnchor?.dataset.recordKey;
     const anchorOffset = visibleAnchor ? visibleAnchor.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top : 0;
     messagesEl.innerHTML = feedHtml;
     for (const node of messagesEl.querySelectorAll("article.message details")) {
-      if (open.has(node.closest("article.message").dataset.recordKey)) node.open = true;
+      if (open.has(`${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`)) node.open = true;
     }
     if (!wasAtBottom && anchorKey) {
       const moved = [...messagesEl.querySelectorAll("article.message")].find((node) => node.dataset.recordKey === anchorKey);
@@ -2291,9 +2316,15 @@ document.addEventListener("click", (event) => {
 }, true);
 $("#messages").addEventListener("toggle", (event) => {
   const article = event.target?.closest?.("article.message");
-  if (article && event.target.tagName === "DETAILS") fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
+  if (article && event.target.tagName === "DETAILS" && !event.target.dataset.reviewChip) fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
 }, true);
+$("#messages").addEventListener("keydown", (event) => {
+  const chip = event.target?.closest?.("details.review-meta");
+  if (chip && event.key === "Escape") { chip.open = false; chip.querySelector("summary").focus(); event.stopPropagation(); }
+});
 $("#messages").addEventListener("click", (event) => {
+  const copy = event.target?.closest?.("button[data-review-copy]");
+  if (copy) { void navigator.clipboard.writeText(copy.dataset.reviewCopy).then(() => { copy.textContent = "Copied"; }).catch(() => { copy.textContent = "Copy unavailable"; }); return; }
   const line = event.target?.closest?.("button.message-compact-line");
   if (line && compactViews.has(renderedReadingScope)) { changeCompactMode(false, line); return; }
   const toggle = event.target?.closest?.("button[data-mixed-lane-key]");
