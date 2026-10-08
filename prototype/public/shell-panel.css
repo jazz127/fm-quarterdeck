@@ -10,7 +10,7 @@
 }
 
 /* Phone chrome: one header, one thumb-friendly dock, secondary controls in a sheet. */
-.mobile-dock, .mobile-sheet:not([open]), .mobile-popover-close { display: none; }
+.mobile-dock, .mobile-sheet:not([open]), .mobile-popover-close, .mobile-quota-backdrop { display: none; }
 .mobile-sheet { box-sizing: border-box; color: var(--text); background: var(--surface); border: 1px solid var(--line); }
 .mobile-sheet::backdrop { background: #07192399; backdrop-filter: blur(3px); }
 .mobile-dock-review-label { display: none; }
@@ -98,6 +98,10 @@
   .mobile-quota-full-link:hover, .mobile-quota-full-link:focus-visible { background: var(--accent-soft); }
   .mobile-sheet { position: fixed; inset: auto 0 0; width: 100%; max-width: min(560px, var(--pane-max-width, 100vw)); margin: 0 auto; max-height: min(var(--pane-max-height, 100dvh), calc(var(--review-vv-height, 100dvh) - 12px)); border-radius: 24px 24px 0 0; padding: 0; box-shadow: 0 -12px 48px #0003; overscroll-behavior: contain; }
   .mobile-sheet[open] { display: flex; flex-direction: column; }
+  /* Measured dock height includes its border, padding and bottom safe area. */
+  .mobile-quota-sheet { z-index: 74; bottom: var(--mobile-dock-height, calc(69px + env(safe-area-inset-bottom, 0px))); max-height: calc(100dvh - var(--mobile-dock-height, calc(69px + env(safe-area-inset-bottom, 0px))) - 12px - env(safe-area-inset-top, 0px)); }
+  .mobile-quota-sheet-body { padding-bottom: 20px; }
+  .mobile-quota-backdrop:not([hidden]) { display: block; position: fixed; z-index: 72; inset: 0 0 var(--mobile-dock-height, calc(69px + env(safe-area-inset-bottom, 0px))); background: #07192399; backdrop-filter: blur(3px); }
   .mobile-sheet-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 20px 20px 12px; gap: 12px; border-bottom: 1px solid var(--line); }
   .mobile-sheet-head small { font-size: 10px; letter-spacing: .12em; color: var(--muted); }
   .mobile-sheet-head h2 { margin: 4px 0; font-size: 22px; }

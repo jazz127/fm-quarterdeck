@@ -967,6 +967,8 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .message-type-row > .message-type-option { flex: 1 1 0; min-width: 0; gap: 4px; }
 .message-type-row .message-kind-label { flex: 1; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; }
 .message-type-row .message-type-option::before { flex: 0 0 14px; }
+.lane-filter-row { display: flex; align-items: center; gap: 2px; }
+.lane-filter-row > .lane-option { flex: 1; min-width: 0; }
 .kind-message-jumps { display: flex; flex: 0 0 auto; gap: 2px; }
 .kind-message-jump { display: grid; place-items: center; width: 26px; height: 32px; min-height: 32px; padding: 0; font-size: 16px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--accent); cursor: pointer; }
 .kind-message-jump:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }

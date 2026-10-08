@@ -432,6 +432,40 @@ test("kind index search is strict, handles gaps and empty lists, and crosses ren
   app.run('clearTimeout(lastViewedHighlightTimer)');
 });
 
+test("fleet navigation indexes deduplicated mixed records by stable fleet ID and preserves filters", () => {
+  const app = ui();
+  const shared = record({recordId:'shared'});
+  seed(app, [lane('alpha', [record({recordId:'older',occurredAt:'2026-01-01T12:00:00.000Z'}), shared]), lane('beta', [shared])]);
+  app.run('renderFeed()');
+  assert.equal(app.run('messagesForSelection().length'), 2);
+  assert.equal(app.run('JSON.stringify(fleetRecordIndices.get("alpha"))'), '[0,1]');
+  assert.equal(app.run('JSON.stringify(fleetRecordIndices.get("beta"))'), '[1]');
+  const before = app.run('readingScope()');
+  app.run('jumpToKind("beta",1,"Next message from Beta.",true)');
+  assert.equal(app.run('readingScope()'), before);
+  app.run('allLanesSelected=false; selectedLaneIds=new Set(["alpha"]); renderFeed()');
+  assert.equal(app.run('navigationEnabled("beta",true)'), false);
+  assert.equal(app.run('fleetJumpTargets.get("beta").next'), -1);
+  app.run('transcriptQuery="no matching record"; renderFeed()');
+  assert.equal(app.run('fleetRecordIndices.size'), 0);
+  app.run('clearTimeout(lastViewedHighlightTimer)');
+});
+
+test("previous-fleet uses the shared bounded history intent and cancels on a changed scope", () => {
+  const {app,anchor,newer,older,respond} = kindHistoryFixture();
+  app.run('jumpToKind("alpha",-1,"Previous message from Alpha.",true)');
+  assert.equal(app.run('pendingKindJump.fleet'), true);
+  assert.equal(app.run('transcriptWindowBytes'), 2*1024*1024);
+  respond([record({recordId:'older',occurredAt:'2026-01-01T12:00:00.000Z'}),anchor,newer],2,false);
+  assert.equal(app.run('pendingKindJump'), null);
+  assert.equal(older.classList.contains('last-viewed-highlight'), true);
+  assert.equal(app.node('#sr-announcer').textContent, 'Previous message from Alpha.');
+  app.run('clearTimeout(lastViewedHighlightTimer)');
+  const cancelled = kindHistoryFixture();
+  cancelled.app.run('jumpToKind("alpha",-1,"Previous message from Alpha.",true); transcriptQuery="changed"; updateKindNavigation()');
+  assert.equal(cancelled.app.run('pendingKindJump'), null);
+});
+
 test("same-page record navigation explicitly reveals cached lanes and native details", () => {
   const app=ui(), feed=app.node('#messages');
   seed(app,[lane('alpha',[record({recordId:'mixed',mixedLaneMessage:{recordId:'mixed',blocks:[{projectId:'alpha',name:'Alpha',text:'Alpha body'},{projectId:'beta',name:'Beta',text:'Beta body'}]}})])]);

@@ -92,6 +92,29 @@ try {
     assert.equal(await evaluate("document.activeElement.querySelectorAll('.mixed-lane-toggle[aria-expanded=false]').length"), 0, "same-page collapsed lanes reveal without discarding other choices");
     assert.equal(await evaluate("document.querySelector('article[data-record-index=\"349\"] .mixed-lane-section:last-child .mixed-lane-toggle').getAttribute('aria-expanded')"), "false");
     await screenshot(`kind-target-${width}x${height}.png`);
+    // Fleet jumps share the same strict anchor, page reveal and focus behavior.
+    const openFleets = async () => {
+      await evaluate("if(innerWidth<720){if(document.querySelector('#lane-filter-toggle').getAttribute('aria-expanded')!=='true')document.querySelector('#lane-filter-toggle').click();document.querySelector('#mobile-lanes-tab').click();}else if(document.querySelector('#lane-options').dataset.collapsed==='true')document.querySelector('#lane-panel-toggle').click()");
+    };
+    await openFleets();
+    assert.equal(await evaluate("[...document.querySelectorAll('button[data-fleet-jump=beta]')].every(n=>n.disabled)"), true, "excluded fleet cannot change selection via navigation");
+    await evaluate("document.querySelector('#lane-filter-rows input[data-filter-lane=beta]').click(); document.querySelector('#transcript-older').click()");
+    await position(351);
+    await openFleets();
+    await evaluate("document.querySelector('button[data-fleet-jump=beta][data-kind-step=\"-1\"]').focus()");
+    await enter();
+    await until("document.activeElement?.matches('article.message[data-record-index=\"350\"]')");
+    assert.equal(await evaluate("document.querySelector('#sr-announcer').textContent"), "Previous message from Beta.");
+    assert.equal(await evaluate("document.querySelector('#lane-filter-rows input[data-filter-lane=alpha]').checked && document.querySelector('#lane-filter-rows input[data-filter-lane=beta]').checked"), true);
+    await openFleets();
+    const fleetControls = await evaluate("[...document.querySelectorAll('button[data-fleet-jump]')].map(n=>({width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height}))");
+    for (const control of fleetControls) assert.ok(control.width >= (width < 720 ? 44 : 24) && control.height >= (width < 720 ? 44 : 24));
+    await screenshot(`fleet-controls-light-${width}x${height}.png`);
+    // The current app has a light-only palette. Exercise shared arrow tokens
+    // under a synthetic dark palette without introducing a product theme.
+    await evaluate("document.documentElement.style.cssText='--surface:#18201d;--surface-soft:#26322c;--canvas:#111814;--text:#e9f1ec;--muted:#a5b7ac;--line-strong:#637c6d;--accent:#93d6b1;--accent-soft:#263f32'");
+    await screenshot(`fleet-controls-dark-tokens-${width}x${height}.png`);
+    await evaluate("document.documentElement.removeAttribute('style')");
     await evaluate("document.querySelector('#message-type-filters input[value=thinking]').click()");
     await openKinds();
     assert.equal(await evaluate("[...document.querySelectorAll('button[data-kind-jump=thinking]')].every(n=>n.disabled)"), true, "absent native kind has no invented targets");
@@ -118,10 +141,10 @@ try {
     await until("document.querySelectorAll('article.message').length>0 && !document.querySelector('#transcript-window-status').hidden");
     await evaluate("while(true){const n=[...document.querySelectorAll('#lane-filter-rows input')].find(n=>n.checked!==(n.dataset.filterLane==='alpha'));if(!n)break;n.click();} while(!document.querySelector('#transcript-older').disabled)document.querySelector('#transcript-older').click(); document.querySelector('#messages').scrollTop=0");
     const anchor = await evaluate("({key:document.querySelector('article.message').dataset.recordKey,time:document.querySelector('article.message time').getAttribute('datetime')})");
-    await openKinds();
-    await evaluate("document.querySelector('button[data-kind-jump=captain][data-kind-step=\"-1\"]').focus()");
+    await openFleets();
+    await evaluate("document.querySelector('button[data-fleet-jump=alpha][data-kind-step=\"-1\"]').focus()");
     await enter();
-    await until("document.activeElement?.matches('article.message.captain') && document.activeElement.classList.contains('last-viewed-highlight')");
+    await until("document.activeElement?.matches('article.message') && document.activeElement.classList.contains('last-viewed-highlight')");
     assert.ok(await evaluate("document.activeElement.querySelector('time').getAttribute('datetime')") < anchor.time);
     assert.ok(await evaluate(`!![...document.querySelectorAll('article.message')].find(n=>n.dataset.recordKey===${JSON.stringify(anchor.key)})`), "byte-offset identity survives partial-to-whole-file expansion");
     assert.deepEqual(requests.slice(start), [1024 * 1024, 2 * 1024 * 1024], "recent first load, then exactly one explicit bounded expansion");

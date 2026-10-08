@@ -51,12 +51,13 @@ window.filterView = (() => {
   }
 
   function laneOptionHtml(lane, checked, escapeHtml, stateLabel) {
-    return `<label class="lane-option${checked ? " is-selected" : ""}${lane.id === "general" ? " pinned" : ""}" data-lane-id="${escapeHtml(lane.id)}">
+    const arrows = [[-1, "Previous", "↑"], [1, "Next", "↓"]].map(([step, label, arrow]) => `<button class="kind-message-jump" type="button" data-fleet-jump="${escapeHtml(lane.id)}" data-kind-step="${step}" aria-label="${escapeHtml(`${label} message from ${lane.name}`)}" disabled><span aria-hidden="true">${arrow}</span></button>`).join("");
+    return `<div class="lane-filter-row"><label class="lane-option${checked ? " is-selected" : ""}${lane.id === "general" ? " pinned" : ""}" data-lane-id="${escapeHtml(lane.id)}">
     <input type="checkbox" data-filter-lane="${escapeHtml(lane.id)}" ${checked ? "checked" : ""}>
     <span class="toggle-check" aria-hidden="true"></span>
     <span class="lane-option-copy" title="Solo ${escapeHtml(lane.name)}"><strong>${escapeHtml(lane.name)}</strong><small>${escapeHtml(stateLabel(lane.status))}</small></span>
     ${lane.id === "general" ? '<span class="pin-label">Pinned</span>' : ""}
-  </label>`;
+  </label><div class="kind-message-jumps" role="group" aria-label="${escapeHtml(lane.name)} navigation">${arrows}</div></div>`;
   }
 
   function laneFiltersHtml(lanes, checkedIds, escapeHtml, stateLabel) {

@@ -123,22 +123,41 @@ quotaSheet.innerHTML = `<header class="mobile-sheet-head"><div><small>SUBSCRIPTI
 document.body.append(quotaSheet);
 window.dispatchEvent(new Event("quota-sheet-ready"));
 const quotaDockButton = mobileDock.querySelector(".mobile-dock-quota");
+// Non-modal so the quick-navigation dock remains interactive below the sheet.
+const quotaBackdrop = document.createElement("div");
+quotaBackdrop.className = "mobile-quota-backdrop";
+quotaBackdrop.hidden = true;
+document.body.append(quotaBackdrop);
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty("--mobile-dock-height", `${mobileDock.getBoundingClientRect().height}px`);
+}).observe(mobileDock, { box: "border-box" });
+quotaBackdrop.addEventListener("click", closeQuotaSheet);
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && quotaSheet.open) {
+    event.preventDefault();
+    closeQuotaSheet();
+  }
+});
 function openQuotaSheet() {
   if (desktop.matches) return;
   if (!quotaSheet.open) {
-    quotaSheet.showModal();
+    quotaSheet.show();
+    quotaBackdrop.hidden = false;
     quotaDockButton?.setAttribute("aria-expanded", "true");
   }
 }
 function closeQuotaSheet() {
   if (quotaSheet.open) quotaSheet.close();
+  quotaBackdrop.hidden = true;
+  quotaDockButton?.setAttribute("aria-expanded", "false");
 }
-quotaSheet.querySelector(".mobile-sheet-close").addEventListener("click", () => quotaSheet.close());
+quotaSheet.querySelector(".mobile-sheet-close").addEventListener("click", closeQuotaSheet);
 quotaSheet.addEventListener("click", (event) => {
-  if (event.target === quotaSheet) quotaSheet.close();
-  if (event.target.closest("a[href='#quota']")) quotaSheet.close();
+  if (event.target === quotaSheet || event.target.closest("a[href='#quota']")) closeQuotaSheet();
 });
 quotaSheet.addEventListener("close", () => {
+  if (quotaSheet.open) return; // Ignore a queued close after a quick reopen.
+  quotaBackdrop.hidden = true;
   quotaDockButton?.setAttribute("aria-expanded", "false");
   if (!desktop.matches && document.activeElement === document.body) quotaDockButton?.focus();
 });
@@ -262,6 +281,7 @@ toolsSheet.addEventListener("click", (event) => {
 });
 mobileDock.querySelectorAll("[data-mobile-view]").forEach((button) => {
   button.addEventListener("click", () => {
+    closeQuotaSheet();
     // S2: bottom Lanes opens lane+kinds filters when already on conversations.
     if (button === chatButton && !desktop.matches && workspace.dataset.view === "conversations") {
       closeChatOptions();

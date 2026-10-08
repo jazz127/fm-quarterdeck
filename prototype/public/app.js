@@ -192,6 +192,10 @@ function updateLatestControl(atBottom) {
 // Numeric indices cover loaded history, not just the bounded rendered page.
 const kindRecordIndices = new Map();
 const kindJumpTargets = new Map();
+const fleetRecordIndices = new Map();
+const fleetJumpTargets = new Map();
+function navigationIndices(id, fleet = false) { return (fleet ? fleetRecordIndices : kindRecordIndices).get(id) || []; }
+function navigationEnabled(id, fleet = false) { return fleet ? selectedLanes().some(lane => lane.id === id) : selectedMessageTypes.has(id); }
 let pendingKindJump = null;
 function kindJumpIndex(indices, cursor, step) {
   let low = 0, high = indices.length;
@@ -218,8 +222,8 @@ function currentReadingRecord() {
     return r.height > 0 && r.bottom > bounds.top && r.top < bounds.bottom;
   });
 }
-function canLoadEarlierKind(kind) {
-  return selectedMessageTypes.has(kind) && selectedLanes().length > 0 && transcriptCoverage.expandable &&
+function canLoadEarlierKind(kind, fleet = false) {
+  return navigationEnabled(kind, fleet) && selectedLanes().length > 0 && transcriptCoverage.expandable &&
     (transcriptCoverage.windowBytes || transcriptWindowBytes) < 8 * 1024 * 1024;
 }
 function updateKindNavigation() {
@@ -231,15 +235,22 @@ function updateKindNavigation() {
     const indices = kindRecordIndices.get(type.id) || [];
     kindJumpTargets.set(type.id, { previous: kindJumpIndex(indices, cursor, -1), next: kindJumpIndex(indices, cursor, 1) });
   }
-  for (const button of $("#message-type-filters").querySelectorAll("button[data-kind-jump]")) {
-    const kind = button.dataset.kindJump, previous = Number(button.dataset.kindStep) < 0;
-    const index = kindJumpTargets.get(kind)?.[previous ? "previous" : "next"] ?? -1;
-    button.disabled = Boolean(pendingKindJump) || !selectedMessageTypes.has(kind) || (index < 0 && !(previous && canLoadEarlierKind(kind)));
+  fleetJumpTargets.clear();
+  for (const lane of lanes) {
+    const indices = navigationIndices(lane.id, true);
+    fleetJumpTargets.set(lane.id, { previous: kindJumpIndex(indices, cursor, -1), next: kindJumpIndex(indices, cursor, 1) });
+  }
+  const buttons = [...$("#message-type-filters").querySelectorAll("button[data-kind-jump]"), ...$("#lane-filter-rows").querySelectorAll("button[data-fleet-jump]")];
+  for (const button of buttons) {
+    const fleet = button.dataset.fleetJump !== undefined;
+    const kind = fleet ? button.dataset.fleetJump : button.dataset.kindJump, previous = Number(button.dataset.kindStep) < 0;
+    const index = (fleet ? fleetJumpTargets : kindJumpTargets).get(kind)?.[previous ? "previous" : "next"] ?? -1;
+    button.disabled = Boolean(pendingKindJump) || !navigationEnabled(kind, fleet) || (index < 0 && !(previous && canLoadEarlierKind(kind, fleet)));
     button.setAttribute("aria-busy", String(Boolean(pendingKindJump)));
-    button.title = pendingKindJump ? "Loading earlier history…" : !selectedMessageTypes.has(kind)
-      ? "Enable this message kind to navigate its records."
+    button.title = pendingKindJump ? "Loading earlier history…" : !navigationEnabled(kind, fleet)
+      ? fleet ? "Include this fleet to navigate its records." : "Enable this message kind to navigate its records."
       : index >= 0 ? `${button.getAttribute("aria-label")} in loaded history.`
-      : previous && canLoadEarlierKind(kind) ? "Load earlier records on demand to find this kind (up to 8 MiB/source)."
+      : previous && canLoadEarlierKind(kind, fleet) ? "Load earlier records on demand to find a match (up to 8 MiB/source)."
       : "No matching message in this direction in loaded history. Older sessions can be loaded separately.";
   }
 }
@@ -295,10 +306,10 @@ function navigateToRecord(index, { expand = false, announcement = "Returned to y
 function loadEarlierKindWindow() {
   const pending = pendingKindJump;
   const next = Math.min(8 * 1024 * 1024, (transcriptCoverage.windowBytes || transcriptWindowBytes) * 2);
-  if (!pending || next <= pending.requestedWindow || !canLoadEarlierKind(pending.kind)) {
+  if (!pending || next <= pending.requestedWindow || !canLoadEarlierKind(pending.kind, pending.fleet)) {
     pendingKindJump = null;
     updateKindNavigation();
-    $("#sr-announcer").textContent = pending && canLoadEarlierKind(pending.kind) && next <= pending.requestedWindow
+    $("#sr-announcer").textContent = pending && canLoadEarlierKind(pending.kind, pending.fleet) && next <= pending.requestedWindow
       ? "Older history did not advance. Use Refresh or Load more records to retry."
       : "No earlier matching message in the bounded loaded history. Load older sessions separately if needed.";
     return;
@@ -306,7 +317,7 @@ function loadEarlierKindWindow() {
   pending.requestedWindow = transcriptWindowBytes = next;
   $("#transcript-load-more").disabled = true;
   $("#transcript-load-more").textContent = "Loading more records…";
-  $("#sr-announcer").textContent = "Loading earlier history to find this message kind…";
+  $("#sr-announcer").textContent = pending.fleet ? "Loading earlier history to find this fleet…" : "Loading earlier history to find this message kind…";
   updateKindNavigation();
   requestLanes();
 }
@@ -317,18 +328,18 @@ function resumeKindJump() {
   const messages = messagesForSelection();
   const anchor = pending.anchorKey ? messages.findIndex(message => messageRecordKey(message) === pending.anchorKey) : messages.length;
   if (anchor < 0) { pendingKindJump = null; updateKindNavigation(); $("#sr-announcer").textContent = "The reading anchor is no longer loaded. Choose a current message to navigate."; return; }
-  const index = kindJumpIndex(kindRecordIndices.get(pending.kind) || [], anchor, -1);
+  const index = kindJumpIndex(navigationIndices(pending.kind, pending.fleet), anchor, -1);
   if (index < 0) { loadEarlierKindWindow(); return; }
   pendingKindJump = null;
   navigateToRecord(index, { expand: true, announcement: pending.announcement });
 }
-function jumpToKind(kind, step, announcement = `${step < 0 ? "Previous" : "Next"} ${messageTypeLabel(kind)} message.`) {
+function jumpToKind(kind, step, announcement = `${step < 0 ? "Previous" : "Next"} ${messageTypeLabel(kind)} message.`, fleet = false) {
   updateKindNavigation();
-  if (pendingKindJump || !selectedMessageTypes.has(kind) || !MESSAGE_TYPES.some(type => type.id === kind) || ![-1, 1].includes(step)) return;
-  const index = kindJumpTargets.get(kind)?.[step < 0 ? "previous" : "next"] ?? -1;
+  if (pendingKindJump || !navigationEnabled(kind, fleet) || !(fleet ? lanes.some(lane => lane.id === kind) : MESSAGE_TYPES.some(type => type.id === kind)) || ![-1, 1].includes(step)) return;
+  const index = (fleet ? fleetJumpTargets : kindJumpTargets).get(kind)?.[step < 0 ? "previous" : "next"] ?? -1;
   if (index >= 0) { navigateToRecord(index, { expand: true, announcement }); return; }
-  if (step < 0 && canLoadEarlierKind(kind)) {
-    pendingKindJump = { kind, scope: kindJumpScope(), anchorKey: currentReadingRecord()?.dataset.recordKey || "", requestedWindow: 0, announcement };
+  if (step < 0 && canLoadEarlierKind(kind, fleet)) {
+    pendingKindJump = { kind, fleet, scope: kindJumpScope(), anchorKey: currentReadingRecord()?.dataset.recordKey || "", requestedWindow: 0, announcement };
     loadEarlierKindWindow();
   }
 }
@@ -562,7 +573,8 @@ function messagesForSelection() {
       const existing = merged.get(key);
       if (existing) {
         if (!existing.laneNames.includes(lane.name)) existing.laneNames.push(lane.name);
-      } else merged.set(key, { ...message, recordId, text: mixed?.text || message.text, laneNames: [lane.name] });
+        if (!existing.laneIds.includes(lane.id)) existing.laneIds.push(lane.id);
+      } else merged.set(key, { ...message, recordId, text: mixed?.text || message.text, laneNames: [lane.name], laneIds: [lane.id] });
     }
   }
   const query = transcriptQuery.trim().toLocaleLowerCase();
@@ -740,10 +752,15 @@ function renderFeed() {
 
   const messages = messagesForSelection();
   kindRecordIndices.clear();
+  fleetRecordIndices.clear();
   messages.forEach((message, index) => {
     const kind = messageTypeId(message);
     if (!kindRecordIndices.has(kind)) kindRecordIndices.set(kind, []);
     kindRecordIndices.get(kind).push(index);
+    for (const id of message.laneIds) {
+      if (!fleetRecordIndices.has(id)) fleetRecordIndices.set(id, []);
+      fleetRecordIndices.get(id).push(index);
+    }
   });
   const feedSelection = JSON.stringify([visibleLanes.map((lane) => lane.id), [...selectedMessageTypes], selectedSessionId, selectedTranscriptSession]);
   const selectionChanged = feedSelection !== transcriptSelection;
@@ -948,6 +965,7 @@ function renderLanesError(message) {
   lanes = [];
   lanesLoadError = message;
   kindRecordIndices.clear();
+  fleetRecordIndices.clear();
   pendingKindJump = null;
   lastViewedIndex = -1;
   $("#message-compact-toggle").disabled = true;
@@ -2233,6 +2251,11 @@ $("#lane-filter-rows").addEventListener("change", (event) => {
   if (event.target instanceof HTMLInputElement) applyLaneFilter(event.target);
 });
 $("#lane-filter-rows").addEventListener("click", (event) => {
+  const jump = event.target.closest("button[data-fleet-jump]");
+  if (jump) {
+    if (!jump.disabled) jumpToKind(jump.dataset.fleetJump, Number(jump.dataset.kindStep), `${jump.getAttribute("aria-label")}.`, true);
+    return;
+  }
   if (event.target.closest("input") || event.target.closest(".toggle-check")) {
     return;
   }
