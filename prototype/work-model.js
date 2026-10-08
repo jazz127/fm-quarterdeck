@@ -84,7 +84,7 @@ export function foldStatusLines(lines) {
 export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, reviewRun = false, pendingIssues = [] }) {
   if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
   if (state === "needs-decision") return "captain-action";
-  if (reviewRun && ["paused", "waiting", "working", "active", "in-progress"].includes(state)) return "review";
+  if (reviewRun) return "review";
   if (pendingIssues.length) return "waiting";
   if (["blocked", "paused", "waiting"].includes(state)) return "waiting";
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";

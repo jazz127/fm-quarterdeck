@@ -319,8 +319,7 @@ function parseStatusLine(line) {
 }
 
 function isReviewRun(meta) {
-  const runState = meta.validation_state ?? meta.review_state;
-  return ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"].includes(runState);
+  return ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"].includes(meta.validation_state);
 }
 
 function laneStatus(tasks) {

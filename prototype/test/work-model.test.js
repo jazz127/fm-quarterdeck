@@ -20,6 +20,9 @@ test("current-state classification separates an active review run and preserves 
   const input = { inFlight: true, endpointLive: true, state: "working" };
   assert.equal(classifyCurrent(input), "active");
   for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "paused", reviewRun: true }, "review"], [{ state: "working", reviewRun: true, pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
+  for (const state of ["working", "active", "in-progress", "paused", "blocked", "waiting", "done", "cleanup", "preserved", "retained", "unknown"]) assert.equal(classifyCurrent({ ...input, state, reviewRun: true }), "review", state);
+  assert.equal(classifyCurrent({ state: "unknown", reviewRun: true, retained: true, queued: true, inFlight: false, endpointLive: null }), "review");
+  assert.equal(classifyCurrent({ ...input, state: "needs-decision", reviewRun: true }), "captain-action");
 });
 
 test("review run signal classifies current task records and contributes hierarchy counts", async (context) => {
@@ -82,28 +85,45 @@ test("structured review run state governs promotion independently of step prose"
   const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
   const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
   const gateText = "validation pipeline waiting at review gate";
-  const metadataKeys = ["validation_state", "review_state"];
   const cases = [];
-  for (const key of metadataKeys) {
-    for (const value of ["failed", "passed", "complete", "completed", "finished", "cancelled", "canceled", "skipped", "stopped", "inactive", "idle", "false", "unknown", ""]) cases.push([`${key}=${value}\n`, gateText, 0]);
-    for (const value of ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"]) {
-      for (const text of ["tests passed; validation pipeline waiting at review gate", "review step complete; waiting at the next gate", "tests failed; validation pipeline running the fix round", "waiting for an external dependency"]) cases.push([`${key}=${value}\n`, text, 1]);
-    }
+  for (const value of ["failed", "passed", "complete", "completed", "finished", "cancelled", "canceled", "skipped", "stopped", "inactive", "idle", "false", "unknown", ""]) cases.push([`validation_state=${value}\n`, gateText, 0]);
+  for (const value of ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"]) {
+    for (const text of ["tests passed; validation pipeline waiting at review gate", "review step complete; waiting at the next gate", "tests failed; validation pipeline running the fix round", "waiting for an external dependency"]) cases.push([`validation_state=${value}\n`, text, 1]);
   }
-  cases.push(["validation_state=failed\nreview_state=running\n", gateText, 0]);
-  cases.push(["validation_state=running\nreview_state=passed\nreview_step_state=failed\nreview_required=false\n", gateText, 1]);
-  cases.push(["review_state=running\nvalidation_step_state=passed\n", gateText, 1]);
+  cases.push(["validation_state=running\nreview_step_state=failed\nreview_required=false\n", gateText, 1]);
+  cases.push(["review_state=running\n", gateText, 0]);
   cases.push(["validation_step_state=running\nreview_notes=running\n", gateText, 0]);
   cases.push(["", gateText, 0], ["deployment_state=running\n", gateText, 0]);
   for (const [metadata, text, reviewCount] of cases) {
     await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\n${metadata}`);
-    for (const [state, ordinaryStatus] of [["paused", "waiting"], ["waiting", "waiting"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"]]) {
+    for (const [state, ordinaryStatus] of [["paused", "waiting"], ["blocked", "waiting"], ["waiting", "waiting"], ["done", "newly-done"], ["working", "unknown"], ["active", "unknown"], ["in-progress", "unknown"], ["cleanup", "cleanup"], ["preserved", "cleanup"], ["retained", "cleanup"], ["unknown", "unknown"]]) {
       await writeFile(path.join(home, "state/review-task.status"), `paused [at=1]: ${gateText}\n${state} [at=2]: ${text}\n`);
       const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
       const message = `${metadata}${state}: ${text}`;
       assert.equal(workSplit.items[0].status, reviewCount ? "review" : ordinaryStatus, message);
+      assert.equal(workSplit.items[0].completionAttention, state === "done" ? "newly-done" : null, message);
       const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
-      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) assert.equal(counts.review, reviewCount, message);
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
+        assert.equal(counts.review, reviewCount, message);
+        assert.equal(counts["newly-done"], state === "done" ? 1 : 0, message);
+      }
+    }
+  }
+});
+
+test("review status retains separate new, acknowledged and unknown completion attention", async () => {
+  const state = taxonomy(), task = record({ reviewRun: true });
+  const initial = await projectWork([task], state);
+  const { taskFingerprint, completionFingerprint } = initial.items[0];
+  const acknowledged = { ...state, acknowledgements: { [completionFingerprint]: { taskFingerprint, acknowledgedAt: "2026-10-08T00:00:00.000Z" } } };
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  for (const [model, attention] of [[initial, "newly-done"], [await projectWork([task], acknowledged), "previously-done"], [await projectWork([task], state, { acknowledgementsAvailable: false }), "unknown"]]) {
+    assert.equal(model.items[0].status, "review");
+    assert.equal(model.items[0].completionAttention, attention);
+    const repository = model.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+    for (const counts of [model.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(model.items)]) {
+      assert.equal(counts.review, 1);
+      assert.equal(counts[attention], 1);
     }
   }
 });
