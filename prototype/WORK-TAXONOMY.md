@@ -13,6 +13,14 @@ This is Quarterdeck-owned classification and presentation. It does not change st
 
 ## Explicit three-level navigation
 
+Persistent second mates appear in their own Overview section. The selected home's
+`data/secondmates.md` registry and `kind=secondmate` state metadata identify them;
+all known identities are excluded from work projections, task sessions and worker
+counts, including malformed or undisplayed registrations. Local registered homes
+supply bounded read-only backlog counts. Remote homes are never read or probed.
+Process evidence uses the same incarnation checks as ordinary workers; a legacy
+terminal pane is explicitly weaker evidence, and unavailable evidence stays unknown.
+
 Overview and Work Split use repository → lane/workstream → theme/iteration, with native disclosures, rollups, status/repository filters and stable task-session links. Lane Chat keeps its existing flat transcript routes and checked message filters; current focus and task history carry the same task classification. A theme is scoped to a lane in exactly one repository.
 
 Repository resolution normalizes absolute paths and preserves operator-declared exact aliases before looking up bare names. Discovery maps direct directory children of `FM_HOME/projects` by name, including a registry spelling when it has one case-insensitive clone match. Bare-name lookup prefers exact spelling; otherwise case-insensitive matches must resolve to one path. `firstmate` maps to `FM_HOME` unless a direct clone named `firstmate` supplies that mapping; an exact saved alias still takes precedence. Registry membership alone does not prove a clone exists. Unmatched or ambiguous names, missing references and unaliased relative path fragments remain unknown; name splitting, substrings and prose never supply identity. Projection and classification writes use the same resolution.
