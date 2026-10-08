@@ -318,6 +318,16 @@ function parseStatusLine(line) {
   return match ? { state: match[1].toLowerCase(), text: match[2] } : { state: "update", text: line };
 }
 
+function isReviewRun(meta, latest) {
+  const activeMetadata = Object.entries(meta).some(([key, value]) =>
+    /(?:no[-_]mistakes|validation|review)/i.test(key)
+    && /\b(?:running|in progress|validating|reviewing|waiting at (?:a )?gate)\b/i.test(value)
+    && !/\b(?:not\s+(?:running|in progress|validating|reviewing)|failed|passed|complete|finished|cancelled|canceled|skipped)\b/i.test(value));
+  if (activeMetadata) return true;
+  if (!latest || !["paused", "waiting", "working", "active", "in-progress"].includes(latest.state)) return false;
+  return /(?:no[-_]mistakes[^\n]{0,100}(?:review|validat|pipeline|running|in progress|gate)|(?:review|validat)[^\n]{0,100}(?:no[-_]mistakes|pipeline|run(?:ning)?|in progress|gate)|pipeline[^\n]{0,100}(?:review|validat|running|in progress|gate))/i.test(latest.text);
+}
+
 function laneStatus(tasks) {
   const states = tasks.map((task) => task.classification?.status || "unknown");
   for (const status of ["captain-action", "active", "waiting", "cleanup", "unknown", "backlog", "newly-done"]) {
@@ -624,7 +634,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const completionIdentity = { source: lastCompletion ? "status" : "backlog", line: lastCompletion?.line, occurrence: lastCompletion?.index, doneDate: task?.doneDate || null };
     const inFlight = Boolean(task?.inFlight);
     const endpointLive = shouldProbeLiveness(state, inFlight) ? await probeLiveness(() => endpointIsLive(meta)) : null;
-    return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive,
+    return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive, reviewRun: isReviewRun(meta, latest),
       endpointEvidence: endpointLive === true ? hasProcessIdentity(meta) ? "live process incarnation" : "live terminal pane (weaker evidence; worker process unverified)" : endpointLive === false ? "endpoint not live" : "liveness unknown",
       executionFingerprint: executionFingerprint(meta, endpointLive),
       retained: meta.preserved === "true" || meta.cleanup_pending === "true", workGroup: task?.workGroup || null,

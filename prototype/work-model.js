@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fingerprint } from "./agent-state.js";
 const exec = promisify(execFile);
-export const WORK_STATUSES = ["active", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
+export const WORK_STATUSES = ["active", "review", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
 const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
 const PANE_EVIDENCE = "live terminal pane (weaker evidence; worker process unverified)";
@@ -81,10 +81,11 @@ export function foldStatusLines(lines) {
   return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1), pendingIssues: [...open.values()].map(({ key, state }) => ({ key, state })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [] }) {
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, reviewRun = false, pendingIssues = [] }) {
   if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
-  if (pendingIssues.length) return "waiting";
   if (state === "needs-decision") return "captain-action";
+  if (reviewRun && ["paused", "waiting", "working", "active", "in-progress"].includes(state)) return "review";
+  if (pendingIssues.length) return "waiting";
   if (["blocked", "paused", "waiting"].includes(state)) return "waiting";
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";
   if (state === "done") return "newly-done";

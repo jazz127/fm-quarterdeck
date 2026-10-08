@@ -1,7 +1,7 @@
 (() => {
-const statusLabels = { active: "Active", waiting: "Waiting / external delay", "captain-action": "Captain action", cleanup: "Retained / cleanup", unknown: "Unknown evidence", backlog: "Backlog", "newly-done": "Newly done", "previously-done": "Previously done" };
-const statusConciseLabels = { active: "Active", waiting: "Waiting", "captain-action": "Captain action", cleanup: "Cleanup", unknown: "Unknown", backlog: "Backlog", "newly-done": "Newly done", "previously-done": "Previously done" };
-const statusAbbreviations = { active: "A", waiting: "W", "captain-action": "C", cleanup: "R", unknown: "U", backlog: "B", "newly-done": "N", "previously-done": "P" };
+const statusLabels = { active: "Active", review: "In review", waiting: "Waiting / external delay", "captain-action": "Captain action", cleanup: "Retained / cleanup", unknown: "Unknown evidence", backlog: "Backlog", "newly-done": "Newly done", "previously-done": "Previously done" };
+const statusConciseLabels = { active: "Active", review: "In review", waiting: "Waiting", "captain-action": "Captain action", cleanup: "Cleanup", unknown: "Unknown", backlog: "Backlog", "newly-done": "Newly done", "previously-done": "Previously done" };
+const statusAbbreviations = { active: "A", review: "V", waiting: "W", "captain-action": "C", cleanup: "R", unknown: "U", backlog: "B", "newly-done": "N", "previously-done": "P" };
 function groupHierarchy(items) {
   const repos = new Map();
   for (const item of items) {
