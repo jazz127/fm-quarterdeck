@@ -94,7 +94,7 @@ test("chat feed keeps its minimum width after navigating to Fleet Chats at any d
       await browser.evaluate(`localStorage.clear(); Object.entries(${JSON.stringify(restored ?? {})}).forEach(([key, value]) => localStorage.setItem(key, value))`);
       await browser.command("Page.reload");
       // app.js relabels the fleet filter toggle once its handlers are wired.
-      await browser.until(`document.querySelector('#lanes')?.dataset.view === "overview" && document.querySelector('#lane-filter-toggle')?.getAttribute('aria-label') !== "Open conversation filters"`);
+      await browser.until(`document.querySelector('#lanes')?.dataset.view === "conversations" && document.querySelector('#lane-filter-toggle')?.getAttribute('aria-label') !== "Open conversation filters"`);
       for (const view of ["work", "conversations"]) {
         await browser.evaluate(`document.querySelector('.primary-tab[data-view="${view}"]').click()`);
         await browser.until(`document.querySelector('#lanes').dataset.view === "${view}"`);

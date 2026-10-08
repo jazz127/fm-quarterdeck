@@ -469,7 +469,7 @@ function setRoute(hash) {
   }
 }
 
-if (!window.location.hash) window.location.hash = "#overview";
+if (!window.location.hash) window.location.hash = "#lanes";
 
 function liveLanes() {
   return lanes.filter((lane) => !lane.closed);
@@ -492,7 +492,7 @@ function selectedLanes() { return laneSelection().effective; }
 // Called synchronously by Chat Firstmate's submit handler, never from a background
 // refresh. Only the actually rendered, viewport-visible record anchors are sent.
 window.fmChatViewContext = function (served) {
-  const route = window.location.hash || "#overview";
+  const route = window.location.hash || "#lanes";
   const inFeed = /^#lanes(?:\/|$)/.test(route) && $("#conversations-view").classList.contains("active");
   const feed = $("#messages");
   const bounds = feed.getBoundingClientRect();

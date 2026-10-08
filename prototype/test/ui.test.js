@@ -1130,8 +1130,11 @@ test("message metadata and safe Markdown/raw views preserve readable source text
   assert.match(app.node("#messages").innerHTML, /message kind below/);
 });
 
-test("stable hash routes restore views, lane deep links and task sessions", () => {
+test("Fleet Chats default and explicit hash routes restore views and sessions", () => {
+  assert.match(script, /if \(!window\.location\.hash\) window\.location\.hash = "#lanes";/);
   const app = ui();
+  assert.equal(app.run('parseRoute("#lanes").view'), "conversations");
+  assert.equal(app.run('parseRoute("#quota").view'), "quota");
   const alpha = lane("alpha lane", [record({ taskId: "alpha-task", text: "Scoped task record" })]);
   alpha.sessions = [{ id: "alpha-task", state: "working" }];
   seed(app, [alpha]);
