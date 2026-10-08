@@ -318,13 +318,9 @@ function parseStatusLine(line) {
   return match ? { state: match[1].toLowerCase(), text: match[2] } : { state: "update", text: line };
 }
 
-function isReviewRun(meta, latest) {
-  const reviewMetadata = Object.entries(meta).filter(([key]) => /(?:no[-_]mistakes|validation|review)/i.test(key)).map(([, value]) => value);
-  const inactive = /\b(?:not\s+(?:running|in progress|validating|reviewing|waiting at (?:a )?gate)|failed|passed|complete(?:d)?|finished|cancelled|canceled|skipped|stopped|inactive|idle|false)\b/i;
-  if (reviewMetadata.some((value) => inactive.test(value)) || (latest && inactive.test(latest.text))) return false;
-  if (reviewMetadata.some((value) => /\b(?:running|in progress|validating|reviewing|waiting at (?:a )?gate)\b/i.test(value))) return true;
-  if (!latest || !["paused", "waiting", "working", "active", "in-progress"].includes(latest.state)) return false;
-  return /(?:no[-_]mistakes[^\n]{0,100}(?:review|validat|pipeline|running|in progress|gate)|(?:review|validat)[^\n]{0,100}(?:no[-_]mistakes|pipeline|run(?:ning)?|in progress|gate)|pipeline[^\n]{0,100}(?:review|validat))/i.test(latest.text);
+function isReviewRun(meta) {
+  const runState = meta.validation_state ?? meta.review_state;
+  return ["running", "in progress", "validating", "reviewing", "waiting at gate", "waiting at a gate"].includes(runState);
 }
 
 function laneStatus(tasks) {
@@ -633,7 +629,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const completionIdentity = { source: lastCompletion ? "status" : "backlog", line: lastCompletion?.line, occurrence: lastCompletion?.index, doneDate: task?.doneDate || null };
     const inFlight = Boolean(task?.inFlight);
     const endpointLive = shouldProbeLiveness(state, inFlight) ? await probeLiveness(() => endpointIsLive(meta)) : null;
-    return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive, reviewRun: isReviewRun(meta, latest),
+    return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues, inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive, reviewRun: isReviewRun(meta),
       endpointEvidence: endpointLive === true ? hasProcessIdentity(meta) ? "live process incarnation" : "live terminal pane (weaker evidence; worker process unverified)" : endpointLive === false ? "endpoint not live" : "liveness unknown",
       executionFingerprint: executionFingerprint(meta, endpointLive),
       retained: meta.preserved === "true" || meta.cleanup_pending === "true", workGroup: task?.workGroup || null,
