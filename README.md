@@ -100,6 +100,15 @@ Use the ownership-safe foreground [Tailscale launcher](docs/tailscale-launch.md)
 
 The exact configured HTTPS Host **and** Origin must match on writes. Arbitrary tailnet names, changed scheme, userinfo, suffix deception, absent Origin and spoofed forwarding headers fail. Verify `/api/health` and full `/api/review.version` on the intended clean revision before separately authorized synthetic receipt acceptance. Use the launcher's scoped stop procedure; do not remove unrelated shared routes.
 
+## Install Quarterdeck
+
+Quarterdeck is installable and **online-only**: no service worker or offline data cache. Use the trusted private HTTPS origin (for example, private Tailscale Serve); stay connected to the required private network. Installing an icon grants no new access. `FM_REVIEW_ALLOWED_ORIGIN` must exactly match the HTTPS origin used to install for review/chat writes.
+
+- **Android Chrome:** browser menu → Install app (wording/availability varies by browser).
+- **iOS Safari:** Share → Add to Home Screen; enable Open as Web App where offered. Standalone storage is separate from Safari's, so existing Safari drafts do not carry over.
+
+HTML and static assets use `no-store`. On startup or return to the foreground, the existing review configuration check can show **“Quarterdeck updated — reload to continue”** with a Reload button when the server revision differs from the open document. Reload is always explicit, never automatic; the current route is retained. Review drafts/retries keep their existing tab-local storage semantics. A failed check means unavailable, not an update. Real Android/iOS standalone installation and status-bar layout checks remain pending.
+
 ## Review and primary chat
 
 On desktop, the info-circle beside the bottom-left annotation toggle opens click help and shows the current toggle state. With the toggle off, Alt + left click on content opens an annotation and a plain left click works normally; with it on, those gestures swap. Buttons and other controls still work with a plain click. Focus the info-circle and press Enter to open help; click outside or press Escape to dismiss it. While help is open, Escape closes it first, preserving an open annotation or armed location selection. With focus on the help button or composer, a second Escape closes the annotation or cancels selection while keeping the draft. Escape in Fleet Chats search follows that field's existing behavior once help is closed.

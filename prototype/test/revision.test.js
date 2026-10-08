@@ -21,15 +21,21 @@ test("a running server refuses dirty and clean moved HEAD; restart binds new bac
   };
   const base = await listen(initial);
   assert.equal((await (await fetch(base + "/api/review")).json()).version, initial);
+  assert.ok((await (await fetch(base)).text()).includes(`window.FM_BOOT_REVISION="${initial}"`));
   head = next; dirty = true;
   assert.equal((await fetch(base + "/api/health")).status, 503);
   dirty = false;
-  for (const url of ["/", "/app.js", "/api/health", "/api/review", "/api/previews"]) {
+  for (const url of ["/", "/app.js", "/manifest.webmanifest", "/icons/quarterdeck-192.png", "/icons/quarterdeck-512.png", "/icons/apple-touch-icon-180.png", "/api/health", "/api/review", "/api/previews"]) {
     assert.equal((await fetch(base + url)).status, 503, `old process refuses ${url}`);
   }
   const restarted = await listen(next);
   assert.equal((await (await fetch(restarted + "/api/review")).json()).version, next);
-  assert.match(await (await fetch(restarted)).text(), new RegExp(`"revision":"${next}"`));
+  const page = await fetch(restarted);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+  const html = await page.text();
+  assert.match(html, new RegExp(`"revision":"${next}"`));
+  assert.ok(html.includes(`window.FM_BOOT_REVISION="${next}"`));
+  assert.equal((await fetch(restarted + "/manifest.webmanifest")).status, 200);
 });
 
 test("fresh initial commit needs no parent; missing Git and dirty identity fail closed", async (t) => {

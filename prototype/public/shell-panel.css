@@ -23,7 +23,7 @@
 .review-note-header { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .review-note-header > strong { flex: 1; min-width: 0; font-size: 12px; line-height: 1.3; }
 .review-thread .review-note-header button { flex: 0 0 auto; margin: 0; padding: 4px 8px; font-size: 11px; min-height: 44px; }
-.review-pick-notice[hidden] { display: none; }
+.review-pick-notice[hidden], .app-update-notice[hidden] { display: none; }
 .review-section { flex: 0 0 auto; min-width: 0; margin: 8px 0 0; }
 .review-sent > summary, .review-section-head { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 600; cursor: pointer; }
 .review-sent > summary { padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; }
@@ -37,8 +37,9 @@
 .review-queued > .review-thread { flex: 1 1 auto; }
 .review-sent-list:empty::before { content: "No sent batches yet."; display: block; padding: 8px 4px; color: var(--muted); font-size: 13px; }
 #review-thread:empty::before { content: "Nothing queued."; display: block; padding: 8px 4px; color: var(--muted); font-size: 13px; }
-.review-pick-notice { position: fixed; z-index: 100; top: calc(64px + env(safe-area-inset-top, 0px)); left: 8px; right: 8px; max-width: 560px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border: 1px solid #387c6b; border-radius: 12px; background: #123a40; color: white; box-shadow: 0 4px 20px #0003; font-size: 13px; }
-.review-pick-notice button { min-height: 44px; }
+.app-notice-stack { position: fixed; z-index: 100; top: calc(64px + env(safe-area-inset-top, 0px)); left: 8px; right: 8px; max-width: 560px; margin: auto; display: grid; gap: 8px; pointer-events: none; }
+.review-pick-notice, .app-update-notice { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border: 1px solid #387c6b; border-radius: 12px; background: #123a40; color: white; box-shadow: 0 4px 20px #0003; font-size: 13px; pointer-events: auto; }
+.review-pick-notice button, .app-update-notice button { min-height: 44px; flex: 0 0 auto; }
 @media (max-width: 720px) {
   /* Phone keeps the original Message/Review tabs; the desktop Sent/Queued sections stay out of the sheet. */
   .review-panel .review-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }

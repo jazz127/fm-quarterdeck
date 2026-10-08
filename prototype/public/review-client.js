@@ -27,7 +27,22 @@ pickNotice.className = "review-pick-notice";
 pickNotice.hidden = true;
 pickNotice.setAttribute?.("role", "status");
 pickNotice.innerHTML = '<span>Tap a place to attach your message</span><button type="button">Cancel</button>';
-document.body.append(pickNotice);
+const updateNotice = document.createElement("div");
+updateNotice.className = "app-update-notice";
+updateNotice.hidden = true;
+updateNotice.setAttribute("role", "status");
+const updateMessage = document.createElement("span");
+updateMessage.textContent = "Quarterdeck updated — reload to continue";
+const reloadButton = document.createElement("button");
+reloadButton.type = "button";
+reloadButton.textContent = "Reload";
+reloadButton.addEventListener("click", () => location.reload());
+updateNotice.append(updateMessage, reloadButton);
+// Stack variable-height notices without covering the live location-picker controls.
+const noticeStack = document.createElement("div");
+noticeStack.className = "app-notice-stack";
+noticeStack.append(pickNotice, updateNotice);
+document.body.append(noticeStack);
 // Phone width keeps Message/Review tabs; desktop shows Sent over Queued with no tabs.
 function reviewHistoryTab() { return Boolean(phoneReview?.matches) && activeReviewTab === "review"; }
 function setReviewTab(tab) {
@@ -524,6 +539,8 @@ async function loadConfig() {
     if (!response.ok) throw new Error("Review configuration unavailable");
     const next = await response.json();
     useCurrentVersion(next);
+    updateNotice.hidden = !(next.ready && typeof next.version === "string"
+      && window.FM_BOOT_REVISION && next.version !== window.FM_BOOT_REVISION);
     showAwaitingReview(next.awaitingReview);
   } catch { config = { ready: false, version: "unknown", sessionId: "", delivery: "local" }; showAwaitingReview(null); }
   if (!config.ready) el("review-state").textContent = UNAVAILABLE;
@@ -726,7 +743,7 @@ document.addEventListener("pointermove", (event) => {
 }, true);
 document.addEventListener("scroll", () => { if (pickingRegion) scrollUntil = Date.now() + 450; }, true);
 document.addEventListener("click", (event) => {
-  if (event.button !== 0 || event.detail === 0 || event.target.closest("#review-panel, #review-panel-toggle, #review-pick")) return;
+  if (event.button !== 0 || event.detail === 0 || event.target.closest("#review-panel, #review-panel-toggle, #review-pick, .app-update-notice")) return;
   if (phoneReview?.matches && !el("review-panel").hidden && activeReviewTab === "annotation") {
     if (!pickingRegion || touchStart?.moved || Date.now() < scrollUntil || !regionFor(event.target)) {
       event.preventDefault(); event.stopImmediatePropagation(); touchStart = null; return;

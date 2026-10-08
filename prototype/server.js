@@ -38,6 +38,10 @@ const TERMINAL_STATES = new Set(["done", "failed", "blocked", "paused"]);
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
+  ["/manifest.webmanifest", ["manifest.webmanifest", "application/manifest+json; charset=utf-8"]],
+  ["/icons/quarterdeck-192.png", ["icons/quarterdeck-192.png", "image/png"]],
+  ["/icons/quarterdeck-512.png", ["icons/quarterdeck-512.png", "image/png"]],
+  ["/icons/apple-touch-icon-180.png", ["icons/apple-touch-icon-180.png", "image/png"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/sidebar-version.js", ["sidebar-version.js", "text/javascript; charset=utf-8"]],
   ["/work-hierarchy.js", ["work-hierarchy.js", "text/javascript; charset=utf-8"]],
@@ -1261,6 +1265,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       const [filename, contentType] = asset;
       let body = await readFile(path.join(publicDir, filename));
+      if (filename === "index.html") {
+        body = Buffer.from(body.toString("utf8").replace("</head>", `<script>window.FM_BOOT_REVISION=${JSON.stringify(commit)}</script></head>`));
+      }
       if (filename === "index.html" && registered.length) {
         body = Buffer.from(body.toString("utf8").replace("</head>", `<script>window.FM_HOST_ID=${JSON.stringify(hostId)};window.FM_PREVIEW_ID=${JSON.stringify(hostId)};window.FM_SERVED_COMMIT=${JSON.stringify(selected.commit)}</script><script defer src="/preview-selector.js"></script></head>`));
       } else if (filename === "index.html" && deploymentTier === "uat") {
@@ -1274,7 +1281,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         body = Buffer.from(body.toString("utf8").replace("</body>",
           `<script src="/dev-reload.js" data-version="${version}"></script></body>`));
       }
-      response.writeHead(200, { "content-type": contentType, ...(dev ? { "cache-control": "no-store" } : {}) });
+      response.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
       response.end(body);
     } catch (error) {
       await sendJson(request, response, error instanceof PublicDataError ? 503 : 500, {
