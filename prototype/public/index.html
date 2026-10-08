@@ -160,6 +160,11 @@
           <header class="feature-head compact-head"><div><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge"></span></header>
           <div id="summary" class="summary-grid"></div>
           <p id="overview-state" class="notice hidden" role="status"></p>
+          <section id="secondmates-section" aria-labelledby="secondmates-heading" hidden>
+            <h2 id="secondmates-heading" class="section-heading">Second mates <span id="secondmates-count"></span></h2>
+            <p id="secondmates-state" class="notice" role="status" hidden></p>
+            <div id="secondmates" class="project-grid"></div>
+          </section>
           <div class="section-tools"><h2 class="section-heading">Repositories → fleets → voyages</h2><div class="scan-controls"><div id="overview-status-buttons" class="status-button-filter" role="group" aria-label="Filter work by status"></div><label class="sr-only-select">Work status <select id="overview-status" aria-label="Filter work by status"><option value="all">All statuses</option></select></label><label>Sort <select id="overview-sort"><option value="name">Name</option><option value="activity">Active crew</option></select></label><button type="button" id="overview-expand">Expand all</button><button type="button" id="overview-collapse">Collapse all</button></div></div>
           <div id="projects" class="project-grid"></div>
         </section>

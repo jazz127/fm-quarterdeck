@@ -202,6 +202,25 @@ test("review layout shares semantics but keeps deliberate pointer and touch affo
 });
 
 // Exercise the actual renderer and selection functions without a browser or live home.
+test("second mates render separately with escaped evidence, backlog counts and recovery", () => {
+  const app = ui();
+  app.run(`renderSecondmates({items: [{id: 'navigator', summary: '<script>unsafe</script>', scope: 'Review', projects: 'product', location: 'local', state: 'live', stateEvidence: 'Process incarnation matches', backlog: {openWork: 3, captainCalls: 1}}, {id: 'remote', summary: 'Remote planning', scope: 'Planning', location: 'remote', state: 'not-read', stateEvidence: 'Remote state is not read', backlog: null}]})`);
+  assert.equal(app.node("#secondmates-section").hidden, false);
+  const rendered = app.node("#secondmates").innerHTML;
+  assert.match(rendered, /&lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.match(rendered, /3 open · 1 captain calls/);
+  assert.match(rendered, /Remote state is not read/);
+  assert.doesNotMatch(rendered, /data-open-session|data-work-action/);
+  assert.equal(app.node("#projects").innerHTML, "");
+  app.run("renderSecondmates({items: [], warning: 'Registry unavailable'})");
+  assert.equal(app.node("#secondmates-section").hidden, false);
+  assert.equal(app.node("#secondmates-state").textContent, "Registry unavailable");
+  app.run("renderSecondmates(undefined)");
+  assert.equal(app.node("#secondmates-section").hidden, true);
+  assert.equal(app.node("#secondmates-state").hidden, true);
+  assert.equal(app.node("#secondmates").innerHTML, "");
+});
+
 // This is not a layout engine; responsive/keyboard checks remain a review obligation.
 function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage = new Map() } = {}) {
   const nodes = new Map();

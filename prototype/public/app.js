@@ -1188,6 +1188,26 @@ function renderWorkSplit(split = workSplitData) {
     : '<p class="empty panel">No large projects match these filters.</p>';
 }
 
+function renderSecondmates(data) {
+  const items = data?.items || [];
+  $("#secondmates-section").hidden = !items.length && !data?.warning;
+  $("#secondmates-count").textContent = String(items.length);
+  $("#secondmates-state").hidden = !data?.warning;
+  $("#secondmates-state").textContent = data?.warning || "";
+  const states = { live: "Working", idle: "Idle", unreachable: "Unreachable", unknown: "Unknown", "not-read": "Not read" };
+  $("#secondmates").innerHTML = items.map((mate) => `
+    <article class="project-card secondmate-card" data-review-id="secondmate:${reviewId(mate.id)}">
+      <div class="project-head"><strong>${escapeHtml(mate.id)}</strong><span class="state-chip">${escapeHtml(states[mate.state] || "Unknown")}</span></div>
+      <p>${escapeHtml(mate.summary)}</p>
+      <dl><dt>Scope</dt><dd>${escapeHtml(mate.scope)}</dd>
+        <dt>Projects</dt><dd>${escapeHtml(mate.projects || "Not registered")}</dd>
+        <dt>Location</dt><dd>${escapeHtml(mate.location)}</dd>
+        <dt>Evidence</dt><dd>${escapeHtml(mate.stateEvidence)}</dd>
+        <dt>Backlog</dt><dd>${mate.backlog ? `${escapeHtml(mate.backlog.openWork)} open · ${escapeHtml(mate.backlog.captainCalls)} captain calls` : "Not read"}</dd></dl>
+      ${mate.warning ? `<p class="notice">${escapeHtml(mate.warning)}</p>` : ""}
+    </article>`).join("");
+}
+
 function renderProjects(projects = overviewProjects) {
   overviewProjects = projects;
   if (workSplitData?.items) {
@@ -1847,6 +1867,7 @@ async function refreshEndpoint(key) {
     if (key === "lanes" && laneQuery !== lanesQuery()) { pendingLanesRefresh = true; return; }
     if (key === "dashboard") {
       renderSummary(data.fleet.summary);
+      renderSecondmates(data.fleet.secondmates);
       renderWorkSplit(data.fleet.workSplit);
       renderProjects(data.fleet.projects);
       renderExpenses(data.expenses);
@@ -1873,6 +1894,7 @@ async function refreshEndpoint(key) {
       if (!item.lastSuccess) {
         $("#projects").innerHTML = `<div class="notice">Could not load fleet: ${escapeHtml(error.message)}</div>`;
         renderWorkSplit(null);
+        renderSecondmates({ warning: "Second mates unavailable until the fleet can be read." });
       }
     } else if (key === "quota" && !item.lastSuccess) renderQuota({ providers: [], readAt: null, stale: false, error: "Quota unavailable" });
     else if (key === "lanes" && !item.lastSuccess) renderLanesError(error.message);
