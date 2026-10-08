@@ -16,13 +16,10 @@ test("explicit taxonomy validation refuses dangling assignments, duplicates and 
   for (const mutate of [(s) => s.repositories.push(s.repositories[0]), (s) => s.repositories[0].lanes[0].name = "/private/path", (s) => s.repositories[0].lanes[0].themes[0].kind = "epic", (s) => s.assignments[fingerprint("task")] = { repositoryId: "repo", laneId: "missing", themeId: "r1" }, (s) => s.secret = "credential"]) { const state = taxonomy(); mutate(state); assert.throws(() => validateAgentState(state)); }
 });
 
-test("current-state classification separates an active review run and preserves captain action", () => {
+test("ordinary current-state classification preserves existing status precedence", () => {
   const input = { inFlight: true, endpointLive: true, state: "working" };
   assert.equal(classifyCurrent(input), "active");
-  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "paused", reviewRun: true }, "review"], [{ state: "working", reviewRun: true, pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
-  for (const state of ["working", "active", "in-progress", "paused", "blocked", "waiting", "done", "cleanup", "preserved", "retained", "unknown"]) assert.equal(classifyCurrent({ ...input, state, reviewRun: true }), "review", state);
-  assert.equal(classifyCurrent({ state: "unknown", reviewRun: true, retained: true, queued: true, inFlight: false, endpointLive: null }), "review");
-  assert.equal(classifyCurrent({ ...input, state: "needs-decision", reviewRun: true }), "captain-action");
+  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "needs-decision", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", retained: true }, "cleanup"], [{ state: "working", pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
 });
 
 test("review run signal classifies current task records and contributes hierarchy counts", async (context) => {
@@ -106,6 +103,38 @@ test("structured review run state governs promotion independently of step prose"
       for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
         assert.equal(counts.review, reviewCount, message);
         assert.equal(counts["newly-done"], state === "done" ? 1 : 0, message);
+      }
+    }
+  }
+});
+
+test("review promotion preserves ordinary pending-wait precedence and captain decisions", async (context) => {
+  const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
+  const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
+  const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
+  for (const [lines, ordinary, reviewing, completion] of [
+    [["paused [key=gate]: waiting", "needs-decision: choose a route"], "waiting", "waiting", null],
+    [["paused [key=gate]: waiting", "needs-decision [key=choice]: choose a route"], "captain-action", "captain-action", null],
+    [["needs-decision: choose a route"], "captain-action", "captain-action", null],
+    [["needs-decision [key=choice]: choose a route", "done: candidate ready"], "captain-action", "captain-action", "newly-done"],
+    [["paused [key=gate]: waiting", "blocked: waiting at review gate"], "waiting", "review", null],
+    [["paused [key=gate]: waiting", "done: candidate ready"], "waiting", "review", "newly-done"],
+    [["done: candidate ready"], "newly-done", "review", "newly-done"],
+  ]) {
+    await writeFile(path.join(home, "state/review-task.status"), `${lines.join("\n")}\n`);
+    for (const [runState, expected] of [["", ordinary], ["running", reviewing], ["passed", ordinary]]) {
+      await writeFile(path.join(home, "state/review-task.meta"), `project=/synthetic/product\nvalidation_state=${runState}\n`);
+      const { workSplit } = await loadFirstmateHome(home, { includeHistory: false, agentStateOwner: owner, durability: async () => [] });
+      const message = `${runState}: ${lines.join("; ")}`;
+      assert.equal(workSplit.items[0].status, expected, message);
+      assert.equal(workSplit.items[0].completionAttention, completion, message);
+      const repository = workSplit.repositories[0], lane = repository.lanes[0], theme = lane.themes[0];
+      for (const counts of [workSplit.counts, repository.counts, lane.counts, theme.counts, vmContext.window.workHierarchy.statusCounts(workSplit.items)]) {
+        assert.equal(counts[expected], 1, message);
+        assert.equal(counts.review, expected === "review" ? 1 : 0, message);
+        assert.equal(counts["newly-done"], completion === "newly-done" ? 1 : 0, message);
       }
     }
   }

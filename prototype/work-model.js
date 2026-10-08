@@ -81,11 +81,10 @@ export function foldStatusLines(lines) {
   return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1), pendingIssues: [...open.values()].map(({ key, state }) => ({ key, state })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, reviewRun = false, pendingIssues = [] }) {
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [] }) {
   if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
-  if (state === "needs-decision") return "captain-action";
-  if (reviewRun) return "review";
   if (pendingIssues.length) return "waiting";
+  if (state === "needs-decision") return "captain-action";
   if (["blocked", "paused", "waiting"].includes(state)) return "waiting";
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";
   if (state === "done") return "newly-done";
@@ -276,7 +275,6 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     // Explicit legacy metadata remains useful, but does not fabricate a workstream.
     const theme = assignedTheme || (record.workGroup ? { id: `legacy-${fingerprint(record.workGroup).slice(0, 24)}`, name: record.workGroup.name, kind: record.workGroup.kind, legacy: true } : { id: "unclassified", name: "Voyage unclassified", kind: "theme" });
     let status = classifyCurrent(record);
-    if (status === "active") activeExecutions.add(record.executionFingerprint || taskFingerprint);
     const completionSourceFingerprint = record.state === "done" ? fingerprint("completion-source.v1", taskFingerprint, record.completionIdentity) : null;
     const bound = completionSourceFingerprint && state.completionRecords?.[completionSourceFingerprint];
     const commit = bound?.taskFingerprint === taskFingerprint ? bound.commit : record.commit || null;
@@ -298,6 +296,8 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     }
     const completionAttention = completionFingerprint ? evidence.length ? "previously-done" : acknowledgementsAvailable ? "newly-done" : "unknown" : null;
     if (status === "newly-done") status = completionAttention;
+    if (record.reviewRun && status !== "captain-action" && record.state !== "needs-decision") status = "review";
+    if (status === "active") activeExecutions.add(record.executionFingerprint || taskFingerprint);
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
       lane, theme, status, sourceState: record.state,
