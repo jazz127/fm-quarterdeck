@@ -449,6 +449,94 @@ test("queued local batch enables both Send actions while an empty queue stays di
   assert.equal(element("review-end").disabled, true);
 });
 
+test("queued Captain's Call answers count in the review queue and Send batch sends them through their own route first", async () => {
+  const elements = new Map();
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, {
+      id, value: "", textContent: "", hidden: id === "review-annotation", disabled: false, style: {}, scrollHeight: 40, listeners: {},
+      addEventListener(type, fn) { this.listeners[type] = fn; },
+      setAttribute() {}, focus() {}, replaceChildren() {}, append() {},
+    });
+    return elements.get(id);
+  }
+  let calls = [
+    { key: "decision:alpha-call", label: "Decision alpha-call", text: "Tuesday", phase: "confirm" },
+    { key: "merge:beta-merge", label: "Merge beta-merge", text: "merge", phase: "confirm" },
+  ];
+  const sends = [];
+  const posts = [];
+  const context = {
+    document: { body: { append() {} }, getElementById: element, querySelector: () => ({ textContent: "" }), addEventListener() {}, createElement: () => ({ textContent: "", style: {}, append() {}, setAttribute() {}, addEventListener() {} }) },
+    window: { addEventListener() {}, quarterdeckCallQueue: { list: () => calls, send: async () => { sends.push(calls.length); calls = []; return true; }, remove() {} } },
+    location: { hash: "#overview" }, crypto: { randomUUID: () => "batch-1" },
+    fetch: async (url, options) => { if (options?.method === "POST") posts.push(url); return options?.method === "POST"
+      ? { ok: true, json: async () => ({ receiptId: "local:batch-1", delivery: "local" }) }
+      : { ok: true, json: async () => ({ ready: true, delivery: "local", sessionId: "", version: reviewVersion }) }; },
+  };
+  vm.createContext(context);
+  vm.runInContext(reviewClientScript, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof context.window.quarterdeckReviewQueue.refresh, "function");
+  assert.equal(element("review-count").textContent, "· 2 queued", "every queued answer counts with the notes");
+  assert.equal(element("review-send").disabled, false, "queued answers alone enable Send batch");
+  element("review-send").listeners.click();
+  for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sends, [2], "Send batch sends every queued card answer");
+  assert.deepEqual(posts, [], "answers never travel as review annotations");
+  assert.match(element("review-state").textContent, /^Sent 2 Captain's Call answers;/);
+  assert.equal(element("review-count").textContent, "");
+  assert.equal(element("review-send").disabled, true);
+  assert.equal(typeof context.window.quarterdeckReviewQueue.sendCallAnswers, "function");
+  assert.equal(context.window.quarterdeckReviewQueue.sending(), false);
+});
+
+test("Send queued and Send batch share one sender, and a second call does not send again", async () => {
+  const elements = new Map();
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, {
+      id, value: "", textContent: "", hidden: id === "review-annotation", disabled: false, style: {}, scrollHeight: 40, listeners: {},
+      addEventListener(type, fn) { this.listeners[type] = fn; },
+      setAttribute() {}, focus() {}, replaceChildren() {}, append() {},
+    });
+    return elements.get(id);
+  }
+  let calls = [{ key: "decision:alpha-call", label: "Decision alpha-call", text: "Tuesday", phase: "confirm" }];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const sends = [];
+  const refreshes = [];
+  const context = {
+    document: { body: { append() {} }, getElementById: element, querySelector: () => ({ textContent: "" }), addEventListener() {}, createElement: () => ({ textContent: "", style: {}, append() {}, setAttribute() {}, addEventListener() {} }) },
+    window: { addEventListener() {}, quarterdeckCallQueue: {
+      list: () => calls,
+      send: async () => { sends.push(calls.length); await gate; calls = []; return true; },
+      remove() {},
+      refresh: () => refreshes.push("refresh"),
+    } },
+    location: { hash: "#overview" }, crypto: { randomUUID: () => "batch-1" },
+    fetch: async (_url, options) => options?.method === "POST"
+      ? { ok: true, json: async () => ({ receiptId: "local:batch-1", delivery: "local" }) }
+      : { ok: true, json: async () => ({ ready: true, delivery: "local", sessionId: "", version: reviewVersion }) },
+  };
+  vm.createContext(context);
+  vm.runInContext(reviewClientScript, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  const sender = context.window.quarterdeckReviewQueue.sendCallAnswers;
+  assert.equal(typeof sender, "function");
+  const first = sender();
+  const second = sender();
+  element("review-send").listeners.click();
+  assert.equal(context.window.quarterdeckReviewQueue.sending(), true);
+  assert.equal(await second, false, "an in-flight send does not start another");
+  release();
+  assert.equal(await first, true);
+  for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sends, [1], "Send batch and Send queued share one in-flight sender");
+  assert.deepEqual(refreshes, ["refresh"]);
+  assert.equal(context.window.quarterdeckReviewQueue.sending(), false);
+  assert.match(element("review-state").textContent, /^Sent 1 Captain's Call answer;/);
+});
+
 test("native review stays available with panel hidden and click precedence toggle", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
   const script = reviewClientScript;
@@ -768,10 +856,13 @@ test("review conversation notes: long notes are collapsed by default and expanda
   assert.equal(toggle.textContent, "Expand");
 
   vm.runInContext('inFlight = { id: "batch-1", payload: { entries: queue.splice(0) } }; update()', context);
-  assert.match(thread.children[0].children[0].textContent, /^Sending batch/);
+  assert.equal(thread.children[0].children[0].children[0].textContent, "Sending batch · 2 notes");
+  assert.equal(thread.children[0].children[0].children[1].textContent, "Sending · 2 notes");
+  assert.equal(thread.children[0].children[0].title, "Sending batch · 2 notes");
   assert.equal(thread.children[0].children.filter((child) => child.tagName === "ARTICLE").length, 2);
   vm.runInContext('retryBatches = [inFlight]; inFlight = null; update()', context);
-  assert.match(thread.children[0].children[0].textContent, /^Retry needed batch/);
+  assert.equal(thread.children[0].children[0].children[0].textContent, "Retry needed batch · 2 notes");
+  assert.equal(thread.children[0].children[0].children[1].textContent, "Retry · 2 notes");
   vm.runInContext('sent.push({ id: "batch-1", receiptId: "receipt-1", entries: retryBatches.pop().payload.entries }); update()', context);
   assert.equal(sentList.children.length, 1);
   assert.equal(thread.children.length, 0, "sent batches leave the Queued section");
@@ -780,8 +871,21 @@ test("review conversation notes: long notes are collapsed by default and expanda
   const batch = sentList.children[0];
   assert.equal(batch.className, "review-batch");
   assert.equal(batch.open, false);
-  assert.match(batch.children[0].textContent, /Accepted durably · Firstmate intake not yet confirmed · 2 notes · receipt receipt-1/);
-  assert.doesNotMatch(batch.children[0].textContent, /Received by supervisor/);
+  const fullHeader = "Accepted durably · Firstmate intake not yet confirmed · 2 notes · receipt receipt-1";
+  assert.equal(batch.children[0].children[0].className, "review-batch-full");
+  assert.equal(batch.children[0].children[0].textContent, fullHeader);
+  assert.equal(batch.children[0].title, fullHeader);
+  assert.equal(batch.children[0].children[1].className, "review-batch-label");
+  assert.equal(batch.children[0].children[1].textContent, "Accepted · 2 notes");
+  assert.equal(batch.children[0].children[1]["aria-hidden"], "true");
+  const pendingMeta = batch.children[0].children[2];
+  assert.equal(pendingMeta.className, "review-batch-meta");
+  assert.equal(pendingMeta.children.length, 1, "a sent batch without a time still shows its id");
+  assert.equal(pendingMeta.children[0].className, "review-batch-id");
+  assert.equal(pendingMeta.children[0].textContent, "batch-1");
+  assert.equal(pendingMeta.children[0].title, "batch-1");
+  assert.equal(pendingMeta.children[0]["aria-label"], "Copy batch id batch-1");
+  assert.doesNotMatch(fullHeader, /Received by supervisor/);
   assert.equal(batch.children.filter((child) => child.tagName === "ARTICLE").length, 2);
   batch.open = true;
   batch.listeners.get("toggle")();
@@ -798,4 +902,42 @@ test("review conversation notes: long notes are collapsed by default and expanda
   sentList.children[0].listeners.get("toggle")();
   vm.runInContext('update()', context);
   assert.equal(sentList.children[0].open, false, "Entire batch collapses together");
+
+  context.copied = "";
+  context.navigator = { clipboard: { writeText(text) { context.copied = text; return Promise.resolve(); } } };
+  vm.runInContext('sent[0].sentAt = "2026-03-04T15:07:00.000Z"; update()', context);
+  const sentSummary = sentList.children[0].children[0];
+  assert.equal(sentSummary.children[0].className, "review-batch-full");
+  assert.equal(sentSummary.children[1].className, "review-batch-label");
+  const meta = sentSummary.children[2];
+  assert.equal(meta.className, "review-batch-meta");
+  const time = meta.children.find((child) => child.tagName === "TIME");
+  const code = meta.children.find((child) => child.className === "review-batch-id");
+  assert.equal(time.datetime, "2026-03-04T15:07:00.000Z");
+  assert.match(time.title, /ago$/);
+  assert.ok(time.textContent.length > 0 && time.textContent.length < 24);
+  assert.equal(code.textContent, "batch-1");
+  const copyEvent = { preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; } };
+  code.listeners.get("click")(copyEvent);
+  assert.equal(context.copied, "batch-1");
+  assert.equal(copyEvent.stopped, true);
+  assert.equal(copyEvent.defaultPrevented, true);
+
+  vm.runInContext(`window.quarterdeckCallQueue = { list: () => [{ key: "decision:alpha-call", label: "Alpha", text: "Tuesday", phase: "confirm" }] }; update()`, context);
+  const callSummary = getElement("review-phone-thread").children.map((child) => child.children[0]).find((summary) => summary.children[1].textContent.startsWith("Call answers"));
+  assert.equal(callSummary.children[1].textContent, "Call answers · 1");
+  assert.equal(callSummary.children.length, 2, "the call-answer group is not given a fake batch id");
+
+  vm.runInContext(`
+    window.quarterdeckCallQueue = { list: () => [] };
+    batchId = "abcdef12-3456-7890-abcd-ef1234567890";
+    queue = [{ kind: "annotation", text: "Short note", route: "#overview", version: "${reviewVersion}", region: { id: "btn-1", label: "Button 1" } }];
+    update();
+  `, context);
+  const queuedSummary = getElement("review-phone-thread").children.map((child) => child.children[0]).find((summary) => summary.children[1].textContent === "Queued · 1 note");
+  assert.equal(queuedSummary.children[1].textContent, "Queued · 1 note");
+  const queuedId = queuedSummary.children[2].children.find((child) => child.className === "review-batch-id");
+  assert.equal(queuedId.textContent, "abcdef1");
+  assert.equal(queuedId.title, "abcdef12-3456-7890-abcd-ef1234567890");
+  assert.equal(queuedSummary.children[2].children.some((child) => child.tagName === "TIME"), false, "queued batches have no sent time");
 });

@@ -364,12 +364,9 @@ let workSplitData = null;
 let workGroupBy = "repository";
 let workRepository = "all";
 let workPhase = "all";
-let overviewProjects = [];
-let overviewSort = "name";
-let overviewStatus = "all";
+
 const ACTIVE_AGENT_STATES = new Set(["active", "working", "in-progress"]);
 const agentStatusGroup = (state) => ACTIVE_AGENT_STATES.has(state) ? "active" : state;
-const overviewOpen = new Map();
 let transcriptCoverage = { sessions: [], warnings: [], note: "" };
 let selectedTranscriptSession = "";
 let transcriptPage = null;
@@ -1077,7 +1074,7 @@ function workRow(item, scope) {
     </details></li>`;
 }
 function hierarchyHtml(items, scope) {
-  const ordered = groupHierarchy(items).sort((a, b) => overviewSort === "activity" ? statusCounts(b.items).active - statusCounts(a.items).active || a.name.localeCompare(b.name) : a.name.localeCompare(b.name));
+  const ordered = groupHierarchy(items).sort((a, b) => a.name.localeCompare(b.name));
   const disclosure = (key, title, rows, body, level) => `<details class="taxonomy-node taxonomy-${level} panel" data-tree-key="${key}" data-review-id="taxonomy:${reviewId(key)}" ${hierarchyOpen.get(key) === false ? "" : "open"}><summary><strong>${escapeHtml(title)}</strong><span class="taxonomy-counts">${countBadges(rows)}</span></summary>${body}</details>`;
   return ordered.map((repo) => {
     const lanes = [...repo.lanes.values()];
@@ -1186,74 +1183,6 @@ function renderWorkSplit(split = workSplitData) {
       <article class="work-card"><h3>${escapeHtml(project.name)}</h3><small>${escapeHtml(project.id)}</small>
         <p><b>Stage:</b> ${escapeHtml(project.stage)}</p><p><b>Waiting on:</b> ${escapeHtml(project.waitingOn)}</p></article>`).join("")}</div></section>`).join("")
     : '<p class="empty panel">No large projects match these filters.</p>';
-}
-
-function renderProjects(projects = overviewProjects) {
-  overviewProjects = projects;
-  if (workSplitData?.items) {
-    const choices = Object.keys(statusLabels);
-    $("#overview-status").innerHTML = '<option value="all">All statuses</option>' + choices.map((status) => `<option value="${status}">${escapeHtml(statusLabels[status])}</option>`).join("");
-    $("#overview-status").value = overviewStatus;
-    const counts = statusCounts(workSplitData.items);
-    renderStatusFilterButtons($("#overview-status-buttons"), [
-      { value: "all", label: "All", fullLabel: "All statuses", count: workSplitData.items.length },
-      ...choices.map((status) => ({
-        value: status,
-        label: (statusConciseLabels && statusConciseLabels[status]) || statusLabels[status],
-        fullLabel: statusLabels[status],
-        count: counts[status]
-      }))
-    ], overviewStatus);
-    const rows = workSplitData.items.filter((item) => overviewStatus === "all" || item.status === overviewStatus || item.completionAttention === overviewStatus);
-    $("#projects").innerHTML = hierarchyHtml(rows, "overview");
-    return;
-  }
-  const statuses = new Set(projects.flatMap((project) => (project.items || []).map((item) => agentStatusGroup(item.state))));
-  const choices = [...statuses].sort((a, b) => a === "active" ? -1 : b === "active" ? 1 : a.localeCompare(b));
-  // Keep an in-use filter visible across refreshes even if its last agent disappears.
-  if (overviewStatus !== "all" && !statuses.has(overviewStatus)) choices.push(overviewStatus);
-  $("#overview-status").innerHTML = '<option value="all">All statuses</option>' + choices.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(statusChoiceLabel(status))}</option>`).join("");
-  $("#overview-status").value = overviewStatus;
-  renderStatusFilterButtons($("#overview-status-buttons"), [
-    { value: "all", label: "All", fullLabel: "All statuses" },
-    ...choices.map((status) => ({
-      value: status,
-      label: (statusConciseLabels && statusConciseLabels[status]) || statusChoiceLabel(status),
-      fullLabel: statusChoiceLabel(status)
-    }))
-  ], overviewStatus);
-
-  const visible = projects.map((project) => ({
-    ...project,
-    items: overviewStatus === "all" ? project.items || [] : (project.items || []).filter((item) => agentStatusGroup(item.state) === overviewStatus),
-  })).filter((project) => overviewStatus === "all" || project.items.length);
-  const ordered = visible.sort((a, b) => overviewSort === "activity"
-    ? (overviewStatus === "all" ? b.agents - a.agents : b.items.length - a.items.length) || a.name.localeCompare(b.name)
-    : a.name.localeCompare(b.name));
-  if (!projects.length || !ordered.length) {
-    $("#projects").innerHTML = `<div class="empty panel">${projects.length ? "No agents match this status." : "No project fleets are reporting yet."}</div>`;
-    return;
-  }
-  $("#projects").innerHTML = ordered.map((project) => `
-    <article data-review-id="project:${reviewId(project.id)}" class="project-card panel">
-      <div class="project-head">
-        <div><span class="project-dot ${escapeHtml(project.status)}"></span><strong>${escapeHtml(project.name)}</strong></div>
-        <span class="state-chip">${escapeHtml(stateLabel(project.status))}</span>
-      </div>
-      <p class="lane-intent">${escapeHtml(project.intent || project.mission || "Fleet intent not recorded.")}</p>
-      <div class="progress-label"><span>${overviewStatus === "all" ? `${escapeHtml(project.agents)} active` : `${project.items.length} matching agent${project.items.length === 1 ? "" : "s"}`}</span><span>${escapeHtml(project.progress)}%</span></div>
-      <span class="progress"><i style="width:${Math.max(0, Math.min(100, Number(project.progress)))}%"></i></span>
-      <div class="project-open-row">
-        <button class="project-disclosure" type="button" data-toggle-project="${escapeHtml(project.id)}" aria-expanded="${overviewOpen.get(project.id) !== false}" aria-label="${overviewOpen.get(project.id) === false ? "Show" : "Hide"} tasks for ${escapeHtml(project.name)}">${overviewOpen.get(project.id) === false ? "Show tasks" : "Hide tasks"} · ${(project.items || []).length}</button>
-        <button class="project-open" type="button" data-open-lane="${escapeHtml(project.id)}" aria-label="Open ${escapeHtml(project.name)} fleet">Open Fleet Chat →</button>
-      </div>
-      <ul ${overviewOpen.get(project.id) === false ? "hidden" : ""}>${(project.items || []).map((item) => `
-        <li><button class="crew-task" type="button" data-open-lane="${escapeHtml(project.id)}" data-open-session="${escapeHtml(item.title)}" title="${escapeHtml(item.taskIntent || "Task intent not recorded.")}">
-          <span><i class="task-state ${escapeHtml(item.state)}"></i><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(stateLabel(item.state))}</small></span>
-          <span>${escapeHtml(item.taskIntent || "Task intent not recorded.")}</span>
-        </button></li>
-      `).join("")}</ul>
-    </article>`).join("");
 }
 
 function renderExpenseRows() {
@@ -1777,20 +1706,156 @@ function renderPreferenceList() {
     </details>`).join("") || '<p class="notice">No recorded preference sections found.</p>';
 }
 
-const freshness = Object.fromEntries(["dashboard", "quota", "lanes"].map((key) => [key, {
+const freshness = Object.fromEntries(["dashboard", "quota", "lanes", "bearings"].map((key) => [key, {
   lastSuccess: null, refreshing: false, duration: null, error: null, stale: false, started: null,
 }]));
-const freshLabels = { dashboard: "Overview", quota: "Quota", lanes: "Fleet Chats" };
+const freshLabels = { dashboard: "Fleet", quota: "Quota", lanes: "Fleet Chats", bearings: "Captain's Call" };
+let callCount = 0;
+function renderCallBadge(model) {
+  const count = (model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
+    card,
+    answer: callAnswers?.state?.(card.key) || null,
+    thread: callThreads?.state?.(card.key) || null,
+    procrastinated: Boolean(callProcrastinate?.parked?.(card.key)),
+  }) || "active") === "active").length;
+  for (const id of ["#call-badge", "#call-mobile-badge"]) {
+    const badge = $(id);
+    if (!badge) continue;
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+    badge.setAttribute("aria-label", `${count} Captain's Calls`);
+  }
+  if (count > callCount) $("#sr-announcer").textContent = `${count} Captain's Calls need your attention`;
+  callCount = count;
+}
+function observeBearings(data) {
+  if (data.firstmateActivity) {
+    firstmateActivity = data.firstmateActivity;
+    activityFetchedAt = Date.now();
+    renderFirstmateActivity();
+  }
+  const item = freshness.bearings;
+  item.state = data.state;
+  item.observedAt = data.observedAt;
+  item.checkedAt = data.checkedAt;
+  item.lastSuccess = data.observedAt ? Date.parse(data.observedAt) : null;
+  item.stale = Boolean(data.stale);
+  item.error = data.error || null;
+  renderFreshness();
+}
+// Answer and overflow controllers re-apply their per-card state after every patcher fill.
+let callAnswers = null, callOverflow = null, callDismiss = null, callThreads = null, callProcrastinate = null, callText = null;
+let callLifecycleFilter = window.callLifecycle?.readFilter(localStorage) || "active";
+function renderCallLifecycle() {
+  const model = callPatcher?.applied;
+  const api = window.callLifecycle;
+  if (!model || !callPatcher || !api) return;
+  const list = $("#call-cards");
+  const filter = $("#call-lifecycle-filter");
+  list?.querySelector("[data-call-answered-heading]")?.remove();
+  list?.querySelector("[data-call-procrastinated-heading]")?.remove();
+  const states = [];
+  for (const card of model.cards) {
+    const node = [...list.querySelectorAll("[data-call-key]")].find((item) => item.dataset.callKey === card.key);
+    if (!node) continue;
+    const answer = callAnswers?.state(card.key) || null;
+    const state = api.cardState({
+      card,
+      answer,
+      thread: callThreads?.state(card.key) || null,
+      procrastinated: Boolean(callProcrastinate?.parked(card.key)),
+    });
+    states.push(state);
+    node.setAttribute("data-call-lifecycle", state);
+    node.toggleAttribute("data-call-answered", Boolean(card.answered || answer?.phase === "sent"));
+    node.toggleAttribute("data-call-procrastinated", state === "procrastinated");
+    const badge = node.querySelector("[data-call-lifecycle-badge]");
+    if (badge) {
+      badge.setAttribute("data-call-lifecycle", state);
+      const label = api.LABELS[state];
+      badge.setAttribute("aria-label", label);
+      badge.setAttribute("title", label);
+      if (badge.textContent) badge.textContent = "";
+    }
+    const underway = node.querySelector("[data-call-sent-label]");
+    if (underway) underway.hidden = state !== "sent";
+    callProcrastinate?.render(node);
+    const focused = node.contains(document.activeElement);
+    const selected = callPatcher.tracker.state().selected === card.key;
+    node.hidden = !api.visible(state, callLifecycleFilter);
+    if (node.hidden && (focused || selected)) {
+      callPatcher.tracker.deselect();
+      if (focused) filter?.querySelector(`[data-call-lifecycle="${state}"]`)?.focus();
+    }
+  }
+  const tally = api.counts(states);
+  api.paintToggle(filter, tally, callLifecycleFilter);
+  const queuedItems = callAnswers?.queued?.() || [];
+  api.paintSendQueued?.($("#call-send-queued"), {
+    filter: callLifecycleFilter,
+    count: queuedItems.length,
+    sending: queuedItems.some((entry) => entry.phase === "sending") || window.quarterdeckReviewQueue?.sending?.() === true,
+  });
+  const empty = $("#call-lifecycle-empty");
+  if (empty) {
+    const text = api.emptyText(callLifecycleFilter, tally);
+    empty.hidden = !text;
+    if (empty.textContent !== text) empty.textContent = text;
+  }
+  renderCallBadge(model);
+}
+$("#call-lifecycle-filter")?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-call-lifecycle]");
+  const api = window.callLifecycle;
+  if (!button || !api) return;
+  callLifecycleFilter = api.writeFilter(localStorage, button.getAttribute("data-call-lifecycle"));
+  renderCallLifecycle();
+});
+$("#call-send-queued")?.addEventListener("click", () => {
+  const button = $("#call-send-queued");
+  const sendCalls = window.quarterdeckReviewQueue?.sendCallAnswers;
+  if (!button || button.hidden || button.disabled || typeof sendCalls !== "function") return;
+  button.disabled = true;
+  void Promise.resolve(sendCalls()).finally(() => renderCallLifecycle());
+});
+const callPatcher = window.bearingsPatch?.createCallPatcher({
+  section: $("#captain-call"), list: $("#call-cards"), status: $("#call-status"), coverage: $("#call-coverage"),
+  view: window.bearingsView, scroller: $("#overview-view"), sortControl: $("#call-sort"),
+  onRender(node, card) { callAnswers?.render(node, card); callOverflow?.render(node, card); callDismiss?.render(node); callThreads?.render(node); callText?.render(node); callProcrastinate?.render(node); },
+  onApply(model) { const keys = model.cards.map((card) => card.key); callAnswers?.prune(keys); callOverflow?.prune(keys); callDismiss?.prune(keys); callThreads?.prune(keys); callText?.prune(keys); renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); },
+});
+// Queued answers join the review panel's queue; its Send batch sends them with the notes.
+callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key) => { callThreads?.noteSent(key); renderCallLifecycle(); } });
+if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: () => callAnswers.sendQueued(), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
+callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
+callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });
+callProcrastinate = callPatcher && window.bearingsProcrastinate?.createController?.({ list: $("#call-cards"), onChange: () => renderCallLifecycle() });
+callOverflow = window.bearingsOverflow?.createOverflowController({ list: $("#call-cards") });
+// Focus leaves the card only after a confirmed dismissal; drafts remain protected.
+callDismiss = callPatcher && window.bearingsDismiss?.createDismissController({
+  list: $("#call-cards"),
+  focusTarget: () => [...document.querySelectorAll('.primary-tab[data-view="overview"], [data-mobile-view="overview"]')].find((node) => node.getClientRects().length),
+  onDismiss(key) { if (callPatcher.tracker.state().selected === key) callPatcher.tracker.deselect(); },
+});
+const callLive = window.bearingsLive?.createBearingsLive({
+  onModel(model) { callPatcher.update(model); renderCallBadge(model); observeBearings(model); },
+  onObserved(data) { callPatcher.observe(data); observeBearings(data); },
+  onConnection({ state }) {
+    freshness.bearings.connection = state;
+    renderFreshness();
+  },
+});
 let refreshMs = 0;
 function activeFreshnessKey() {
   const view = $(".workspace").dataset.view;
-  return view === "conversations" || view === "closed" ? "lanes" : view === "quota" ? "quota" : "dashboard";
+  return view === "overview" ? "bearings" : view === "conversations" || view === "closed" ? "lanes" : view === "quota" ? "quota" : "dashboard";
 }
 function renderFreshness() {
   const key = activeFreshnessKey();
   const item = freshness[key];
-  const expired = item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
-  const condition = item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
+  const expired = key !== "bearings" && item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
+  const disconnected = key === "bearings" && ["disconnected", "reconnecting"].includes(item.connection);
+  const condition = disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
   const last = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : "No successful reading yet";
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");
@@ -1805,6 +1870,38 @@ function renderFreshness() {
   $("#fleet-state b").textContent = condition;
   pill.title = full;
   pill.setAttribute("aria-label", full);
+}
+
+let firstmateActivity = null;
+let activityFetchedAt = null;
+function renderFirstmateActivity(now = Date.now()) {
+  const node = $("#fleet-source");
+  if (!node) return;
+  const time = (value) => value ? Date.parse(value) : NaN;
+  const relative = (value) => {
+    const stamp = time(value);
+    if (!Number.isFinite(stamp)) return "unknown";
+    const seconds = Math.floor((now - stamp) / 1000);
+    if (seconds < 0) return "future";
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+    return `${Math.floor(seconds / 86400)}d`;
+  };
+  const local = (value) => Number.isFinite(time(value)) ? new Date(value).toLocaleString() : "unknown";
+  const activity = firstmateActivity || {};
+  const latest = [activity.lastTurnAt, activity.lastWakeAt, activity.watcherBeatAt, activity.heartbeatAt]
+    .filter((value) => Number.isFinite(time(value))).sort((a, b) => time(b) - time(a))[0];
+  const watcher = time(activity.watcherBeatAt);
+  const stale = activityFetchedAt !== null && now - activityFetchedAt > 60000;
+  node.dataset.state = stale || (Number.isFinite(watcher) && (now - watcher > 300000 || watcher > now)) ? "warning" : Number.isFinite(watcher) ? "fresh" : "unknown";
+  const seen = document.createElement("span");
+  const beat = document.createElement("span");
+  const clock = Number.isFinite(time(latest)) ? new Date(latest).toLocaleTimeString([], { hour12: false }) : "unknown";
+  seen.textContent = `Last seen ${clock} ${relative(latest)}`;
+  beat.textContent = `Watcher ${relative(activity.watcherBeatAt)}`;
+  node.replaceChildren(seen, beat);
+  node.title = `Last turn: ${local(activity.lastTurnAt)} · Wake queue: ${local(activity.lastWakeAt)} · Watcher: ${local(activity.watcherBeatAt)} · Heartbeat: ${local(activity.heartbeatAt)} · Read: ${local(activity.readAt)}`;
 }
 
 function lanesQuery() {
@@ -1848,9 +1945,10 @@ async function refreshEndpoint(key) {
     if (key === "dashboard") {
       renderSummary(data.fleet.summary);
       renderWorkSplit(data.fleet.workSplit);
-      renderProjects(data.fleet.projects);
       renderExpenses(data.expenses);
-      $("#fleet-source").textContent = data.fleet.source;
+      firstmateActivity = data.firstmateActivity || null;
+      activityFetchedAt = Date.now();
+      renderFirstmateActivity();
       if (data.refreshMs && !refreshTimer) {
         refreshMs = data.refreshMs;
         refreshTimer = window.setInterval(loadDashboard, refreshMs);
@@ -1863,6 +1961,9 @@ async function refreshEndpoint(key) {
       if (taskOlderPages) for (const lane of data.lanes) for (const session of lane.sessions) if (session.loaded && retainedSessions.size < 60) retainedSessions.add(session.id);
       if (diskOlderPages) for (const session of data.transcript.sessions) if (session.loaded && retainedDisk.size < 60) retainedDisk.add(session.id);
       renderLanes(data);
+      firstmateActivity = data.firstmateActivity || null;
+      activityFetchedAt = Date.now();
+      renderFirstmateActivity();
     }
     if (key !== "quota" || !data.error) item.error = null;
     if (key !== "quota" || !data.error) item.stale = false;
@@ -1870,10 +1971,9 @@ async function refreshEndpoint(key) {
   } catch (error) {
     item.error = error.message;
     if (key === "dashboard") {
-      if (!item.lastSuccess) {
-        $("#projects").innerHTML = `<div class="notice">Could not load fleet: ${escapeHtml(error.message)}</div>`;
-        renderWorkSplit(null);
-      }
+      if (!item.lastSuccess) renderWorkSplit(null);
+      $("#overview-state").textContent = `Could not load fleet: ${error.message}`;
+      $("#overview-state").classList.remove("hidden");
     } else if (key === "quota" && !item.lastSuccess) renderQuota({ providers: [], readAt: null, stale: false, error: "Quota unavailable" });
     else if (key === "lanes" && !item.lastSuccess) renderLanesError(error.message);
   } finally {
@@ -1891,11 +1991,41 @@ async function refreshEndpoint(key) {
   }
 }
 
+let healthPreferencesLoaded = false;
+async function refreshHealthPreferences() {
+  try {
+    const value = await fetchJson("/api/preferences/health");
+    // Preserve edits during subsequent refreshes; a reload reads the saved owner.
+    if (!healthPreferencesLoaded) {
+      $("#away-check-in").value = value.awayCheckInMinutes;
+      $("#open-note-alarm").value = value.openNoteAlarmMinutes;
+      $("#health-preferences-status").textContent = "Saved settings loaded.";
+      healthPreferencesLoaded = true;
+      $("#health-preferences-form button").disabled = false;
+    }
+  } catch { $("#health-preferences-status").textContent = "Health preferences unavailable. Reload to retry."; }
+}
+$("#health-preferences-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("#health-preferences-form button");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/preferences/health", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ awayCheckInMinutes: Number($("#away-check-in").value), openNoteAlarmMinutes: Number($("#open-note-alarm").value) }),
+    });
+    if (!response.ok) throw new Error("Save failed");
+    $("#health-preferences-status").textContent = "Saved. Applies on the next health check.";
+  } catch { $("#health-preferences-status").textContent = "Could not save. Your edits are retained; retry."; }
+  finally { button.disabled = false; }
+});
 let preferencesRefreshing = false;
 async function refreshPreferences() {
   if (preferencesRefreshing) return;
   preferencesRefreshing = true;
-  try { renderPreferences(await fetchJson("/api/preferences")); }
+  try {
+    await Promise.all([refreshHealthPreferences(), (async () => renderPreferences(await fetchJson("/api/preferences")))()]);
+  }
   catch (error) { renderPreferences({ error: error.message }); }
   finally { preferencesRefreshing = false; }
 }
@@ -2474,12 +2604,6 @@ $("#session-history-list").addEventListener("click", (event) => {
   clearTaskFilter();
 });
 
-$("#projects").addEventListener("click", (event) => {
-  const control = event.target.closest("[data-open-lane]");
-  if (!control) return;
-  navigateToLane(control.dataset.openLane, control.dataset.openSession || "");
-});
-
 $("#task-filter-clear")?.addEventListener("click", clearTaskFilter);
 
 document.querySelector(".primary-nav").addEventListener("click", (event) => {
@@ -2494,7 +2618,7 @@ document.querySelector(".primary-nav").addEventListener("click", (event) => {
   showView(tab.dataset.view);
   if (tab.dataset.view === "conversations") renderFeed();
 });
-$("#refresh").addEventListener("click", loadDashboard);
+$("#refresh").addEventListener("click", () => { loadDashboard(); void callLive?.refresh(); });
 $("#quota-providers").addEventListener("toggle", (event) => {
   if (event.target.dataset?.provider && event.target.tagName === "DETAILS") {
     quotaOpen.set(event.target.dataset.provider, event.target.open);
@@ -2555,20 +2679,9 @@ for (const [id, open] of [["#preferences-expand", true], ["#preferences-collapse
 $("#preferences-list").addEventListener("toggle", (event) => {
   if (event.target?.dataset?.preference) preferenceOpen.set(event.target.dataset.preference, event.target.open);
 }, true);
-$("#overview-sort").addEventListener("change", (event) => { overviewSort = event.target.value; renderProjects(); });
 $("#work-group-by").addEventListener("change", (event) => { workGroupBy = event.target.value; renderWorkSplit(); });
 $("#work-repository").addEventListener("change", (event) => { workRepository = event.target.value; renderWorkSplit(); });
 $("#work-phase").addEventListener("change", (event) => { workPhase = event.target.value; renderWorkSplit(); });
-$("#overview-status-buttons")?.addEventListener("click", (event) => {
-  const button = event.target.closest(".status-filter-btn");
-  if (!button) return;
-  const val = button.dataset.statusValue;
-  if (!val) return;
-  overviewStatus = val;
-  const sel = $("#overview-status");
-  if (sel) sel.value = overviewStatus;
-  renderProjects();
-});
 $("#work-phase-buttons")?.addEventListener("click", (event) => {
   const button = event.target.closest(".status-filter-btn");
   if (!button) return;
@@ -2578,21 +2691,6 @@ $("#work-phase-buttons")?.addEventListener("click", (event) => {
   const sel = $("#work-phase");
   if (sel) sel.value = workPhase;
   renderWorkSplit();
-});
-$("#overview-status").addEventListener("change", (event) => { overviewStatus = event.target.value; renderProjects(); });
-for (const [id, open] of [["#overview-expand", true], ["#overview-collapse", false]]) {
-  $(id).addEventListener("click", () => {
-    for (const project of overviewProjects) overviewOpen.set(project.id, open);
-    if (workSplitData?.items) for (const node of $("#projects").querySelectorAll("details[data-tree-key]")) hierarchyOpen.set(node.dataset.treeKey, open);
-    renderProjects();
-  });
-}
-$("#projects").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-toggle-project]");
-  if (!button) return;
-  const id = button.dataset.toggleProject;
-  overviewOpen.set(id, overviewOpen.get(id) === false);
-  renderProjects();
 });
 async function saveWorkPresentation(body, control) {
   const view = control.closest(".feature-view");
@@ -2613,7 +2711,7 @@ async function saveWorkPresentation(body, control) {
     control.disabled = false;
   }
 }
-for (const selector of ["#projects", "#tight-work"]) {
+for (const selector of ["#tight-work"]) {
   $(selector).addEventListener("toggle", (event) => {
     if (!event.target.dataset?.treeKey) return;
     hierarchyOpen.set(event.target.dataset.treeKey, event.target.open);
@@ -2633,7 +2731,8 @@ for (const selector of ["#projects", "#tight-work"]) {
     void saveWorkPresentation(body, form.querySelector("button"));
   });
 }
-window.setInterval?.(renderFreshness, 1000);
+renderFirstmateActivity();
+window.setInterval?.(() => { renderFreshness(); renderFirstmateActivity(); }, 1000);
 window.addEventListener("hashchange", (event) => {
   const next = event?.newURL ? new URL(event.newURL).hash : window.location.hash;
   const own = ownRouteChanges.indexOf(next);
@@ -2642,4 +2741,5 @@ window.addEventListener("hashchange", (event) => {
 });
 renderMessageTypeFilters();
 applyRoute();
+callLive?.start();
 loadDashboard();

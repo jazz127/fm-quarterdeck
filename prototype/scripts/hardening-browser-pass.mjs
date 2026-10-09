@@ -54,7 +54,7 @@ try {
   };
   const navigation = await command("Page.navigate", { url: base });
   assert.equal(navigation.errorText, undefined, `Fixture navigation failed: ${JSON.stringify(navigation)}`);
-  await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#projects')?.children.length > 0");
+  await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#summary')?.children.length > 0");
   assert.equal(await evaluate("document.title"), "fm-quarterdeck");
   assert.equal(await evaluate("document.querySelector('.product-identity strong').textContent"), "Quarterdeck");
   const escape = async () => {
@@ -116,7 +116,7 @@ try {
     assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), true, "outside dismissal preserves annotation mode");
     await evaluate("document.querySelector('#review-toggle').click()");
     assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), false);
-    await evaluate("document.querySelector('#projects').dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1, altKey: true }))");
+    await evaluate("document.querySelector('#summary').dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1, altKey: true }))");
     await until("!document.querySelector('#review-annotation').hidden");
     await evaluate("document.querySelector('#review-message').value = 'Synthetic annotation draft'; document.querySelector('#review-message').dispatchEvent(new Event('input', { bubbles: true }))");
     await evaluate("document.querySelector('#review-gesture-help').focus(); document.querySelector('#review-gesture-help').click()");
@@ -209,6 +209,7 @@ try {
   // fetch. Hold its response to force the ordering that used to flake in CI.
   let holdConfig = true;
   const configPaused = Promise.withResolvers();
+  const heldConfigRequests = [];
   browser.onEvent((event) => {
     if (event.method !== "Fetch.requestPaused") return;
     const { requestId, request } = event.params;
@@ -216,7 +217,9 @@ try {
     if (request.method === "GET" && serverDown) {
       action = command("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" });
     } else if (request.method === "GET" && holdConfig) {
-      holdConfig = false;
+      // Recovery and live-connection rechecks can race the initial config fetch.
+      // Hold all of them, not just the first, until the readiness assertion.
+      heldConfigRequests.push(requestId);
       configPaused.resolve(requestId);
       return;
     } else if (request.method === "POST" && loseNext) {
@@ -230,14 +233,15 @@ try {
   });
   await command("Fetch.enable", { patterns: [{ urlPattern: "*/api/review", requestStage: "Response" }] });
   await reload();
-  await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");
-  const configRequestId = await configPaused.promise;
+  await until("document.querySelector('#review-message') && document.querySelector('#summary').children.length > 0");
+  await configPaused.promise;
   await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit()");
   assert.equal(await evaluate("document.querySelector('#review-send').disabled"), true, "rendered board cannot send before review configuration arrives");
   await evaluate("document.querySelector('#review-send').click()");
   assert.equal(deliveries, 0, "an early click is ignored, not a simulated lost delivery");
   assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue.length"), 1, "early click preserves the queued note");
-  await command("Fetch.continueRequest", { requestId: configRequestId });
+  holdConfig = false;
+  await Promise.all(heldConfigRequests.map(requestId => command("Fetch.continueRequest", { requestId })));
   await until("document.querySelector('#review-context')?.textContent.includes('Version') && !document.querySelector('#review-send').disabled");
   await evaluate("document.querySelector('#review-send').click()");
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 1 && !s.inFlight; })()");
