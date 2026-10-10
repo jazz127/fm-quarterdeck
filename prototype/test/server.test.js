@@ -604,7 +604,7 @@ test("work split uses explicit notes and briefs, not titles or a second ledger",
   await writeFile(path.join(home, "state", "discovery.status"), "working: started\npaused: Waiting for upstream proof\n");
   const split = (await dashboardData({ FM_HOME: home })).fleet.workSplit;
   assert.deepEqual(split.tight.backlog.items.map((item) => item.id), ["small"]);
-  assert.deepEqual(split.tight.backlog.items[0], { id: "small", name: "Scoped fix", repository: "Alpha", workGroup: null });
+  assert.deepEqual(split.tight.backlog.items[0], { id: "small", name: "Scoped fix", repository: "Alpha", workGroup: null, waitingOn: null });
   assert.deepEqual(split.tight.inProgress.items.map((item) => item.id), ["long-title"]);
   assert.deepEqual(split.tight.justLanded.items.map((item) => item.id), ["landed"]);
   assert.equal(split.large.count, 3);

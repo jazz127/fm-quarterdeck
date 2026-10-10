@@ -19,7 +19,7 @@ test("explicit taxonomy validation refuses dangling assignments, duplicates and 
 test("current-state classification excludes preserved, completed, dead and unknown workers", () => {
   const input = { inFlight: true, endpointLive: true, state: "working" };
   assert.equal(classifyCurrent(input), "active");
-  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
+  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "needs-decision", pendingIssues: [{ state: "paused" }] }, "captain-action"], [{ state: "done", pendingIssues: [{ state: "blocked" }] }, "waiting"], [{ state: "done", retained: true }, "cleanup"], [{ state: "working", pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
 });
 
 test("liveness probes are gated to executing in-flight work and bounded concurrently", async () => {
