@@ -1712,8 +1712,9 @@ const freshness = Object.fromEntries(["dashboard", "quota", "lanes", "bearings"]
 const freshLabels = { dashboard: "Fleet", quota: "Quota", lanes: "Fleet Chats", bearings: "Captain's Call" };
 let callCount = 0;
 function renderCallBadge(model) {
+  const rendered = new Map((callPatcher?.applied?.cards || []).map(card => [card.key, card]));
   const count = (model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
-    card,
+    card: rendered.get(card.key) || card,
     answer: callAnswers?.state?.(card.key) || null,
     thread: callThreads?.state?.(card.key) || null,
     procrastinated: Boolean(callProcrastinate?.parked?.(card.key)),

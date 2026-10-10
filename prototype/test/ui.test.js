@@ -2925,3 +2925,12 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
     }
   }
 });
+
+test("bearings badge uses the held card's rendered lifecycle without counting removed source cards", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.run(`callPatcher.applied = {cards:[{key:'decision:held',answered:true},{key:'decision:removed'}]}; renderCallBadge({state:'ready',cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run(`renderCallBadge({state:'stale',stale:true,cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
+  assert.equal(app.node('#call-badge').textContent, '1 · stale');
+});

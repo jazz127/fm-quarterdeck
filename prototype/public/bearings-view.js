@@ -247,8 +247,9 @@ window.bearingsView = (() => {
   function emptyHtml(model) {
     if (model.state === "loading") return "Checking for Captain's Calls…";
     if (model.state === "unavailable") return `Captain's Call unavailable${model.error ? ` · ${escape(model.error)}` : ""}`;
+    if (model.stale || model.state === "stale") return "Last known calls · No calls at the last successful reading; current calls are unknown.";
     const text = model.coverage?.provenClear ? "Nothing needs your action right now" : `No decision is recorded · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)}`;
-    return `${model.stale || model.state === "stale" ? "Last known calls · " : ""}${text}`;
+    return text;
   }
   function coverageText(model) {
     const parts = [];
