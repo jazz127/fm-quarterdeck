@@ -1,8 +1,8 @@
 import { noteForCard, taggedEnvelope, threadText } from "./bearings-thread.js";
 
-// Only durable Quarterdeck answer notes count as answered. A receipt or reply is not closure:
-// the caller supplies only cards still open in bearings. Match the card's intake key,
-// not its presentation revision: a summary update is not Firstmate confirmation.
+// A receipt or reply is not closure: the caller supplies only cards still open in bearings.
+// Match the card's intake key, not its presentation revision: a summary update is not
+// Firstmate confirmation.
 // sentReceipt is the latest matching captain note: pending, acknowledged, or replied.
 function sameNote(reply, note) {
   if (!note?.id || typeof note.id !== "string") return false;

@@ -6,10 +6,10 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 
 ## Source and authority
 
-- Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run. Dashboard children set `FM_SSH_BIN=/usr/bin/false` and `FM_SNAPSHOT_BUDGET=1`: remote homes use Firstmate's validated parent-side ledger cache, with at most one second for remote collection. This prevents dashboard reads from staging remote jobs. Firstmate owns cache refresh; missing caches remain unmeasured, and expired contribution observations remain incomplete. The 45 s outer budget is unchanged.
+- Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill and bounded decoded stdout/stderr (`createSnapshotRunner` owns the output caps, measured in UTF-16 code units). Concurrent callers share one run. Dashboard children set `FM_SSH_BIN=/usr/bin/false` and `FM_SNAPSHOT_BUDGET=1`: remote homes use Firstmate's validated parent-side ledger cache, with at most one second for remote collection. This prevents dashboard reads from staging remote jobs. Firstmate owns cache refresh; missing caches remain unmeasured, and expired contribution observations remain incomplete. The 45 s outer budget is unchanged.
 - It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The canonical collector may prepare its parent cache directory, but the disabled transport cannot produce fresh remote results or overwrite cached ledgers. Quarterdeck does not refresh other homes.
 - Each snapshot run may also read the selected home's `.lavish/bearings-board.html` when that path is a regular file of at most 1 MiB. The read is UTF-8 text. Quarterdeck takes the JSON inside `<script id="bearings-data" type="application/json">` and checks `schema` `fm-bearings-board.v1`, a non-empty `home`, a timestamp `generated`, and an array `captains_call`. A raw `<` in that block is rejected, matching the builder's `\u003c` escape, so the block cannot be closed early. The page is never executed. A missing file, symlink, oversized file, bad encoding, or failed check leaves options on the snapshot path below. How a fresh card becomes choices is owned by Answers.
-- Validation fails closed: `schema` must be `fm-bearings.v1`, and `decisions_open`, `omitted` and `contributions` (`captain[]`, `known`, `checked`, `proven_clear`) must have the expected types. A missing home or script, a failed run or invalid output never synthesizes calls: with a previous good model it stays visible as `state: "stale"`; without one the model is `state: "unavailable"` with no cards.
+- Validation fails closed: `schema` must be `fm-bearings.v1`, and `decisions_open`, `omitted` and `contributions` (`captain[]`, `known`, `checked`, `proven_clear`) must have the expected types. A missing home or script, a failed run or invalid output never synthesizes calls: with a previous good model it stays visible as `state: "stale"`; without one the snapshot model is `state: "unavailable"` with no filed calls or landings. Independently scanned chat cards may still appear; see Chat asks.
 
 ## Model `fm-quarterdeck-call.v1`
 
@@ -22,14 +22,14 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 - `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed, or is null when only the age ceiling expired) or `unavailable`.
 - `observedAt`: when these calls were last produced. `checkedAt`: the latest run attempt. `generatedAt`: the snapshot clock.
 - `cards[]`, in snapshot order:
-  - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
+  - `decision:<task>` for each `decisions_open` row (cached remote tasks may be scoped as `<home>/<task>`): `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
   - `merge:<task>` for each `contributions.captain` row without a live decision for the same task: `{key, type:"merge", task, kind, url, reason, owner, repo, checkedAt, answer, rev}`. `url` is `https:` only, otherwise `null`.
-  - `landed:<task>` (main/unknown owner) or `landed:<task>:<owner hash>` (remote owner) for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
   - `answer` is `null` (answer in chat) or `{question, options[{value,label,hint}], recommend, close, freeform:true}`; see Answers.
   - `rev` is a 16-hex sha256 of the card's canonical JSON; landed cards use their legacy `landed:<task>` key in that calculation for acknowledgement compatibility. An unchanged card keeps its `rev`.
 - `coverage`: `{known, checked, complete, provenClear, captainOmitted, unmeasuredHomes}`. Say "Nothing needs your action right now" only when `provenClear`; otherwise "No decision is recorded · checked X of Y".
 - `omitted[]`: `{kind:"deferred-holds", count}` (blocked, dated or aged holds not shown), `{kind:"decisions-bound", shown, total}`, `{kind:"invalid-rows", count}`, and `{kind:"invalid-landed", count}` when a landed row is dropped.
-- Model `rev` hashes `cards`, `coverage`, `omitted`, and `landed` when any landed card is present. It never hashes the snapshot clock, so an unchanged Captain's Call is never pushed again. An empty landed list leaves the hash unchanged.
+- `landed[]` is separate from `cards[]`: `landed:<task>` (main/unknown owner) or `landed:<task>:<owner hash>` (remote owner) for each snapshot landing, with `{key, type:"landed", task, what, backlogTitle?, repo, owner, url, artifact, clock, rev}`. See Just landed.
+- Model `rev` hashes `cards`, `coverage`, `omitted`, selected-home `holds` when present, and `landed` when any landed card is present. The composed model also hashes chat coverage; see Chat asks. It never hashes the snapshot clock, so an unchanged Captain's Call is never pushed again. An empty landed list leaves the hash unchanged.
 - Privacy: `repo` is a basename, report and checkout paths are never served, and absolute paths inside free text are reduced to `…/<last segment>`.
 
 Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `call` and `landed`. Later Underway and Charted Next sections add entries without changing the transport.
@@ -58,7 +58,7 @@ Each card has `clock:{label,at}`. Decision clocks use the newest durable `update
 - `GET /api/bearings/stream` (host only; 404 through a preview path; 503 beyond 16 streams per process): `text/event-stream`, `no-store`, `x-accel-buffering: no`, never gzipped.
   - On connect: `retry: 3000`, `event: hello {servedCommit}`, then `event: model` with `id: <rev>` unless `Last-Event-ID` already equals the current `rev`, in which case `event: observed`.
   - `event: model` (with `id`) when the calls change; `event: observed` with freshness fields after a run that changed nothing.
-  - A `: hb` comment every 20 s. Each heartbeat and push first re-checks the served revision; on a mismatch the stream sends `event: revision` and ends.
+  - A `: hb` comment and an `observed` freshness event every 20 s. Each heartbeat and push first re-checks the served revision; on a mismatch the stream sends `event: revision` and ends.
   - Streams are recycled after 10 min with `event: bye`; `server.close()` ends open streams with `bye` and stops the scheduler.
 - The client keeps one `EventSource` per visible tab and closes it on `hidden` and `pagehide`. Becoming visible fetches `?since` first, then reopens. On a stream error it runs the review config recheck, polls `?since` every 15 s, and retries the stream after 3 s, 10 s, then 30 s. `bye` reconnects at once. A `hello` or `revision` whose commit differs from the page's boot revision shows the existing "Quarterdeck updated" notice and stops; it never reloads by itself.
 
@@ -91,7 +91,7 @@ Cards follow the bearings poster on Quarterdeck's light canvas: a 2px forest-ink
 The repository, when known, sits beside the chip and wraps, and the clock takes its own line.
 A decision card's title is the filed hold's full reason when Quarterdeck has one: the backlog hold reason, otherwise the snapshot reason. It is never the linked chat line. With no recorded reason, the title stays the complete decision ask. A merge title is the merge reason.
 An **About** row carries repository, owner, and contribution kind when present. When the snapshot has no repository, the backlog `(repo:)` field supplies the name.
-Free text remains path-redacted and is never shortened by Quarterdeck: the server serves all of it, and the card shows every character it received (see Long text).
+Headline text remains path-redacted and has no Quarterdeck length cap: the card shows every character it receives (see Long text). Structured option labels/hints and artifact metadata retain the normalizer's bounds in `bearings.js`.
 A decision retains a safe HTTPS link from a contribution with the exact same task, while still suppressing that duplicate merge card.
 All displayed links come from snapshot contribution rows; no URL is guessed.
 Chat asks keep a double left border at the same 2px width as other cards, so the mark does not narrow the card. Their title is the ask text.
@@ -130,7 +130,7 @@ A shortened landing says the snapshot shortened it, and the task id stays on the
 
 ## Answers
 
-Quarterdeck relays the captain's explicit answer; it adds no authority. The answer is the same `fm-bearings-answer.v1` context the `/bearings` lavish board queues, so Firstmate routes it exactly like a board answer (bearings skill, "Handling a board wake") into `fm-captain-hold.sh`'s one keyed-answer intake, and the merge-click ruling for merges. Quarterdeck never runs `fm-captain-hold.sh`, `fm-pr-merge.sh` or any GitHub mutation, never answers by itself, and never closes a filed hold: a snapshot card leaves only when a later snapshot drops it. Chat-only cards close by the rules in Chat asks below.
+Quarterdeck relays the captain's explicit answer; it adds no authority. The answer carries the same `fm-bearings-answer.v1` context the `/bearings` lavish board queues. Routing that inbox envelope into Firstmate's keyed-answer intake and merge-click ruling requires the upstream receiver integration described in Firstmate follow-up below; without it, Firstmate reads an ordinary captain note. Quarterdeck never runs `fm-captain-hold.sh`, `fm-pr-merge.sh` or any GitHub mutation, never answers by itself, and never closes a filed hold: a snapshot card leaves only when a later snapshot drops it. Chat-only cards close by the rules in Chat asks below.
 
 **What can be answered** (`card.answer`, built by `bearings.js`):
 
@@ -298,7 +298,7 @@ Anything else is 400.
 The served revision must still match (409 `revision`).
 An unknown or closed key is 409 `gone`.
 A successful post returns the same `{schema, until}` map.
-Saving a busy or invalid file is 503.
+A busy save or invalid resulting state is 503. A missing, unreadable or invalid stored file reads as an empty map; a subsequent save uses that fallback.
 
 ## Just landed
 
@@ -306,8 +306,7 @@ Overview's second column shows the snapshot's `landed` rows as poster cards in t
 At the phone one-column breakpoint, the Overview body starts with two tabs, Captain's Call (N) and Just landed (N), and shows one section at a time.
 Captain's Call N counts every open card, including filtered cards.
 Just landed N counts landings whose current rev is not the acknowledged rev.
-The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
-The phone tab still shows Just landed (0) when none are new, the same way Captain's Call (0) stays visible.
+The Just landed heading uses that same new count, while the Overview Captain's Call badge counts Active calls. Zero, loading, unavailable and stale labels follow Feed health above; phone tabs retain a visible zero only for a current reading.
 The chosen tab is remembered for that viewer in localStorage under `fm-quarterdeck-overview-tab.v1`.
 A desktop width keeps both columns, with the same 22px gap, and does not show the tabs.
 The source is the same guarded snapshot.
@@ -324,9 +323,9 @@ A shortened `https://` artifact is completed only by the Long text continuation 
 The exact text `local main` is a label, not a link.
 Other artifact text is path-redacted and is not a URL.
 `-` and an empty artifact are not recorded.
-`repo` and the landed clock come from the selected home's checked backlog line only when `owner` is `(main)`: `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`.
-A `(main)` snapshot `landedAt` may also supply that clock, and the newer of the two is kept.
-Another home's ledger is never read, so its repository and time stay unknown.
+`repo` comes from the snapshot row when recorded; only a `(main)` landing can supplement a missing repository from its checked backlog line's `(repo:)` field.
+The landed clock is kept only for `(main)`: the newer of snapshot `landedAt` and the checked backlog line's newest `(done|merged|reported YYYY-MM-DD)`.
+Another home's ledger is never read; its repository needs snapshot evidence and its landed time stays unknown.
 A date-only clock says time unknown.
 Duplicate or invalid rows are withheld as omitted kind `invalid-landed`.
 A missing `landed` array yields an empty column and does not make Captain's Call unavailable.
@@ -433,7 +432,7 @@ SCREENSHOT_DIR=/absolute/private/proof node scripts/captain-call-live-browser-pa
 FM_BROWSER_FORCED_COLORS=1 SCREENSHOT_DIR=/absolute/private/forced-proof node scripts/captain-call-live-browser-pass.mjs
 ```
 
-The full `npm run test:browser` includes this pass. Source-preview CI installs pinned `chrome-devtools-axi@0.1.39` from npm on the runner and attaches its MCP backend to the pass's isolated headless Chrome; it does not skip this pass or change local checks. Local runs require the same installed CLI and its MCP backend (bootstrapped via npm on first use).
+The full `npm run test:browser` includes this pass. [Source-preview validation](../docs/SOURCE-PREVIEW-VALIDATION.md#automated-gate) owns CI tooling, and [portability](../docs/PORTABILITY.md#headless-checks) owns local browser/CLI prerequisites.
 
 Fixtures under `test/fixtures/bearings/` are synthetic `fm-bearings.v1` output; tests that run a snapshot use a temporary home with a fake `bin/fm-bearings-snapshot.sh`. Chat-ask tests write synthetic Claude and Pi transcripts into a temporary home.
 The browser pass sends a picked option through `POST /api/bearings/answer` and text with no option through `POST /api/bearings/thread`.

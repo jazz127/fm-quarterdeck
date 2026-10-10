@@ -266,7 +266,7 @@ window.bearingsAnswerForm = (() => {
         clearDraft(key);
         if (thread) {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
-          // which keeps the card Sent until that note is acknowledged or Firstmate replies.
+          // which keeps the card Sent while pending or acknowledged, until Firstmate replies.
           update(key, null, focus ? "text" : null);
           onAsked(key);
           return true;

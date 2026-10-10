@@ -1,10 +1,10 @@
 # First-run pairing: Quarterdeck + Firstmate
 
-A clone is not an installed Firstmate pairing. First install and initialize [kunchenguid/firstmate](https://github.com/kunchenguid/firstmate#quick-start) using its upstream instructions; Quarterdeck does not install or bootstrap the orchestrator. Quarterdeck's existing startup uses the operator's `FM_HOME`; its Preferences view reads that home's single `data/captain.md` record. There is no package installer or alternate preference ledger. Use the explicit terminal onboarding command once before first launch (or to reconcile a later preference version). Neither normal startup, the HTTP API nor `/fm-quartermaster` writes preferences.
+A clone is not an installed Firstmate pairing. First install and initialize [kunchenguid/firstmate](https://github.com/kunchenguid/firstmate#quick-start) using its upstream instructions; Quarterdeck does not install or bootstrap the orchestrator. Quarterdeck's existing startup uses the operator's `FM_HOME`; its captain-preference view reads that home's `data/captain.md` record. [Away supervision settings](../README.md#product-surfaces) have a separate Quarterdeck owner; they do not edit that home record. Use the explicit terminal onboarding command once before first launch (or to reconcile a later preference version). Neither normal startup, the HTTP API nor `/fm-quartermaster` writes `data/captain.md`; the optional integration installer owns its separate policy-reference block.
 
 ## One onboarding contract
 
-1. **Choose skill discovery from a stable approved checkout.** The canonical base set is `skills/fm-lanes`, `skills/fm-toolcheck`, and `skills/fm-quartermaster`. Follow the [integration inventory's per-skill discovery/projection, pinning, rollback and removal gates](FIRSTMATE-INTEGRATIONS.md#manual-activation-and-rollback), including any legacy-skill comparison. Do not project a disposable worktree, overwrite a projection, or assume cloning activates skills. The onboarding preview lists this same set and the discovery instructions; it does not change global projections or install anything. Validate discovery in your Firstmate harness separately.
+1. **Review optional integration activation from a stable approved checkout.** Follow the [unified integration installer](FIRSTMATE-INTEGRATIONS.md#unified-mechanical-installation) for the activated skill set, pinning and rollback, including original-owner removal of legacy projections. The onboarding preview lists only its base skills and advisory discovery instructions; it does not install skills. Do not overwrite projections or assume cloning activates them. Validate discovery in your Firstmate harness separately.
 2. **Select the authoritative Firstmate home and preview the defaults.** From the approved checkout:
 
    ```bash
@@ -53,7 +53,7 @@ npm run onboard -- --home /absolute/path/to/firstmate --remove --preview
 npm run onboard -- --home /absolute/path/to/firstmate --remove
 ```
 
-Type the displayed `remove <selected absolute home>` confirmation. Removal restores all outside bytes exactly, retains an empty file rather than deleting it, and does not unbind startup or remove skill projections. To opt out permanently, remove the owned block and do not seed again; ordinary startup will not recreate it. Skill removal/rollback is the separate verified-target operator procedure linked above. To move homes, remove from the old home only if desired, explicitly unset/reselect `FM_HOME`, repeat preview/confirmation for the new home, then use the new startup binding; neither home's user preferences are copied.
+Type the displayed `remove <selected absolute home>` confirmation. Removal restores all outside bytes exactly, retains an empty file rather than deleting it, and does not unbind startup or remove skill projections. To opt out permanently, remove the owned block and do not seed again; ordinary startup will not recreate it. Skill removal/rollback belongs to the integration owner linked above; unjournaled legacy projections require their original owner. To move homes, remove from the old home only if desired, explicitly unset/reselect `FM_HOME`, repeat preview/confirmation for the new home, then use the new startup binding; neither home's user preferences are copied.
 
 ## Focused validation
 

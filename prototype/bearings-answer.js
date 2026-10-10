@@ -3,9 +3,9 @@ import { inboxNoteState, inboxReceipts, noteWithRequestId } from "./inbox.js";
 
 // Captain's Call answers (BEARINGS.md "Answers"). Quarterdeck only relays the captain's
 // explicit answer to Firstmate as an fm-bearings-answer.v1 envelope, the same context the
-// /bearings lavish board queues, through the guarded idempotent inbox note. Firstmate then
-// feeds its keyed-answer intake; Quarterdeck never runs fm-captain-hold.sh, never merges,
-// and never closes a card itself.
+// /bearings lavish board queues, through the guarded idempotent inbox note. Feeding
+// keyed-answer intake needs a separately integrated Firstmate receiver. Quarterdeck
+// never runs fm-captain-hold.sh or merges; only chat-only asks resolve locally.
 export const ANSWER_SCHEMA = "fm-bearings-answer.v1";
 // The board's own cap on the displayed answer ("value - note"), in UTF-8 bytes.
 export const MAX_ANSWER_BYTES = 512;
