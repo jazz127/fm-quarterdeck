@@ -28,6 +28,49 @@ const distinctWaitPhases = [
   { name: "note-head pause and keyless resolution", pause: "paused: [key=default] Await vendor", resolution: "resolved: Chose A", matching: "resolved [key=default]: Vendor cleared" },
 ];
 
+const rejectedDeclarations = [
+  { name: "invalid header key", suffix: " [key=bad key]: Await access", reason: "Await access" },
+  { name: "invalid note-head key", suffix: ": [key=bad key] Await access", reason: "[key=bad key] Await access" },
+  { name: "empty header key", suffix: " [key=]: Await access", reason: "Await access" },
+  { name: "empty note-head key", suffix: ": [key=] Await access", reason: "[key=] Await access" },
+  { name: "rejected reserved header key", suffix: " [key=pending-reply-example]: Await access", reason: "Await access" },
+  { name: "rejected reserved note-head key", suffix: ": [key=pending-reply-example] Await access", reason: "Await access" },
+];
+
+for (const state of ["needs-decision", "blocked", "paused", "waiting", "captain-held"]) {
+  test(`rejected keys preserve current ${state} declarations without keyed mutations`, async () => {
+    for (const scenario of rejectedDeclarations) {
+      const declaration = `${state}${scenario.suffix}`;
+      assert.equal(parseStatusLine(declaration).transitionAllowed, false, scenario.name);
+      const lines = ["working: Run", declaration];
+      for (const following of [[], ["Continuation prose"], ["resolved: Answered"], ["resolved [key=bad key]: Answered"], ["resolved [key=pending-reply-example]: Answered"], ["resolved [key=pending-reply-example]: pending-reply-example: Answered"], ["working: Resumed"], ["paused [key=vendor]: Await vendor"]]) {
+        const folded = foldStatusLines([...lines, ...following]);
+        const expectedState = following[0]?.startsWith("working:") || (state === "captain-held" && following[0]?.startsWith("resolved")) ? "working"
+          : following[0]?.startsWith("paused") ? "paused" : state;
+        const expectedReason = expectedState === "working" ? following[0]?.startsWith("working:") ? "Resumed" : "Run" : following[0]?.startsWith("paused") ? "Await vendor" : scenario.reason;
+        assert.equal(folded.latest.state, expectedState, scenario.name);
+        assert.equal(folded.latest.text, expectedReason, scenario.name);
+        assert.deepEqual(folded.pendingIssues, [], scenario.name);
+        const model = await projectWork([{ id: "worker", state: folded.latest.state, pendingIssues: folded.pendingIssues,
+          waitingOn: expectedState === "working" ? null : folded.latest.text, inFlight: true, endpointLive: true, endpointEvidence: "live process incarnation" }], emptyAgentState());
+        assert.equal(model.items[0].status, expectedState === "working" ? "active" : expectedState === "needs-decision" ? "captain-action" : "waiting", scenario.name);
+        assert.equal(model.items[0].waitingOn, expectedState === "working" ? null : expectedReason, scenario.name);
+        assert.equal(model.activeWorkerCount, expectedState === "working" ? 1 : 0, scenario.name);
+      }
+      for (const [opener, key] of [["needs-decision: Original choice", "default"], ["needs-decision [key=route]: Original choice", "route"], ["needs-decision [key=pending-reply-example]: pending-reply-example: Original choice", "pending-reply-example"]]) {
+        const original = [{ key, state: "needs-decision", text: key === "pending-reply-example" ? "pending-reply-example: Original choice" : "Original choice" }];
+        const folded = foldStatusLines([opener, declaration]);
+        assert.deepEqual(folded.pendingIssues, original, scenario.name);
+        for (const closer of ["resolved", "captain-held"]) {
+          assert.deepEqual(foldStatusLines([opener, `${closer}${scenario.suffix}`]).pendingIssues, original, scenario.name);
+        }
+        const matching = key === "pending-reply-example" ? `resolved [key=${key}]: pending-reply-example: Answered` : `resolved [key=${key}]: Answered`;
+        assert.deepEqual(foldStatusLines([opener, declaration, matching]).pendingIssues, [], scenario.name);
+      }
+    }
+  });
+}
+
 for (const scenario of distinctWaitPhases) {
   test(`decision closure preserves ${scenario.name} with live process evidence`, async () => {
     for (const kind of ["ship", "scout", "unknown"]) {
@@ -114,6 +157,36 @@ test("home adapter and dashboard count a multi-field decision and close only its
 });
 
 for (const large of [false, true]) {
+  test(`rejected-key current declarations retain reasons for ${large ? "large" : "ordinary"} Work Split`, async (t) => {
+    const states = ["needs-decision", "blocked", "paused", "waiting", "captain-held"];
+    const home = await fixture(t, `## In flight\n${states.map((state) => `- [ ] ${state} - Synthetic ${state} (repo: product)\n${large ? "  Large project\n" : ""}`).join("")}`);
+    for (const state of states) await writeFile(path.join(home, `state/${state}.meta`), "project=product\n");
+    for (const scenario of rejectedDeclarations) {
+      for (const following of [[], ["Continuation prose"], ["resolved [key=pending-reply-example]: Answered"], ["working: Resumed"]]) {
+        for (const state of states) await writeFile(path.join(home, `state/${state}.status`), ["working: Run", `${state}${scenario.suffix}`, ...following].join("\n") + "\n");
+        const data = await read(home);
+        const split = data.workSplit;
+        const displayed = large ? split.large.projects : split.tight.inProgress.items;
+        for (const state of states) {
+          const item = split.items.find((entry) => entry.id === state);
+          const current = !following[0]?.startsWith("working:") && !(state === "captain-held" && following[0]?.startsWith("resolved"));
+          const reason = current ? scenario.reason : large ? "Nothing recorded" : null;
+          assert.equal(item.sourceState, current ? state : "working", scenario.name);
+          assert.equal(item.status, current ? state === "needs-decision" ? "captain-action" : "waiting" : "unknown", scenario.name);
+          assert.equal(item.waitingOn, reason, scenario.name);
+          assert.deepEqual(item.pendingIssues, [], scenario.name);
+          assert.equal(displayed.find((entry) => entry.id === state).waitingOn, reason, scenario.name);
+          if (large) assert.equal(displayed.find((entry) => entry.id === state).stage, current ? state.replaceAll("-", " ") : "In progress");
+        }
+        assert.equal(split.activeWorkerCount, 0);
+        assert.equal(split.counts.active, 0);
+        assert.equal(data.summary.openDecisions, following[0]?.startsWith("working:") ? 0 : 1);
+      }
+      const history = await loadFirstmateHome(home, { agentStateOwner: owner, durability: async () => [] });
+      for (const state of states) assert.ok(history.lanes[0].messages.some((message) => message.taskId === state && message.text === `${state}: ${scenario.reason}`), scenario.name);
+    }
+  });
+
   test(`distinct default wait phases remain Waiting for ${large ? "large" : "ordinary"} Work Split`, async (t) => {
     const home = await fixture(t, `## In flight\n- [ ] worker - Synthetic worker (repo: product)\n${large ? "  Large project\n" : ""}`);
     await writeFile(path.join(home, "state/worker.meta"), "project=product\n");

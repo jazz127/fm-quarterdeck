@@ -100,8 +100,7 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
   }
   const latestEvent = events.filter((event) => event.state !== "update").at(-1);
   const actionable = events.filter((event) => !["resolved", "update"].includes(event.state) && !resolved.has(event.index)
-    && (event.state !== "captain-held" || (event === latestEvent && event.transitionAllowed))
-    && (!waitingStates.includes(event.state) || event.transitionAllowed));
+    && (event.state !== "captain-held" || event === latestEvent));
   return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1),
     pendingIssues: [...open.values()].map(({ key, state, text }) => ({ key, state, text })) };
 }
