@@ -96,13 +96,15 @@ export function claudeTurns(record, toolNames) {
   }
   const content = record.message?.content;
   if (record.type === "assistant") {
-    if (!Array.isArray(content)) return typeof content === "string" ? [{ role: "assistant", content }] : [];
+    // stop_reason is the only signal that this text was written before a tool call.
+    const narration = record.message?.stop_reason === "tool_use";
+    if (!Array.isArray(content)) return typeof content === "string" ? [{ role: "assistant", content, narration }] : [];
     const parts = content.map((part) => {
       if (part?.type !== "tool_use") return part;
       if (typeof part.id === "string") toolNames.set(part.id, part.name);
       return { type: "toolCall", name: part.name, arguments: part.input };
     });
-    return [{ role: "assistant", content: parts, recordKind: record.message.model === "<synthetic>" ? "harness" : null }];
+    return [{ role: "assistant", content: parts, recordKind: record.message.model === "<synthetic>" ? "harness" : null, narration }];
   }
   if (record.type !== "user") return [];
   if (typeof content === "string") {

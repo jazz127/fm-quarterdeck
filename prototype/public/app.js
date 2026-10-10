@@ -577,7 +577,7 @@ function messagesForSelection() {
   const query = transcriptQuery.trim().toLocaleLowerCase();
   const matchesQuery = (message) => !query || [message.text, message.author, message.source, ...message.laneNames]
     .some((value) => String(value || "").toLocaleLowerCase().includes(query));
-  const order = (message) => message.role === "captain" || message.kind === "input" ? 0 : message.kind === "thinking" ? 1 : message.kind === "crew" ? 3 : 2;
+  const order = (message) => message.role === "captain" || message.kind === "input" ? 0 : message.kind === "thinking" || message.kind === "narration" ? 1 : message.kind === "crew" ? 3 : 2;
   return [...merged.values()].filter(matchesQuery).sort((a, b) => String(a.occurredAt).localeCompare(String(b.occurredAt)) || order(a) - order(b));
 }
 

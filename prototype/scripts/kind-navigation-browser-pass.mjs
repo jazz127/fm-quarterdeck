@@ -128,7 +128,7 @@ try {
     await openKinds();
     assert.equal(await evaluate("[...document.querySelectorAll('button[data-kind-jump=thinking]')].every(n=>n.disabled)"), true, "absent native kind has no invented targets");
     const controls = await evaluate("[...document.querySelectorAll('button[data-kind-jump]')].map(n=>({label:n.getAttribute('aria-label'),width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height}))");
-    assert.equal(controls.length, 20);
+    assert.equal(controls.length, 22, "eleven kinds, including Firstmate progress, each have Previous and Next controls");
     for (const control of controls) {
       assert.match(control.label, /^(Previous|Next) /);
       assert.ok(control.width >= (width < 720 ? 44 : 24) && control.height >= (width < 720 ? 44 : 24), JSON.stringify(control));

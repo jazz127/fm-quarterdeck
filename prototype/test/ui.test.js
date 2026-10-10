@@ -1161,12 +1161,15 @@ test("message filters use stock labels in signal order and expose Select all/Cle
   const app = ui();
   app.run("renderMessageTypeFilters();");
   const html = app.node("#message-type-filters").innerHTML;
-  for (const label of ["captain", "Firstmate replies", "supervision outcomes", "thinking", "steers", "crew status", "crew replies", "tools", "harness", "unverified input"]) {
+  for (const label of ["captain", "Firstmate replies", "supervision outcomes", "thinking", "Firstmate progress", "steers", "crew status", "crew replies", "tools", "harness", "unverified input"]) {
     assert.match(html, new RegExp(label));
   }
   assert.ok(html.indexOf("captain") < html.indexOf("Firstmate replies"));
   assert.ok(html.indexOf("Firstmate replies") < html.indexOf("supervision outcomes"));
   assert.ok(html.indexOf("supervision outcomes") < html.indexOf("thinking"));
+  assert.ok(html.indexOf("thinking") < html.indexOf("Firstmate progress"));
+  assert.ok(html.indexOf("Firstmate progress") < html.indexOf("steers"));
+  assert.equal(app.run('selectedMessageTypes.has("narration")'), false, "progress lines stay off until the captain turns them on");
   // Default preference is partial (crew hidden) → Select all mode.
   assert.equal(app.node("#kinds-bulk-toggle").dataset.mode, "select");
   assert.equal(app.node("#kinds-bulk-toggle").textContent, "Select all");

@@ -136,6 +136,16 @@ export async function discoverTranscriptInventory(home, { reader = createHistory
   return { inventory, active, warnings, claudePrimary, mainPiSessions };
 }
 
+// A complete lane envelope anywhere in the text. Names match case-insensitively,
+// the same way explicit lane routing does. Malformed closers do not count.
+function containsCompleteLaneBlock(text) {
+  const marker = /\[fm-lane ([^\]\r\n]+)\]\r?\n[\s\S]+?\r?\n\[end ([^\]\r\n]+)\]/g;
+  for (const match of text.matchAll(marker)) {
+    if (match[1].toLowerCase() === match[2].toLowerCase()) return true;
+  }
+  return false;
+}
+
 export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
   const { inventory, active, warnings, claudePrimary, mainPiSessions } = await discoverTranscriptInventory(home, { reader, claudeConfigDir });
   const requested = new Set(selectedIds.slice(0, 60));
@@ -183,8 +193,11 @@ export async function readConversationTranscript(home, publicMessage, { selected
         turns = [{ role: "assistant", content: record.content, recordKind: record.customType === "fm-branch-merge" ? "supervision" : "harness" }];
       } else if (record.type === "message" && ["user", "assistant", "toolResult", "bashExecution"].includes(record.message?.role)) {
         const role = record.message.role;
-        turns = [{ role, content: role === "bashExecution" ? `${record.message.command || ""}\n${record.message.output || ""}` : record.message.content,
-          recordKind: ["toolResult", "bashExecution"].includes(role) ? "tools" : null, author: role === "toolResult" ? record.message.toolName : null }];
+        const content = record.message.content;
+        const toolCallPart = role === "assistant" && Array.isArray(content) && content.some((part) => part?.type === "toolCall");
+        turns = [{ role, content: role === "bashExecution" ? `${record.message.command || ""}\n${record.message.output || ""}` : content,
+          recordKind: ["toolResult", "bashExecution"].includes(role) ? "tools" : null, author: role === "toolResult" ? record.message.toolName : null,
+          narration: role === "assistant" && (record.message.stopReason === "toolUse" || toolCallPart) }];
       } else continue;
       if (!turns.length) continue;
       const timestamp = new Date(record.timestamp ?? record.message?.timestamp);
@@ -204,11 +217,14 @@ export async function readConversationTranscript(home, publicMessage, { selected
           // Remove only machine envelopes, not arbitrary ordinary user turns.
           if (role === "user" && (/^\W*FIRSTMATE_OP:/.test(text) || /^FIRSTMATE SUPERVISION WAKE:/.test(text) || /^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/.test(text))) continue;
           reader.takeMessage();
+          // Pre-tool narration would otherwise be a Firstmate reply. Branch, supervision
+          // and harness turns keep their record kind. A complete lane block stays a reply.
+          const preToolNarration = Boolean(turn.narration) && !recordKind && part.type === "text" && !containsCompleteLaneBlock(text);
           // A transcript role=user entry (or [captain] mirror) is unverified input, never
           // the Captain's: the LLM role says nothing about who wrote it (authorship.js).
           const identity = role === "user" ? sessionInput(origin) : {
             author: recordKind === "supervision" ? "Fleet" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: "firstmate",
-            state: thinking ? "thinking" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : recordKind || "conversation",
+            state: thinking ? "thinking" : preToolNarration ? "working" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : preToolNarration ? "narration" : recordKind || "conversation",
           };
           messages.push({ ...publicMessage({ ...identity, source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex }),
             transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });

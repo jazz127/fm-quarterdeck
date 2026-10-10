@@ -52,6 +52,17 @@ try {
     await command("Page.reload");
     await until("!window.syntheticReloadPending && document.readyState === 'complete'");
   };
+  const reloadWithDraft = async (draft) => {
+    // Seed synthetic storage in the NEW document before review-client restores
+    // it. Config/status responses in the old page call update()/saveDraft() and
+    // can otherwise overwrite a fixture between setItem() and Page.reload.
+    const source = draft === null
+      ? "sessionStorage.removeItem('fm-agentos-review-draft-v1')"
+      : `sessionStorage.setItem('fm-agentos-review-draft-v1', ${JSON.stringify(JSON.stringify(draft))})`;
+    const { identifier } = await command("Page.addScriptToEvaluateOnNewDocument", { source });
+    try { await reload(); }
+    finally { await command("Page.removeScriptToEvaluateOnNewDocument", { identifier }); }
+  };
   const navigation = await command("Page.navigate", { url: base });
   assert.equal(navigation.errorText, undefined, `Fixture navigation failed: ${JSON.stringify(navigation)}`);
   await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#summary')?.children.length > 0");
@@ -193,17 +204,16 @@ try {
   await until("document.querySelector('#lanes').dataset.view === 'overview'");
   console.log("PASS: synthetic phone-to-desktop Fleet Chats search focus; help consumes first Escape, search retains second Escape, annotation/picking and drafts preserved");
   // A realistic persisted board: >30 distinct batches, not >30 entries in one request.
-  await evaluate(`(() => {
+  const retainedDraft = await evaluate(`(() => {
     const entry = { kind: 'message', text: 'Synthetic retained note', region: null, route: '#overview', version: ${JSON.stringify(reviewVersion)} };
     const retries = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, payload: { schema: 'fm-agentos-review.v1', batchId: id, sessionId: '', version: entry.version, route: '#overview', end: false, entries: [entry] } }; });
     const sent = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, receiptId: 'local:' + id, state: 'accepted', entries: [entry] }; });
-    sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false }));
+    return { queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false };
   })()`);
-  await reload();
+  await reloadWithDraft(retainedDraft);
   await until("document.querySelector('#review-message')?.value === 'Unsent draft'");
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
   assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
-  await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
   let loseNext = true, newConfig = false, serverDown = false, eventError;
   // Board rendering is not review readiness: loadConfig() is an independent
   // fetch. Hold its response to force the ordering that used to flake in CI.
@@ -232,7 +242,7 @@ try {
     action.catch((error) => { eventError = error; });
   });
   await command("Fetch.enable", { patterns: [{ urlPattern: "*/api/review", requestStage: "Response" }] });
-  await reload();
+  await reloadWithDraft(null);
   await until("document.querySelector('#review-message') && document.querySelector('#summary').children.length > 0");
   await configPaused.promise;
   await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit()");
@@ -261,9 +271,10 @@ try {
   const delayedId = await evaluate("crypto.randomUUID()");
   const delayed = { schema: "fm-agentos-review.v1", batchId: delayedId, sessionId: "", version: "a".repeat(40), route: "#overview", end: false,
     entries: [{ kind: "message", text: "Synthetic delayed publication", region: null, route: "#overview", version: "a".repeat(40) }] };
-  await evaluate(`sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: ${JSON.stringify(delayedId)}, payload: ${JSON.stringify(delayed)} }] }))`);
-  await reload();
+  const delayedBatch = { id: delayedId, payload: delayed };
+  await reloadWithDraft({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [delayedBatch] });
   await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
+  assert.deepEqual(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches"), [delayedBatch], "delayed publication fixture survives live config/status updates with its original identity");
   await evaluate("document.querySelector('#review-send').click()");
   await until("Boolean(JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]?.rejected)");
   await deliverLocalReview({ ...delayed, provenance: { commit: delayed.version, branch: "uat" } }, receipts);
@@ -276,8 +287,7 @@ try {
   newConfig = false;
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await command("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
-  await reload();
+  await reloadWithDraft(null);
   await until("document.querySelector('.mobile-dock #review-panel-toggle') && document.querySelector('#review-context')?.textContent.includes('Version')");
   const tap = async (selector) => {
     const point = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;

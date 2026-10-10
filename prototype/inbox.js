@@ -61,10 +61,13 @@ export function inboxNoteState(receipts, id) {
 }
 export const inboxReviewState = (receipts, batchId) => inboxNoteState(receipts, requestId(batchId));
 
+// Note ids written by `fm-inbox.sh` (`<epoch>-<token>`). Reply files use the same shape.
+export const SAFE_NOTE_ID = /^[0-9]{1,12}(?:[-_.][A-Za-z0-9_.-]{1,100})?$/;
+
 // Explicit operator action, never called by HTTP intake or health checks.
 // Retry repairs closure only: it must not repeat the underlying captain order.
 export async function replyAndAckNote(home, id, text, { invoke = call } = {}) {
-  if (!path.isAbsolute(home) || !/^[0-9]{1,12}(?:[-_.][A-Za-z0-9_.-]{1,100})?$/.test(id) ||
+  if (!path.isAbsolute(home) || !SAFE_NOTE_ID.test(id) ||
       typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 32 * 1024 || text.includes("\0")) {
     throw new Error("Explicit home, safe note id and bounded nonempty reply required");
   }
