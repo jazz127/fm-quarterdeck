@@ -187,27 +187,33 @@ window.bearingsView = (() => {
     if (card.type === "chat") return chatCardHtml(card);
     const merge = card.type === "merge";
     let url = null;
-    try { const parsed = new URL(card.url); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = parsed.href; } catch {}
+    try { const parsed = new URL(card.boardPrUrl || card.url); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = parsed.href; } catch {}
     // Firstmate holds credentials as ordinary captain-hold decisions, so the ask text decides the chip.
     const credential = !merge && /credential|authentication|access|login/i.test(`${card.verb || ""} ${card.summary || ""}`);
     const label = merge ? "Merge" : credential ? "Credentials" : "Decision";
     const id = idFor(card.key || card.task || label);
     const ask = card.summary || "";
-    const decide = merge ? card.reason || "Merge requested; reason not recorded" : decisionText(card) || (ask && !isLinkedChatLine(card, ask) ? ask : "") || "Decision requested; ask not recorded";
-    const shown = fullest(decide, RECORDED.map(([field]) => card[field]));
-    const shortened = sourceShortened(shown);
+    
+    const fallbackDecide = merge ? card.reason || "Merge requested; reason not recorded" : decisionText(card) || (ask && !isLinkedChatLine(card, ask) ? ask : "") || "Decision requested; ask not recorded";
+    const shown = fullest(fallbackDecide, RECORDED.map(([field]) => card[field]));
+    const shortened = !card.boardTitle && sourceShortened(shown);
+    const titleHtml = card.boardTitle ? `<h3 id="call-decide-${id}">${escape(card.boardTitle)}</h3>` : headlineHtml(id, fallbackDecide, card);
+    const detailHtml = card.boardDetail ? `<h3 id="call-detail-${id}"><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="call-detail-full-${id}">More details</button></h3><div class="call-full" id="call-detail-full-${id}" data-call-full hidden><p>${escape(card.boardDetail)}</p></div>` : "";
+
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
-    const about = [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
+    const about = card.boardAbout || [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
     return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${label}</span>${lifecycleBadgeHtml()}<div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${procrastinateHtml(id)}</div><span class="call-age" data-call-clock="${escape(card.clock?.at || "")}" data-call-clock-label="${escape(card.clock?.label || "Created / updated")}">${escape(clockText(card.clock))}</span></header>
       ${replyBannerHtml()}
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
-      ${headlineHtml(id, decide, card)}
-      <dl class="call-context">${row("About", about)}${linkedAsksHtml(card)}${merge ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
+      ${titleHtml}
+      ${card.boardDecide ? `<p class="call-decide">${escape(card.boardDecide)}</p>` : ""}
+      ${detailHtml}
+      <dl class="call-context">${row("About", about)}${linkedAsksHtml(card)}${merge && !card.boardAbout ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
       <p class="call-id">Task <code>${escape(card.task || "unknown")}</code></p>
       ${shortened ? `<p class="call-shortened">Firstmate's snapshot shortened this ${merge ? "reason" : "ask"}; Quarterdeck shows everything it received. Ask Firstmate in chat for the full text of task <code>${escape(card.task || "unknown")}</code>.</p>` : ""}
       ${url ? `<a class="call-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(url)}</a>` : merge ? '<p class="call-meta">Merge link unavailable</p>' : ""}
-      ${card.answer ? "" : `<p class="call-source-gap">Options, hints and recommendation are not structured in the snapshot; any recorded choices remain in the full ${merge ? "reason" : "ask"} above.</p>`}</div>
+      ${card.answer && card.answer.options && card.answer.options.length ? "" : `<p class="call-source-gap">Options, hints and recommendation are not structured in the snapshot; any recorded choices remain in the full ${merge ? "reason" : "ask"} above.</p>`}</div>
       ${answerHtml(card, `${label} ${card.task || ""}`.trim(), threadHistoryHtml(id))}`;
   }
   // Open or closed full-text panels are memory for this tab only.

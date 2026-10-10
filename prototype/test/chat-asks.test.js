@@ -311,7 +311,7 @@ test("lettered decision lines are radios, and a quoted reply keeps its own descr
     { value: "b", label: "b", hint: "Wait a week" },
   ]);
   assert.deepEqual(lettered.replies, ["a", "b"]);
-  assert.deepEqual(chatCard(sample({ kind: "approval", marker: "APPROVAL NEEDED", key: "chat:approvalletter" })).answer.options, []);
+  assert.deepEqual(chatCard(sample({ kind: "approval", marker: "APPROVAL NEEDED", key: "chat:approvalletter" })).answer.options, [{ value: "a", label: "a", hint: "Staged rollout" }, { value: "b", label: "b", hint: "Wait a week" }]);
   const described = chatCard(sample({
     key: "chat:described",
     text: 'Choose.\n- "stay on Lyra": continue the current setup\nReply "pause work".',
@@ -354,8 +354,8 @@ test("a filed decision with no options takes lettered lines from a linked decisi
   assert.equal(model.chat.open, 0);
   assert.deepEqual(card("hold-letters").answer.options.map((option) => [option.value, option.hint]), [["a", "Staged rollout"], ["b", "Wait a week"]]);
   assert.deepEqual(scanner.asks().find((ask) => ask.recordId === "letters").replies, []);
-  assert.deepEqual(card("hold-approval").answer.options, []);
-  assert.deepEqual(card("hold-described").answer.options, []);
+  assert.deepEqual(card("hold-approval").answer.options, [{ value: "yes", label: "Yes", hint: "Approve or confirm" }, { value: "no", label: "No", hint: "Reject or discard" }]);
+  assert.deepEqual(card("hold-described").answer.options, [{ value: "yes", label: "Yes", hint: "Approve or confirm" }, { value: "no", label: "No", hint: "Reject or discard" }]);
   assert.deepEqual(card("hold-described").chatAsks[0].replyHints, { "stay on Lyra": "continue the current setup", "pause work": "wait for the check" });
   assert.deepEqual(card("hold-structured").answer.options.map((option) => option.value), ["later", "now"]);
 });

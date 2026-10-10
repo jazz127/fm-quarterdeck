@@ -494,9 +494,17 @@ export const chatQuestion = (key) => `chat.${key.slice("chat:".length)}`;
 const describedHint = (text, reply) => publicText(replyDescription(text, reply), 240);
 export function chatCard(ask) {
   let options = ask.replies.map((reply, index) => ({ value: `reply-${index + 1}`, label: publicText(reply, 200), hint: describedHint(ask.text, reply) || "Firstmate's suggested reply" })).filter((option) => option.label);
-  // A decision ask with no quoted replies still offers its explicit lettered lines.
-  // The letters are selections on this card, not suggested-reply phrases.
-  if (!options.length && ask.kind === "decision") options = publishOptions(enumeratedLetterOptions(ask.text), publicText);
+  if (!options.length && (ask.kind === "decision" || ask.kind === "approval")) {
+    const fromText = publishOptions(enumeratedLetterOptions(ask.text), publicText);
+    if (fromText.length) {
+      options = fromText;
+    } else {
+      options = [
+        { value: "yes", label: "Yes", hint: "Approve or confirm" },
+        { value: "no", label: "No", hint: "Reject or discard" }
+      ];
+    }
+  }
   const card = { key: ask.key, type: "chat", kind: ask.kind, marker: ask.marker, summary: publicText(ask.text, Infinity) || `${ask.marker} (no text)`, replies: options.map((option) => option.label),
     source: ask.source.split("/")[0], transcript: { offset: ask.offset, part: ask.part }, clock: { label: "Asked", at: ask.at },
     answer: { question: chatQuestion(ask.key), options, recommend: null, close: null, freeform: true } };
@@ -543,10 +551,37 @@ export function composeCallModel(base, asks, chatView) {
   unlinked.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   const cards = base.cards.map((card) => {
     const entries = linked.get(card.task);
-    if (!entries) return card;
-    const { rev, ...rest } = card;
-    const withAsks = withLinkedChoices(rest, entries);
-    return { ...withAsks, rev: shortHash(withAsks) };
+    let rest = card;
+    let modified = false;
+    if (entries) {
+      const { rev, ...withoutRev } = card;
+      rest = withLinkedChoices(withoutRev, entries);
+      modified = true;
+    }
+    
+    // Fallback: derive Yes/No options if the card is a decision and still has no structured options
+    if (rest.type === "decision" && rest.answer && (!rest.answer.options || !rest.answer.options.length)) {
+      if (!modified) {
+        const { rev, ...withoutRev } = rest;
+        rest = withoutRev;
+      }
+      rest = {
+        ...rest,
+        answer: {
+          ...rest.answer,
+          options: [
+            { value: "yes", label: "Yes", hint: "Approve or confirm" },
+            { value: "no", label: "No", hint: "Reject or discard" }
+          ]
+        }
+      };
+      modified = true;
+    }
+    
+    if (modified) {
+      return { ...rest, rev: shortHash(rest) };
+    }
+    return card;
   });
   const chatCards = unlinked.slice(0, MAX_OPEN).map(chatCard);
   const chat = { state: chatView.state, error: chatView.error, open: unlinked.length, linked: asks.length - unlinked.length, omitted: Math.max(0, unlinked.length - MAX_OPEN), behind: Boolean(chatView.behind),

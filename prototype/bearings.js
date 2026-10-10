@@ -330,7 +330,7 @@ function decisionAnswer(row, task) {
   const options = structured.length ? structured : proseLetterOptions(row);
   const recommend = options.some((option) => option.value === row.recommend_value) ? row.recommend_value : null;
   const close = row.close === "done" || row.close === "release" ? row.close : null;
-  return { question: task, options, recommend, close, freeform: true };
+  return { question: task, options, recommend, close, freeform: true, allow_freeform: row.board_allow_freeform === true, freeform_hint: publicText(row.board_freeform_hint, 240) };
 }
 function mergeAnswer(task) {
   const question = `merge.${task}`;
@@ -403,10 +403,22 @@ export function applyBoardDecisionOptions(raw, board) {
     if (!object(row) || typeof row.id !== "string") continue;
     const item = boardCardForDecision(payload, row.id);
     if (!item || boardBeforeHold(payload.generated, row)) continue;
+    
+    // Always transfer board fields
+    row.board_title = item.title;
+    row.board_about = item.about;
+    row.board_decide = item.decide;
+    row.board_detail = item.detail;
+    row.board_pr_url = item.pr_url;
+    row.board_freeform_hint = item.freeform_hint;
+    row.board_allow_freeform = item.allow_freeform;
+    row.board_close = item.close;
+
     const picked = optionsFromBoardCard(item);
-    if (!picked) continue;
-    row.options = picked.options;
-    row.recommend_value = picked.recommend;
+    if (picked) {
+      row.options = picked.options;
+      row.recommend_value = picked.recommend;
+    }
   }
   return raw;
 }
@@ -455,7 +467,16 @@ function callSection(raw) {
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), answer: decisionAnswer(row, id) }));
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), answer: decisionAnswer(row, id),
+      boardTitle: row.board_title || null,
+      boardAbout: row.board_about || null,
+      boardDecide: row.board_decide || null,
+      boardDetail: row.board_detail || null,
+      boardPrUrl: row.board_pr_url || null,
+      boardFreeformHint: row.board_freeform_hint || null,
+      boardAllowFreeform: row.board_allow_freeform === true,
+      boardClose: row.board_close || null
+    }));
   }
   const merges = new Set();
   for (const row of raw.contributions.captain) {
