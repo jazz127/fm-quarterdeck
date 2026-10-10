@@ -198,6 +198,7 @@ window.bearingsView = (() => {
     const shown = fullest(fallbackDecide, RECORDED.map(([field]) => card[field]));
     const shortened = !card.boardTitle && sourceShortened(shown);
     const titleHtml = card.boardTitle ? `<h3 id="call-decide-${id}">${escape(card.boardTitle)}</h3>` : headlineHtml(id, fallbackDecide, card);
+    const decideToShow = card.boardDecide || (card.boardTitle ? fallbackDecide : "");
     const detailHtml = card.boardDetail ? `<h3 id="call-detail-${id}"><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="call-detail-full-${id}">More details</button></h3><div class="call-full" id="call-detail-full-${id}" data-call-full hidden><p>${escape(card.boardDetail)}</p></div>` : "";
 
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
@@ -207,7 +208,7 @@ window.bearingsView = (() => {
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
       ${titleHtml}
-      ${card.boardDecide ? `<p class="call-decide">${escape(card.boardDecide)}</p>` : ""}
+      ${decideToShow ? `<p class="call-decide">${escape(decideToShow)}</p>` : ""}
       ${detailHtml}
       <dl class="call-context">${row("About", about)}${linkedAsksHtml(card)}${merge && !card.boardAbout ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
       <p class="call-id">Task <code>${escape(card.task || "unknown")}</code></p>
