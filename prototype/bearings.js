@@ -5,10 +5,11 @@ import { access, lstat, open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-// Live Captain's Call. Contract: BEARINGS.md. Quarterdeck runs only Firstmate's own
-// bounded bearings projection to build calls. A bounded read of the selected home's
+// Live Captain's Call and Just landed. Contract: BEARINGS.md. Quarterdeck runs only
+// Firstmate's own bounded bearings projection. A bounded read of the selected home's
 // backlog adds durable clocks plus existing main-home titles, hold reasons and, when the
-// snapshot has no repository, the backlog repo name. A bounded read of that home's
+// snapshot has no repository, the backlog repo name. The same read supplements `(main)`
+// landed rows with a repository, a landed date, and the checked item title. A bounded read of that home's
 // bearings board can supply decision options. Neither read creates calls or writes under FM_HOME.
 export const MODEL_SCHEMA = "fm-quarterdeck-call.v1";
 const SOURCE_SCHEMA = "fm-bearings.v1";
@@ -42,6 +43,39 @@ const httpsUrl = (value) => {
   if (typeof value !== "string" || value.length > 400) return null;
   try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password ? url.href : null; } catch { return null; }
 };
+// Landed links stay whole. The decision cap is 400; a pull-request link can be longer and is still one https URL with no userinfo.
+const landedHttps = (value) => {
+  if (typeof value !== "string" || value.length > 2000) return null;
+  try { const url = new URL(value.trim()); return url.protocol === "https:" && !url.username && !url.password ? url.href : null; } catch { return null; }
+};
+const httpsCandidates = (text) => {
+  if (typeof text !== "string") return [];
+  const found = [];
+  for (const match of text.matchAll(/https:\/\/[^\s<>"']+/g)) {
+    const url = landedHttps(match[0].replace(/[),.;]+$/g, ""));
+    if (url && !found.includes(url)) found.push(url);
+  }
+  return found;
+};
+// The snapshot cuts a long landing link with "…" or "...". Only a backlog URL that continues that prefix may replace it.
+function recoverArtifactUrl(artifact, urls) {
+  if (typeof artifact !== "string" || !/(?:…|\.{3,})\s*$/.test(artifact.trim())) return null;
+  const cut = artifact.trim().replace(/(?:…|\.{3,})\s*$/, "").trim();
+  if (!cut.startsWith("https://")) return null;
+  let best = null;
+  for (const url of Array.isArray(urls) ? urls : []) {
+    if (typeof url === "string" && url.startsWith(cut) && url.length > artifact.trim().length && (!best || url.length > best.length)) best = url;
+  }
+  return landedHttps(best);
+}
+// Colon metadata uses the work-view field split. A space-separated
+// (since|done|reported|merged YYYY-MM-DD) date is not part of the title.
+function ledgerItemTitle(fields) {
+  return fields
+    .replace(/\s+\((?:since|done|reported|merged)\s+\d{4}-\d\d-\d\d\)/gi, "")
+    .split(/\s+\((?:repo|epic|theme|kind|since|done|merged|hold|hold-kind):/i)[0]
+    .trim();
+}
 
 export function shortHash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
@@ -109,10 +143,7 @@ export function backlogTitles(text) {
     const [, id, fields] = item;
     if (seen.has(id)) { titles.delete(id); continue; }
     seen.add(id);
-    const title = fields
-      .replace(/\s+\((?:since|done|reported|merged)\s+\d{4}-\d\d-\d\d\)/gi, "")
-      .split(/\s+\((?:repo|epic|theme|kind|since|done|merged|hold|hold-kind):/i)[0]
-      .trim();
+    const title = ledgerItemTitle(fields);
     if (title) titles.set(id, title);
   }
   return titles;
@@ -131,6 +162,33 @@ export function backlogRepos(text) {
     if (name) repos.set(id, name);
   }
   return repos;
+}
+// Checked items only. Duplicate ids fail closed. The newest done, merged or reported
+// date is the landing clock; a path repository is only its final segment. The title
+// uses the same split as unchecked decision titles. https URLs on that line can
+// continue a snapshot artifact the bearings snapshot cut short.
+export function backlogLandedEvidence(text) {
+  const evidence = new Map(), seen = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    const item = line.match(/^\s*-\s+\[[xX]\]\s+(\S+)\s+-\s+(.+)$/);
+    if (!item || !TASK_ID.test(item[1])) continue;
+    const [, id, fields] = item;
+    if (seen.has(id)) { evidence.delete(id); continue; }
+    seen.add(id);
+    const repo = repoName(fields.match(/\(repo:\s*([^)]+)\)/i)?.[1] || "");
+    const dates = [...fields.matchAll(/\((?:done|merged|reported)\s+(\d{4}-\d\d-\d\d)\)/gi)]
+      .map((match) => durableDate(match[1])).filter(Boolean).sort();
+    const landedAt = dates.at(-1) || null;
+    const title = ledgerItemTitle(fields);
+    const backlogUrls = httpsCandidates(fields);
+    if (repo || landedAt || title || backlogUrls.length) evidence.set(id, {
+      ...(repo ? { backlogRepo: repo } : {}),
+      ...(landedAt ? { landedAt } : {}),
+      ...(title ? { backlogTitle: title } : {}),
+      ...(backlogUrls.length ? { backlogUrls } : {}),
+    });
+  }
+  return evidence;
 }
 // Durable lifecycle blocks are scoped to their ledger item, not arbitrary prose.
 // Duplicate ids invalidate evidence, including checked/unchecked duplicates.
@@ -195,6 +253,21 @@ async function addBacklogEvidence(output, home) {
         ...(reasons.has(row.id) ? { backlogReason: reasons.get(row.id) } : {}),
         ...((typeof row.repo !== "string" || !row.repo.trim()) && repos.has(row.id) ? { repo: repos.get(row.id) } : {}),
       } : row);
+    const landedEvidence = backlogLandedEvidence(text);
+    if (Array.isArray(raw.landed)) raw.landed = raw.landed.map((row) => {
+      if (!object(row) || row.owner !== "(main)" || !landedEvidence.has(row.id)) return row;
+      const evidence = landedEvidence.get(row.id);
+      const rest = { ...row };
+      delete rest.backlogTitle;
+      delete rest.backlogUrls;
+      return {
+        ...rest,
+        ...(evidence.backlogRepo ? { backlogRepo: evidence.backlogRepo } : {}),
+        ...(evidence.landedAt ? { backlogLandedAt: evidence.landedAt } : {}),
+        ...(evidence.backlogTitle ? { backlogTitle: evidence.backlogTitle } : {}),
+        ...(evidence.backlogUrls ? { backlogUrls: evidence.backlogUrls } : {}),
+      };
+    });
     return JSON.stringify(raw);
   } catch { return output; } finally { await file?.close(); }
 }
@@ -342,8 +415,8 @@ async function addBoardEvidence(output, home) {
   } catch { return output; }
 }
 
-// Sections are pluggable so Underway, Landed and Charted Next can join later without
-// changing the transport. Phase 1 enables only the Captain's Call.
+// Sections are pluggable so Underway and Charted Next can join later without
+// changing the transport. The served model enables call and landed.
 function callSection(raw) {
   const repos = new Map();
   for (const row of Array.isArray(raw.in_flight) ? raw.in_flight : []) {
@@ -386,19 +459,70 @@ function callSection(raw) {
   if (invalid) omitted.push({ kind: "invalid-rows", count: invalid });
   return { cards, coverage, omitted };
 }
-export const SECTIONS = { call: callSection };
+const newerAt = (left, right) => !left ? right || null : !right ? left : Date.parse(left) >= Date.parse(right) ? left : right;
+const textShortened = (value) => typeof value === "string" && /(?:…|\.{3,})\s*$/.test(value.trim());
+function landedArtifact(value) {
+  if (typeof value !== "string") return { url: null, artifact: null };
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "-") return { url: null, artifact: null };
+  // A trailing ellipsis is the snapshot's cut, not part of a finished link.
+  if (!textShortened(trimmed)) {
+    const url = landedHttps(trimmed);
+    if (url) return { url, artifact: null };
+  }
+  if (trimmed === "local main") return { url: null, artifact: "local main" };
+  return { url: null, artifact: publicText(trimmed) };
+}
+// Snapshot landed rows only. Invalid rows are counted, never a failed snapshot.
+// Another home's ledger is never read; only snapshot evidence supplies its repository.
+// Its landed time stays unknown.
+function landedSection(raw) {
+  if (!Array.isArray(raw.landed)) return { landed: [], landedInvalid: 0 };
+  let landedInvalid = 0;
+  const seen = new Set();
+  const landed = [];
+  for (const row of raw.landed) {
+    const id = object(row) && typeof row.id === "string" && TASK_ID.test(row.id) ? row.id : null;
+    const what = id ? publicText(row.what, Infinity) : null;
+    if (!id || !what || seen.has(id)) { landedInvalid += 1; continue; }
+    seen.add(id);
+    const owner = token(row.owner);
+    let { url, artifact } = landedArtifact(row.artifact);
+    const backlogTitle = owner === "(main)" ? publicText(row.backlogTitle, Infinity) : null;
+    if (!url && owner === "(main)") {
+      const recovered = recoverArtifactUrl(typeof row.artifact === "string" ? row.artifact : "", row.backlogUrls);
+      if (recovered) { url = recovered; artifact = null; }
+    }
+    const repo = repoName(row.repo) || (owner === "(main)" ? repoName(row.backlogRepo) : null);
+    const at = owner === "(main)" ? newerAt(durableDate(row.landedAt), durableDate(row.backlogLandedAt)) : null;
+    landed.push(withRev({ key: `landed:${id}`, type: "landed", task: id, what, ...(backlogTitle ? { backlogTitle } : {}), repo, owner, url, artifact, clock: { label: "Landed", at } }));
+  }
+  return { landed, landedInvalid };
+}
+export const SECTIONS = { call: callSection, landed: landedSection };
 
-export function normalizeSnapshot(raw, enabled = ["call"]) {
+export function normalizeSnapshot(raw, enabled = ["call", "landed"]) {
   validateSnapshot(raw);
-  const content = { cards: [], coverage: null, omitted: [] };
-  for (const name of enabled) Object.assign(content, SECTIONS[name](raw));
+  const content = { cards: [], coverage: null, omitted: [], landed: [] };
+  let landedInvalid = 0;
+  for (const name of enabled) {
+    const section = SECTIONS[name]?.(raw);
+    if (!section) continue;
+    if (name === "landed") {
+      content.landed = section.landed || [];
+      landedInvalid = section.landedInvalid || 0;
+      continue;
+    }
+    Object.assign(content, section);
+  }
+  if (landedInvalid) content.omitted = [...(content.omitted || []), { kind: "invalid-landed", count: landedInvalid }];
   const holds = Array.isArray(raw.quarterdeck_holds) ? raw.quarterdeck_holds.filter(row => object(row) && TASK_ID.test(row.task) && row.source === "data/backlog.md")
     .map(row => ({ ...row, reason: publicText(row.reason, Infinity), title: publicText(row.title, Infinity) })) : [];
   return { ...content, holds, generatedAt: isoDate(raw.generated) };
 }
 // The revision covers only what the captain sees, never the snapshot clock, so an
-// unchanged Captain's Call is never pushed again.
-export const contentRevision = ({ cards, coverage, omitted, holds }) => shortHash({ cards, coverage, omitted, ...(holds?.length ? { holds } : {}) });
+// unchanged Captain's Call is never pushed again. Empty landed rows stay out of the hash.
+export const contentRevision = ({ cards, coverage, omitted, holds, landed }) => shortHash({ cards, coverage, omitted, ...(holds?.length ? { holds } : {}), ...(landed?.length ? { landed } : {}) });
 
 export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = access, setPriority = os.setPriority, timeoutMs = 45000, maxStdout = 2 * 1024 * 1024, maxStderr = 4096 } = {}) {
   let pending = null;
@@ -481,7 +605,7 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
   now = Date.now, timers = globalThis, minGapMs, maxAgeMs, debounceMs = 2000, tickMs = 10000, firstRunAfterMs = 60000, pollTtlMs = 60000 } = {}) {
   const gap = boundedMs(minGapMs, 30000, MIN_GAP_FLOOR_MS);
   const ceiling = Math.max(gap, boundedMs(maxAgeMs, 300000, MAX_AGE_FLOOR_MS));
-  const empty = { cards: [], coverage: null, omitted: [] };
+  const empty = { cards: [], coverage: null, omitted: [], landed: [] };
   let model = { schema: MODEL_SCHEMA, rev: contentRevision(empty), state: "loading", observedAt: null, checkedAt: null, generatedAt: null, stale: false, error: null, ...empty };
   let lastGood = null;
   let lastAttemptAt = 0;
@@ -512,7 +636,7 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
     try {
       const content = normalizeSnapshot(JSON.parse(await runner()));
       const at = new Date(now()).toISOString();
-      lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds };
+      lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [] };
       publish(lastGood);
     } catch (error) {
       const reason = error instanceof BearingsUnavailable ? error.message : error instanceof SyntaxError ? "Bearings output is not JSON" : "Bearings snapshot failed";

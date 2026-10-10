@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Firstmate custom check: no output on health/skip, one diagnostic on failure.
 set -u
+umask 077
 state=${FM_QUARTERDECK_HEALTH_STATE_DIR:-${FM_HOME:+$FM_HOME/state}}
 if [[ -z "$state" ]]; then
   state=$(cd -- "$(dirname -- "$0")" && pwd -P)
@@ -11,7 +12,7 @@ if [[ ! -d "$state" ]] || ! command -v python3 >/dev/null || ! command -v timeou
   exit 0
 fi
 # Serialize attempts and keep all bookkeeping in the selected Firstmate state.
-exec 9>"$state/quarterdeck-health.lock" 2>/dev/null || { fail; exit 0; }
+exec 9>"$state/fm-quarterdeck-health.lock" 2>/dev/null || { fail; exit 0; }
 flock -n 9 || exit 0
 source_root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 if ! timeout 25 python3 - "$state" "$source_root/prototype/data/agent-state.json" 2>/dev/null <<'PY'
@@ -21,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import subprocess
 import sys
 import time
@@ -126,8 +128,19 @@ def inbox(setting, alarm_minutes):
                 if process.poll() is None:
                     process.kill()
             receipts = json.loads(data)
-        if receipts.get('schema') != 'fm-inbox-receipts.v1' or not isinstance(receipts.get('pending'), list) or receipts.get('omitted'):
+        if receipts.get('schema') != 'fm-inbox-receipts.v1' or not isinstance(receipts.get('pending'), list):
             raise ValueError()
+        # Only pending coverage matters here. Known handled/reply omissions
+        # cannot hide an open note; unknown or malformed coverage fails closed.
+        omitted = receipts.get('omitted', [])
+        if not isinstance(omitted, list):
+            raise ValueError()
+        for omission in omitted:
+            surface = omission.get('surface') if isinstance(omission, dict) else None
+            if not isinstance(surface, str) or not (
+                    re.fullmatch(r'(?:handled notes|replies) omitted by bound: [0-9]+', surface)
+                    or re.fullmatch(r'malformed replies without a valid sequence: [0-9]+ \(.+\)', surface)):
+                raise ValueError()
         overdue = []
         now = time.time()
         for note in receipts['pending']:
@@ -153,7 +166,7 @@ def main():
     def setting(key, default=''):
         return os.environ.get(key, config.get(key, default))
     saved = preferences(setting)  # Read-only, every invocation, including throttled runs.
-    stamp = state / 'quarterdeck-health.stamp'
+    stamp = state / 'fm-quarterdeck-health.stamp'
     now = time.time()
     if setting('FM_QUARTERDECK_HEALTH_FORCE') != '1' and stamp.exists():
         elapsed = now - float(stamp.read_text())
@@ -181,8 +194,10 @@ def dashboard(setting):
     tailnet = setting('FM_QUARTERDECK_HEALTH_URL')
     if not port or not tailnet:
         try:
+            # An explicit binary wins; WSL may expose only the Windows CLI.
+            binary = setting('TAILSCALE_BIN') or shutil.which('tailscale') or shutil.which('tailscale.exe') or 'tailscale'
             result = subprocess.run(
-                [setting('TAILSCALE_BIN', 'tailscale'), 'serve', 'status', '--json'],
+                [binary, 'serve', 'status', '--json'],
                 capture_output=True, timeout=3, check=True)
             routes = []
             for host, web in json.loads(result.stdout).get('Web', {}).items():

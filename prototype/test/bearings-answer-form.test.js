@@ -117,7 +117,7 @@ function tabStorage() {
 }
 
 test("nothing is sent until Queue and then an explicit Send; the sent answer clears its draft and shows receipts", async () => {
-  const t = setup({ responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
+  const t = setup({ responses: [{ status: 202, body: { state: "accepted", noteId: "note-accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
   const card = decision();
   card.answer = { ...card.answer, options: [{ value: "staged", label: "Staged", hint: "Fewer users" }], recommend: "staged" };
   t.patcher.update(model([card]));
@@ -151,6 +151,7 @@ test("nothing is sent until Queue and then an explicit Send; the sent answer cle
   assert.equal(t.fetches[0].url, "/api/bearings/answer");
   assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: "a1", selection: "staged", note: "Use the Tuesday window" });
   assert.equal(t.answers.state(key).phase, "sent");
+  assert.equal(t.answers.state(key).noteId, "note-accepted");
   assert.equal(t.patcher.drafts.text(key), "", "sent words are not 'unsent text'");
   assert.equal(t.part(key, "receipt").hidden, false);
   assert.match(t.part(key, "receipt-text").textContent, /^Sent to Firstmate: Staged - Use the Tuesday window · waiting/);
@@ -197,7 +198,18 @@ test("nothing is sent until Queue and then an explicit Send; the sent answer cle
   assert.match(t.part(key, "receipt-text").textContent, /received by Firstmate/);
   t.timers.advance(15000);
   await flush();
-  assert.match(t.part(key, "receipt-text").textContent, /Firstmate replied: Holding until Tuesday/);
+  assert.equal(t.answers.state(key).phase, "compose", "a reply unlocks the answer");
+  assert.equal(t.answers.state(key).heldReply, "Holding until Tuesday");
+  assert.equal(t.answers.state(key).heldNoteId, "note-accepted");
+  assert.equal(t.part(key, "receipt").hidden, true, "the card banner owns the reply");
+  assert.equal(t.part(key, "text").readOnly, false);
+  assert.equal(radio.disabled, false);
+  assert.equal(radio.checked, false);
+  assert.equal(t.part(key, "text").value, "");
+  assert.equal(t.part(key, "summary").hidden, true);
+  assert.equal(t.part(key, "compose").hidden, false);
+  assert.equal(t.win.callLifecycle.cardState({ card, answer: t.answers.state(key) }), "active");
+  assert.equal(t.win.callLifecycle.replyBanner(t.answers.state(key).heldReply), "Firstmate replied: Holding until Tuesday");
   t.timers.advance(60000);
   await flush();
   assert.equal(t.fetches.length, 3, "a replied answer stops polling");
@@ -456,10 +468,10 @@ test("queued answers list for the review queue, send together with their own ids
 });
 
 test("Send batch relays every queued card on its own route and those cards become Sent", async () => {
-  const asked = new Set();
+  const asked = new Map();
   const t = setup({
-    responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:06.000Z" } }],
-    onAsked: (key) => asked.add(key),
+    responses: [{ status: 202, body: { state: "accepted", noteId: "thread-note", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 202, body: { state: "accepted", noteId: "answer-note", sentAt: "2026-01-02T03:04:06.000Z" } }],
+    onAsked: (key, noteId) => asked.set(key, noteId),
   });
   t.patcher.update(model([decision(), merge()]));
   const first = "decision:alpha-call";
@@ -470,13 +482,14 @@ test("Send batch relays every queued card on its own route and those cards becom
   radio.checked = true;
   radio.dispatchEvent({ type: "change" });
   t.submit(second);
-  const thread = (key) => ({ captainAsked: asked.has(key) });
+  const thread = (key) => ({ captainNoteId: asked.get(key) });
   const stateOf = (key, card) => t.win.callLifecycle.cardState({ card, answer: t.answers.state(key), thread: thread(key) });
   assert.equal(stateOf(first, decision()), "queued");
   assert.equal(stateOf(second, merge()), "queued");
   assert.equal(await t.answers.sendQueued(), true);
   assert.deepEqual(t.fetches.map((entry) => [entry.url, entry.body.key]), [["/api/bearings/thread", first], ["/api/bearings/answer", second]]);
   assert.equal(t.answers.state(first), null, "a sent thread note stays out of the answer sent phase");
+  assert.equal(asked.get(first), "thread-note");
   assert.equal(t.part(first, "text").readOnly, false, "a sent thread card can still ask a follow-up");
   assert.equal(t.part(first, "text").disabled, false);
   assert.equal(Boolean(t.node(first).querySelector("input[type='radio']")?.disabled), false);

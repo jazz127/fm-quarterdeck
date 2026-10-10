@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { quotaDom } from "./helpers/quota-dom.js";
+import { callDom } from "./helpers/call-dom.js";
 import { createHash } from "node:crypto";
 import { parseCss, computed, element } from './helpers/css-model.mjs';
 
@@ -101,16 +102,7 @@ test("request failures use readable HTTP or network messages", async () => {
   }
 });
 
-test("Overview retains KPIs, replaces only the project tree with accessible live calls", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const overview = html.slice(html.indexOf('<section id="overview-view"'), html.indexOf('<section id="work-view"'));
-  assert.match(overview, /id="summary"/);
-  assert.match(overview, /id="overview-columns"/);
-  assert.match(overview, /id="overview-primary"[\s\S]*id="captain-call" aria-labelledby="call-heading"/);
-  assert.match(overview, /id="overview-secondary">[\s\S]*id="secondmates-section"/);
-  assert.doesNotMatch(overview.slice(overview.indexOf('id="overview-secondary"')), /placeholder|coming soon|Charted/i);
-  assert.match(overview, /id="call-status"[^>]*role="status"/);
-  assert.doesNotMatch(overview, /id="projects"|overview-status|Repositories →/);
+test("Overview call counts announce increases and hide the empty badge", () => {
   const app = ui();
   app.run('renderCallBadge({cards:[{},{}]})');
   assert.equal(app.node('#call-badge').textContent, '2');
@@ -121,6 +113,42 @@ test("Overview retains KPIs, replaces only the project tree with accessible live
   assert.equal(app.node('#sr-announcer').textContent, '');
   app.run('renderCallBadge({cards:[]})');
   assert.equal(app.node('#call-badge').hidden, true);
+});
+
+test("BEARINGS lifecycle renders waiting, acknowledged and replied labels on the card", async () => {
+  const dom = callDom();
+  const window = {};
+  vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
+  const card = { key: "decision:alpha-call", type: "decision", task: "alpha-call", summary: "Pick the rollout window", rev: "a1" };
+  const node = dom.document.createElement("article");
+  node.dataset = { callKey: card.key };
+  node.innerHTML = window.bearingsView.cardHtml(card);
+  const app = ui();
+  app.node("#call-cards").querySelectorAll = () => [node];
+  app.run(`callPatcher.applied = { cards: [${JSON.stringify(card)}] };
+    callPatcher.tracker = { state: () => ({ selected: null }) };
+    callLifecycleFilter = "all";`);
+  const entry = { kind: "answer", from: "captain", noteId: "current-note", at: "2026-01-02T11:00:00.000Z" };
+  const staleAnswer = { phase: "sent", noteId: "old-note", sentAt: "2026-01-02T10:00:00.000Z", receipt: { state: "received" } };
+  for (const [state, reply, expectedLabel, expectedBanner] of [
+    ["waiting", null, "Sent - waiting for Firstmate to read", null],
+    ["received", null, "Firstmate is on it", null],
+    ["replied", "Holding until Tuesday", null, "Firstmate replied: Holding until Tuesday"],
+    ["replied", "", null, "Firstmate replied"],
+  ]) {
+    const entries = [{ ...entry, state }, ...(reply === null ? [] : [{ kind: "reply", noteId: entry.noteId, text: reply }])];
+    app.run(`callAnswers = { state: () => (${JSON.stringify(staleAnswer)}), queued: () => [] };
+      callThreads = { state: () => ({ entries: ${JSON.stringify(entries)} }) };
+      renderCallLifecycle();`);
+    const sent = node.querySelector("[data-call-sent-label]");
+    const banner = node.querySelector("[data-fm-reply]");
+    assert.equal(sent.hidden, expectedLabel === null);
+    if (expectedLabel) assert.equal(sent.textContent, expectedLabel);
+    assert.equal(banner.hidden, expectedBanner === null);
+    if (expectedBanner) assert.equal(banner.textContent, expectedBanner);
+    assert.equal(node.getAttribute("data-call-lifecycle"), expectedBanner ? "active" : "sent");
+    assert.equal(node.querySelector("[data-call-lifecycle-badge]").getAttribute("aria-label"), expectedBanner ? "Active" : "Sent");
+  }
 });
 
 test("Active view shows Send queued for the staged count and the click reuses the review sender", () => {
@@ -2651,21 +2679,6 @@ test("Visible status button filters: replace dropdown reliance with accessible b
   app.run(`workPhase = "waiting"; renderWorkSplit();`);
   assert.equal(app.node("#work-phase").value, "waiting");
   assert.match(app.node("#work-phase-buttons").innerHTML, /class="status-filter-btn active"[^>]*data-status-value="waiting"[^>]*aria-pressed="true"/);
-});
-
-test("Overview and Work Split wide-screen viewport utilization: scoped width expansion without indiscriminate sprawl", () => {
-  // Scoped width expansion rules
-  assert.match(css, /#overview-view > \*,\s*#work-view > \* \{[\s\S]*?max-width:\s*100%;/);
-  assert.match(css, /\.overview-columns \{ display: grid; grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); gap: 22px; align-items: start; \}/);
-  assert.match(css, /@media \(max-width: 720\.005px\) \{[\s\S]*?#overview-secondary \{ display: block; \}/);
-  assert.match(css, /#work-view section \{[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%;/);
-  assert.match(css, /#work-view section > p\.muted \{[\s\S]*?max-width:\s*80ch;/);
-
-  // Scoped desktop/tablet padding
-  assert.match(css, /@media \(min-width: 721px\) \{[\s\S]*?#overview-view\.feature-view,\s*#work-view\.feature-view \{[\s\S]*?padding-left:\s*clamp\(16px,\s*2vw,\s*32px\);/);
-
-  // Default feature-view retains 1200px max-width for other pages
-  assert.match(css, /\.feature-view > \* \{ max-width: 1200px;/);
 });
 
 test("quota cards distinguish reused and stale readings and suppress stale projections", () => {

@@ -3,6 +3,7 @@
 This repository is the live Firstmate Quarterdeck product home; start with `README.md` for scope and checks.
 
 - Keep live Quarterdeck product work here.
+- Any Firstmate-side preference, hook, check, skill or setting added for Quarterdeck must be installed by `scripts/firstmate-integration.mjs`, carry the literal `fm-quarterdeck` tag (directly or in its ownership manifest), and be covered by uninstall, inventory and `fm-toolcheck`. Do not hand-edit Firstmate for Quarterdeck.
 - `prototype/` is the runnable custom frontend; its checks are documented in `README.md`.
 - `expenses/README.md` documents the expense ledger and helper commands.
 - `docs/README.md` indexes the Quarterdeck architecture and v2 phased feature plans.

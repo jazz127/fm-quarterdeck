@@ -72,7 +72,7 @@ test('long text stays in the title; Firstmate shortening is disclosed beside the
 });
 test('answerable cards render a form: freeform only without options, options with a recommended marker, Merge now for merges', () => {
   const freeform = view.cardHtml({ key: 'decision:alpha-call', task: 'alpha-call', type: 'decision', summary: 'Pick a window', answer: { question: 'alpha-call', options: [], recommend: null, close: null, freeform: true } });
-  assert.match(freeform, /data-call-sent-label hidden>Sent - waiting for Firstmate<\/p>\s*<section class="call-your-answer" data-call-answer-summary hidden><h4>Your answer<\/h4>/);
+  assert.match(freeform, /data-fm-reply hidden><\/p>\s*<p class="call-sent-label" data-call-sent-label hidden>Sent - waiting for Firstmate to read<\/p>\s*<section class="call-your-answer" data-call-answer-summary hidden><h4>Your answer<\/h4>/);
   assert.match(freeform, /data-call-answer-summary hidden>[\s\S]*?<h3 /, "the sent answer summary sits above the ask");
   assert.match(freeform, /<form class="call-answer" data-call-answer data-call-answer-label="Decision alpha-call" novalidate/);
   assert.match(freeform, /No structured options for this call yet; any recorded choices are in the full ask above/);
@@ -174,6 +174,19 @@ test('coverage names chat scan failures, omitted asks and bounded catchup', () =
   const text = view.coverageText({ state: 'ready', chat: { state: 'unavailable', error: 'Synthetic scan failed', omitted: 4, behind: true } });
   for (const phrase of ['Synthetic scan failed', '4 older chat asks not shown', 'Still reading the Firstmate transcript']) assert.ok(text.includes(phrase));
   assert.doesNotMatch(view.coverageText({ state: 'ready', chat: { state: 'ready', omitted: 0, behind: false } }), /Chat asks unavailable|not shown|Still reading/);
+});
+test('a landed headline continues only a shortened snapshot what', () => {
+  const id = view.idFor('landed:ship-window');
+  const continued = view.landedHeadlineHtml({ key: 'landed:ship-window', what: 'Ship the example-app release…', backlogTitle: 'Ship the example-app release window' });
+  assert.ok(continued.includes(`<h3 id="landed-what-${id}">Ship the example-app release window</h3>`));
+  assert.doesNotMatch(continued, /data-call-text-toggle|data-call-truncated/);
+  const other = view.landedHeadlineHtml({ key: 'landed:local-notes', what: 'Notes from the other ledger…', backlogTitle: 'Land the sample notes on local main' });
+  assert.match(other, /data-call-text-toggle[^>]*>Notes from the other ledger…/);
+  assert.match(other, /Backlog title[\s\S]*Land the sample notes on local main/);
+  assert.doesNotMatch(other, /<h3[^>]*>Land the sample notes on local main<\/h3>/);
+  const same = view.landedHeadlineHtml({ key: 'landed:plain', what: 'Land the notes' });
+  assert.match(same, /<h3[^>]*>Land the notes<\/h3>/);
+  assert.doesNotMatch(same, /data-call-text-toggle/);
 });
 test('check ages are conservative for missing or future clocks', () => {
   assert.equal(view.age(null, 100000), 'age unknown');

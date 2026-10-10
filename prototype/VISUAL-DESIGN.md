@@ -19,6 +19,8 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Each card has one text box, with Queue, Send and Edit beside it, and the hint "Pick an option to answer, or just type - Firstmate replies in the thread."
 - Opening a thread shows the latest exchange above that box, the count of earlier messages, and a control that expands the same history.
 - Each card carries a small coloured dot beside the type chip, one colour per state: Active green, Queued amber, Sent blue, Procrastinated muted.
+- Both Sent labels, waiting for Firstmate to read and Firstmate is on it, use the Sent blue dot.
+- A reply returns the card to the Active green dot.
 - The dot has an accessible name. Sent uses a dashed border and Procrastinated a dotted border. The status words and counts live only on the status control.
 - One status control above the cards offers Active, Queued, Sent, Procrastinated, and All, each with a count.
 - Active is pressed on the first load.
@@ -28,8 +30,12 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - The same pill stays available on Sent cards and in the Procrastinated status.
 - Below the page header and the KPI summary, the Overview body is two equal columns with a 22px gap.
 - Captain's Call stays in the first column.
-- The second column (`#overview-secondary`) contains the Second mates section; [work taxonomy](WORK-TAXONOMY.md#explicit-three-level-navigation) owns its sources and visibility.
-- On a phone the columns stack, with second mates after calls; an empty second column takes no space.
+- Just landed fills the second column (`#overview-secondary`) with the same poster cards: a Landed chip, the repository, the clock, the full landing title, and a full pull-request link or the label local main.
+- Each landed card has an Acknowledge control and one follow-up box. It has no Procrastinate control.
+- The Just landed heading uses the same badge style as Captain's Call; [Just landed](BEARINGS.md#just-landed) owns its count and acknowledgement behavior.
+- Acknowledge and Acknowledged (N) are at least 44px high.
+- On a phone the two Overview sections are tabs, Captain's Call (N) and Just landed (N). Just landed N is the same new count, and the chosen tab is remembered for that viewer.
+- Second mates occupy a separate section below the columns, outside both phone tab panels, so they stay visible on either tab. [Work taxonomy](WORK-TAXONOMY.md#explicit-three-level-navigation) owns their sources and visibility.
 - Chat asks keep a double left border at the same width as other cards, so the mark does not indent the card. Also asked in chat stacks on its own line and does not widen the context column.
 - A decision title is the filed hold's full reason when one is recorded. Also asked in chat is a smaller secondary line, and a `[task:...]` marker is omitted. Reply phrases from that ask are option choices under the reason.
 - Captain's Call answer forms separate source context from input with a quiet rule; option cards use native radios, a textual Recommended chip and visible keyboard focus. All call buttons and option targets are at least 44px high. Confirmation and receipt panels retain readable text (disabled fields use muted ink, not whole-form opacity), and phone actions wrap without overflow.

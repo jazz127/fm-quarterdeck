@@ -100,12 +100,12 @@ test("a card shows the latest exchange above the text box, with a count, and kee
 });
 
 test("a confirmed thread note reloads history and shows the receipt notice", async () => {
-  const t = setup({ responses: [history(), history([{ kind: "ask", from: "captain", at: "2026-01-02T10:00:00.000Z", text: "What is alpha?", state: "waiting" }])] });
+  const t = setup({ responses: [history(), history([{ kind: "ask", from: "captain", noteId: "note-accepted", at: "2026-01-02T10:00:00.000Z", text: "What is alpha?", state: "waiting" }])] });
   t.patcher.update(model([decision()]));
   await flush();
   assert.equal(t.fetches.length, 1, "history loads before any note is sent");
   assert.equal(t.part("expand").hidden, true);
-  t.threads.noteSent(KEY);
+  t.threads.noteSent(KEY, "note-accepted");
   await flush();
   assert.match(t.part("notice").textContent, /Question sent to Firstmate/);
   assert.equal(t.part("notice").hidden, false, "the send notice stays visible");

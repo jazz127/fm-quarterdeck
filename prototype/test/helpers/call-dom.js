@@ -27,9 +27,16 @@ export function callDom() {
       this.parentNode = null;
       this.text = "";
       this.value = "";
+      this.selectionStart = 0;
+      this.selectionEnd = 0;
+      this.selectionDirection = "none";
       this.rect = null;
     }
     get children() { return this.childNodes.filter((node) => node instanceof Element); }
+    get nextElementSibling() {
+      const siblings = this.parentNode?.children || [];
+      return siblings[siblings.indexOf(this) + 1] || null;
+    }
     get isConnected() { return this === document.body || Boolean(this.parentNode?.isConnected); }
     getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
     hasAttribute(name) { return this.attrs.has(name); }
@@ -83,6 +90,7 @@ export function callDom() {
     contains(node) { for (let cursor = node; cursor; cursor = cursor.parentNode) if (cursor === this) return true; return false; }
     insertBefore(node, before) {
       if (node === before) return node;
+      if (node.isConnected && node.contains(document.activeElement)) document.activeElement = null;
       if (node.parentNode) node.parentNode.childNodes.splice(node.parentNode.childNodes.indexOf(node), 1);
       const index = before ? this.childNodes.indexOf(before) : this.childNodes.length;
       if (index < 0) throw new Error("Reference node is not a child");
@@ -92,6 +100,11 @@ export function callDom() {
       return node;
     }
     append(...nodes) { for (const node of nodes) this.insertBefore(node, null); }
+    replaceWith(node) {
+      if (!this.parentNode) return;
+      this.parentNode.insertBefore(node, this);
+      this.remove();
+    }
     remove() {
       if (!this.parentNode) return;
       if (this.contains(document.activeElement)) document.activeElement = null;
@@ -138,11 +151,16 @@ export function callDom() {
       document.activeElement = null;
       this.dispatchEvent({ type: "focusout", relatedTarget: null });
     }
+    setSelectionRange(start, end, direction = "none") {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+      this.selectionDirection = direction;
+    }
     // A user gesture: pointer press, release and click on this element.
     click() {
       this.dispatchEvent({ type: "pointerdown" });
       this.dispatchEvent({ type: "pointerup" });
-      this.dispatchEvent({ type: "click" });
+      this.dispatchEvent({ type: "click", preventDefault() {} });
     }
     type(text) {
       this.focus();
