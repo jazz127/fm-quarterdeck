@@ -45,16 +45,26 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   browser = await openBrowser();
   const { command, evaluate, until } = browser;
-  const reload = async () => {
-    // Page.reload acknowledges the command before replacing the document.
-    // Otherwise a readiness predicate can match the previous page's state.
-    await evaluate("window.syntheticReloadPending = true");
-    await command("Page.reload");
-    await until("!window.syntheticReloadPending && document.readyState === 'complete'");
+  const reload = async (draft) => {
+    // The outgoing page can still persist config/status updates until unload.
+    // Install scenario storage in the new document before restoreDraft runs.
+    const initializer = draft === undefined ? null : await command("Page.addScriptToEvaluateOnNewDocument", {
+      source: draft === null ? "sessionStorage.removeItem('fm-agentos-review-draft-v1')"
+        : `sessionStorage.setItem('fm-agentos-review-draft-v1', ${JSON.stringify(JSON.stringify(draft))})`,
+    });
+    try {
+      // Page.reload acknowledges the command before replacing the document.
+      // Otherwise a readiness predicate can match the previous page's state.
+      await evaluate("window.syntheticReloadPending = true");
+      await command("Page.reload");
+      await until("!window.syntheticReloadPending && document.readyState === 'complete'");
+    } finally {
+      if (initializer) await command("Page.removeScriptToEvaluateOnNewDocument", { identifier: initializer.identifier });
+    }
   };
   const navigation = await command("Page.navigate", { url: base });
   assert.equal(navigation.errorText, undefined, `Fixture navigation failed: ${JSON.stringify(navigation)}`);
-  await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#projects')?.children.length > 0");
+  await until("document.querySelector('#review-context')?.textContent.includes('Version') && document.querySelector('#summary')?.children.length > 0");
   assert.equal(await evaluate("document.title"), "fm-quarterdeck");
   assert.equal(await evaluate("document.querySelector('.product-identity strong').textContent"), "Quarterdeck");
   const escape = async () => {
@@ -116,7 +126,7 @@ try {
     assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), true, "outside dismissal preserves annotation mode");
     await evaluate("document.querySelector('#review-toggle').click()");
     assert.equal(await evaluate("document.querySelector('#review-toggle').checked"), false);
-    await evaluate("document.querySelector('#projects').dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1, altKey: true }))");
+    await evaluate("document.querySelector('#summary').dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1, altKey: true }))");
     await until("!document.querySelector('#review-annotation').hidden");
     await evaluate("document.querySelector('#review-message').value = 'Synthetic annotation draft'; document.querySelector('#review-message').dispatchEvent(new Event('input', { bubbles: true }))");
     await evaluate("document.querySelector('#review-gesture-help').focus(); document.querySelector('#review-gesture-help').click()");
@@ -193,22 +203,22 @@ try {
   await until("document.querySelector('#lanes').dataset.view === 'overview'");
   console.log("PASS: synthetic phone-to-desktop Fleet Chats search focus; help consumes first Escape, search retains second Escape, annotation/picking and drafts preserved");
   // A realistic persisted board: >30 distinct batches, not >30 entries in one request.
-  await evaluate(`(() => {
+  const retainedBoard = await evaluate(`(() => {
     const entry = { kind: 'message', text: 'Synthetic retained note', region: null, route: '#overview', version: ${JSON.stringify(reviewVersion)} };
     const retries = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, payload: { schema: 'fm-agentos-review.v1', batchId: id, sessionId: '', version: entry.version, route: '#overview', end: false, entries: [entry] } }; });
     const sent = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, receiptId: 'local:' + id, state: 'accepted', entries: [entry] }; });
-    sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false }));
+    return { queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false };
   })()`);
-  await reload();
+  await reload(retainedBoard);
   await until("document.querySelector('#review-message')?.value === 'Unsent draft'");
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
   assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
-  await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
   let loseNext = true, newConfig = false, serverDown = false, eventError;
   // Board rendering is not review readiness: loadConfig() is an independent
   // fetch. Hold its response to force the ordering that used to flake in CI.
   let holdConfig = true;
   const configPaused = Promise.withResolvers();
+  const heldConfigRequests = [];
   browser.onEvent((event) => {
     if (event.method !== "Fetch.requestPaused") return;
     const { requestId, request } = event.params;
@@ -216,7 +226,9 @@ try {
     if (request.method === "GET" && serverDown) {
       action = command("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" });
     } else if (request.method === "GET" && holdConfig) {
-      holdConfig = false;
+      // Recovery and live-connection rechecks can race the initial config fetch.
+      // Hold all of them, not just the first, until the readiness assertion.
+      heldConfigRequests.push(requestId);
       configPaused.resolve(requestId);
       return;
     } else if (request.method === "POST" && loseNext) {
@@ -229,15 +241,16 @@ try {
     action.catch((error) => { eventError = error; });
   });
   await command("Fetch.enable", { patterns: [{ urlPattern: "*/api/review", requestStage: "Response" }] });
-  await reload();
-  await until("document.querySelector('#review-message') && document.querySelector('#projects').children.length > 0");
-  const configRequestId = await configPaused.promise;
+  await reload(null);
+  await until("document.querySelector('#review-message') && document.querySelector('#summary').children.length > 0");
+  await configPaused.promise;
   await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit()");
   assert.equal(await evaluate("document.querySelector('#review-send').disabled"), true, "rendered board cannot send before review configuration arrives");
   await evaluate("document.querySelector('#review-send').click()");
   assert.equal(deliveries, 0, "an early click is ignored, not a simulated lost delivery");
   assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue.length"), 1, "early click preserves the queued note");
-  await command("Fetch.continueRequest", { requestId: configRequestId });
+  holdConfig = false;
+  await Promise.all(heldConfigRequests.map(requestId => command("Fetch.continueRequest", { requestId })));
   await until("document.querySelector('#review-context')?.textContent.includes('Version') && !document.querySelector('#review-send').disabled");
   await evaluate("document.querySelector('#review-send').click()");
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 1 && !s.inFlight; })()");
@@ -257,8 +270,7 @@ try {
   const delayedId = await evaluate("crypto.randomUUID()");
   const delayed = { schema: "fm-agentos-review.v1", batchId: delayedId, sessionId: "", version: "a".repeat(40), route: "#overview", end: false,
     entries: [{ kind: "message", text: "Synthetic delayed publication", region: null, route: "#overview", version: "a".repeat(40) }] };
-  await evaluate(`sessionStorage.setItem('fm-agentos-review-draft-v1', JSON.stringify({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: ${JSON.stringify(delayedId)}, payload: ${JSON.stringify(delayed)} }] }))`);
-  await reload();
+  await reload({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: delayedId, payload: delayed }] });
   await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
   await evaluate("document.querySelector('#review-send').click()");
   await until("Boolean(JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]?.rejected)");
@@ -272,8 +284,7 @@ try {
   newConfig = false;
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await command("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await evaluate("sessionStorage.removeItem('fm-agentos-review-draft-v1')");
-  await reload();
+  await reload(null);
   await until("document.querySelector('.mobile-dock #review-panel-toggle') && document.querySelector('#review-context')?.textContent.includes('Version')");
   const tap = async (selector) => {
     const point = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;

@@ -12,12 +12,19 @@ import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { readConversationTranscript } from "./transcript.js";
+import { readFirstmateActivity } from "./firstmate-activity.js";
 import { compactLanes } from "./lane-payload.js";
 import { readSupervisionOutcomes } from "./supervision.js";
 import { createQuotaReader } from "./quota.js";
+import { createBearingsHub } from "./bearings.js";
+import { createProcrastinationStore, procrastinationKey } from "./call-procrastination.js";
+import { chatAskKey, chatAsksPath, createCallSource, createChatAskScanner } from "./chat-asks.js";
+import { AnswerRefused, MAX_BODY_BYTES as MAX_ANSWER_BODY_BYTES, createAnswerRelay } from "./bearings-answer.js";
+import { MAX_THREAD_BODY_BYTES, ThreadRefused, createThreadRelay, createTranscriptTurns } from "./bearings-thread.js";
 import { createConfiguredCostReader } from "./costs.js";
 import { readExpenseOverlay } from "./private-runtime.js";
 import { readPreferences } from "./preferences.js";
+import { readHealthPreferences, saveHealthPreferences, validHealthPreferences } from "./health-preferences.js";
 import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
 import { announceReview, inboxReady, inboxReceipts, inboxReviewState } from "./inbox.js";
@@ -61,6 +68,15 @@ const STATIC_FILES = new Map([
   ["/shell-width.js", ["shell-width.js", "text/javascript; charset=utf-8"]],
   ["/shell-panel.css", ["shell-panel.css", "text/css; charset=utf-8"]],
   ["/preview-selector.js", ["preview-selector.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-patch.js", ["bearings-patch.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-live.js", ["bearings-live.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-view.js", ["bearings-view.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-answer-form.js", ["bearings-answer-form.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-overflow.js", ["bearings-overflow.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-dismiss.js", ["bearings-dismiss.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-thread-panel.js", ["bearings-thread-panel.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-procrastinate.js", ["bearings-procrastinate.js", "text/javascript; charset=utf-8"]],
+  ["/call-lifecycle.js", ["call-lifecycle.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
 ]);
 
@@ -920,13 +936,14 @@ export async function loadExpenses(env = {}, { canonicalPath = CANONICAL_LEDGER_
 }
 
 export async function dashboardData(env = process.env, agentStateOwner = createAgentStateOwner(configuredStatePath(env)), durability = verifyDurability, expenseReader = loadExpenses) {
-  const [fleet, expenses] = await Promise.all([loadFleet(env, agentStateOwner, durability), expenseReader(env)]);
+  const [fleet, expenses, firstmateActivity] = await Promise.all([loadFleet(env, agentStateOwner, durability), expenseReader(env), readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) })]);
   const configuredRefresh = Number(env.FM_REFRESH_MS || 0);
   return {
     generatedAt: new Date().toISOString(),
     refreshMs: Number.isFinite(configuredRefresh) && configuredRefresh >= 5000 ? configuredRefresh : 0,
     fleet,
     expenses,
+    firstmateActivity,
   };
 }
 
@@ -947,7 +964,7 @@ async function sendJson(request, response, status, body) {
   response.end(payload);
 }
 
-export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options) } = {}) {
+export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), bearingsSource = createCallSource({ home: env.FM_HOME, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), statePath: chatAsksPath(configuredStatePath(env)) }) }), bearingsStream = {}, answerRelay = createAnswerRelay({ home: env.FM_HOME }), threadRelay = createThreadRelay({ home: env.FM_HOME, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env) }) }), costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options), procrastination = createProcrastinationStore(env) } = {}) {
   const review = reviewConfiguration(env);
   const agentStatePath = configuredStatePath(env);
   const agentStateOwner = createAgentStateOwner(agentStatePath);
@@ -991,7 +1008,10 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  // Live Captain's Call streams (host only; previews poll /api/bearings?since).
+  const streamOptions = { heartbeatMs: 20000, recycleMs: 600000, maxStreams: 16, ...bearingsStream };
+  const streams = new Set();
   const server = http.createServer(async (request, response) => {
     let release;
     let used = false;
@@ -1044,7 +1064,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (preview && (selected.id === hostId || ["/api/quota", "/api/costs", "/api/work-state"].includes(preview.pathname))) url.pathname = preview.pathname;
-      if (selected?.id === hostId && request.method === "GET" && ["/api/dashboard", "/api/lanes", "/api/preferences", "/api/quota", "/api/costs"].includes(url.pathname)) {
+      if (selected?.id === hostId && request.method === "GET" && ["/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/costs"].includes(url.pathname)) {
         response.once("finish", () => { if (response.statusCode === 200) lastDataRead.set(hostId, new Date().toISOString()); });
       }
       if (preview && preview.pathname === "/api/chat" && request.method === "POST") {
@@ -1224,10 +1244,29 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         await sendJson(request, response, 200, {
           generatedAt: new Date().toISOString(),
           source: firstmate.source,
+          firstmateActivity: await readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) }),
           ...(url.searchParams.get("format") === "refs.v1" ? compactLanes(firstmate.lanes) : { lanes: firstmate.lanes }),
           transcript: firstmate.transcript,
         });
         return;
+      }
+      if (url.pathname === "/api/preferences/health") {
+        if (request.method === "GET") {
+          await sendJson(request, response, 200, await readHealthPreferences(env));
+          return;
+        }
+        if (request.method === "POST") {
+          if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
+          if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 400, { error: "JSON required" }); return; }
+          let text = "";
+          for await (const chunk of request) { text += chunk; if (text.length > 2048) { await sendJson(request, response, 413, { error: "Request too large" }); return; } }
+          let value;
+          try { value = JSON.parse(text); } catch {}
+          if (!validHealthPreferences(value)) { await sendJson(request, response, 400, { error: "Use whole minutes from 1 to 1440 for both settings" }); return; }
+          try { await sendJson(request, response, 200, await saveHealthPreferences(env, value)); }
+          catch { await sendJson(request, response, 503, { error: "Health preferences could not be saved" }); }
+          return;
+        }
       }
       if (request.method === "GET" && url.pathname === "/api/preferences") {
         try {
@@ -1246,6 +1285,133 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         await sendJson(request, response, 200, await quotaReader());
         used = true;
         if (selected) lastDataRead.set(selected.id, new Date().toISOString());
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/bearings") {
+        bearingsSource.touch();
+        // A refresh or poll reads any new transcript lines first (bounded, stat-only when idle).
+        // Only the chat scan is awaited; the snapshot run never delays a read.
+        if (bearingsSource.refresh) await bearingsSource.refresh();
+        const since = url.searchParams.get("since");
+        const freshness = bearingsSource.freshness();
+        const model = since && since === freshness.rev ? { unchanged: true, ...freshness } : bearingsSource.current();
+        const firstmateActivity = await readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) });
+        await sendJson(request, response, 200, { ...model, firstmateActivity });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/bearings/stream") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (streams.size >= streamOptions.maxStreams) { await sendJson(request, response, 503, { error: "Too many live streams; poll /api/bearings" }); return; }
+        openBearingsStream(request, response);
+        return;
+      }
+      // Captain's Call answers: host only, an explicit captain submit relayed to Firstmate (BEARINGS.md "Answers").
+      if (url.pathname === "/api/bearings/answer" && request.method === "POST") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
+        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        let text = "";
+        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > MAX_ANSWER_BODY_BYTES) { await sendJson(request, response, 413, { error: "Answer too large", code: "too-long" }); return; } }
+        let body = null;
+        try { body = JSON.parse(text); } catch {}
+        // A request spanning a fast-forward is refused rather than answered under a mixed identity.
+        if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
+        try {
+          const accepted = await answerRelay.submit(body, bearingsSource.current());
+          // A chat ask has no Firstmate hold to close it; the confirmed relay resolves it here.
+          if (accepted.envelope?.type === "chat") await bearingsSource.resolveChat?.(accepted.key, "answered", { requestId: accepted.requestId }).catch(() => {});
+          await sendJson(request, response, 202, accepted);
+        } catch (error) {
+          if (!(error instanceof AnswerRefused)) throw error;
+          await sendJson(request, response, error.status, { error: error.message, code: error.code });
+        }
+        return;
+      }
+      // Dismiss a chat ask (BEARINGS.md "Chat asks"): recorded only in Quarterdeck's own state.
+      if (url.pathname === "/api/bearings/dismiss" && request.method === "POST") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
+        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        let text = "";
+        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 1024) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; } }
+        let body = null;
+        try { body = JSON.parse(text); } catch {}
+        if (!body || typeof body !== "object" || Object.keys(body).sort().join(",") !== "cardRev,key" || !chatAskKey(body.key) || !/^[0-9a-f]{16}$/.test(String(body.cardRev))) {
+          await sendJson(request, response, 400, { error: "Dismiss must name a chat ask and the revision shown", code: "invalid" }); return;
+        }
+        if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
+        const card = (bearingsSource.current().cards || []).find((entry) => entry.key === body.key);
+        if (!card || card.type !== "chat") { await sendJson(request, response, 409, { error: "This ask is no longer open", code: "gone" }); return; }
+        if (card.rev !== body.cardRev) { await sendJson(request, response, 409, { error: "This ask changed; review it before dismissing", code: "changed" }); return; }
+        try { await bearingsSource.resolveChat(body.key, "dismissed"); }
+        catch { await sendJson(request, response, 503, { error: "Quarterdeck could not record the dismissal; try again", code: "unrecorded" }); return; }
+        await sendJson(request, response, 200, { state: "dismissed", key: body.key });
+        return;
+      }
+      // Procrastinate (BEARINGS.md "Procrastinated calls"): Quarterdeck viewing state only, never an answer.
+      if (url.pathname === "/api/bearings/procrastinate" && request.method === "GET") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        const current = bearingsSource.current?.() || {};
+        const openKeys = current.state === "ready" || current.state === "stale"
+          ? new Set((current.cards || []).map((card) => card.key)) : null;
+        try { await sendJson(request, response, 200, await procrastination.view(openKeys)); }
+        catch { await sendJson(request, response, 503, { error: "Procrastination state unavailable" }); }
+        return;
+      }
+      if (url.pathname === "/api/bearings/procrastinate" && request.method === "POST") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
+        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        let text = "";
+        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 1024) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; } }
+        let body = null;
+        try { body = JSON.parse(text); } catch {}
+        const fields = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).sort().join(",") : "";
+        const durationOk = fields === "duration,key" && procrastinationKey(body.key) && ["3h", "6h", "1d", "3d"].includes(body.duration);
+        const clearOk = fields === "clear,key" && body.clear === true && procrastinationKey(body.key);
+        if (!durationOk && !clearOk) { await sendJson(request, response, 400, { error: "Procrastinate must name a call and a duration or a clear", code: "invalid" }); return; }
+        if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
+        const card = (bearingsSource.current()?.cards || []).find((entry) => entry.key === body.key);
+        if (!card) { await sendJson(request, response, 409, { error: "This call is no longer open", code: "gone" }); return; }
+        try {
+          const next = durationOk ? await procrastination.set(body.key, body.duration) : await procrastination.clear(body.key);
+          await sendJson(request, response, 200, next);
+        } catch { await sendJson(request, response, 503, { error: "Quarterdeck could not record procrastination; try again" }); }
+        return;
+      }
+      // Card threads (BEARINGS.md "Card threads"): an explicit captain question about one card,
+      // relayed as an inbox note; the history is a read-only join. Host only.
+      if (url.pathname === "/api/bearings/thread" && request.method === "POST") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
+        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        let text = "";
+        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > MAX_THREAD_BODY_BYTES) { await sendJson(request, response, 413, { error: "Question too large", code: "too-long" }); return; } }
+        let body = null;
+        try { body = JSON.parse(text); } catch {}
+        if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
+        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current())); }
+        catch (error) {
+          if (!(error instanceof ThreadRefused)) throw error;
+          await sendJson(request, response, error.status, { error: error.message, code: error.code });
+        }
+        return;
+      }
+      if (url.pathname === "/api/bearings/thread" && request.method === "GET") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        try { await sendJson(request, response, 200, await threadRelay.history(String(url.searchParams.get("key") || ""), bearingsSource.current())); }
+        catch (error) {
+          await sendJson(request, response, error instanceof ThreadRefused ? error.status : 502, { error: error instanceof ThreadRefused ? error.message : "Firstmate receipts unavailable", code: error instanceof ThreadRefused ? error.code : "unavailable" });
+        }
+        return;
+      }
+      if (url.pathname === "/api/bearings/answer/status" && request.method === "GET") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        try {
+          await sendJson(request, response, 200, await answerRelay.status(String(url.searchParams.get("ids") || "").split(",")));
+        } catch (error) {
+          await sendJson(request, response, error instanceof AnswerRefused ? error.status : 502, { error: error instanceof AnswerRefused ? error.message : "Firstmate receipts unavailable" });
+        }
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/health") {
@@ -1297,6 +1463,41 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       });
     } finally { workDone = true; responseDone ||= response.writableFinished || response.destroyed; finishUse(); }
   });
+  // SSE framing is written by hand: sendJson gzips, which would buffer events.
+  function openBearingsStream(request, response) {
+    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
+    const send = async (event, data, id) => {
+      if (event === "model" || event === "observed") data = { ...data, firstmateActivity: await readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) }) };
+      if (!response.writableEnded && !response.destroyed) response.write(`${id ? `id: ${id}\n` : ""}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    const stream = { end: (event) => { if (!response.writableEnded) { send(event, {}); response.end(); } } };
+    streams.add(stream);
+    // Every push and heartbeat re-checks the served revision; old code never streams.
+    const guarded = async (write) => {
+      if (response.writableEnded) return;
+      if (await syncRevision() !== servedCommit) { stream.end("revision"); return; }
+      if (!response.writableEnded) write();
+    };
+    response.write("retry: 3000\n\n");
+    send("hello", { servedCommit });
+    const current = bearingsSource.current();
+    if (request.headers["last-event-id"] !== current.rev) send("model", current, current.rev);
+    else send("observed", bearingsSource.freshness());
+    const unsubscribe = bearingsSource.subscribe((event) => {
+      void guarded(() => event.type === "model" ? send("model", event.model, event.model.rev) : send("observed", { rev: event.rev, state: event.state, observedAt: event.observedAt, checkedAt: event.checkedAt, stale: event.stale, error: event.error }));
+    });
+    const heartbeat = setInterval(() => { void guarded(() => { response.write(": hb\n\n"); void send("observed", bearingsSource.freshness()); }); }, streamOptions.heartbeatMs);
+    const recycle = setTimeout(() => stream.end("bye"), streamOptions.recycleMs);
+    response.on("close", () => { streams.delete(stream); unsubscribe(); clearInterval(heartbeat); clearTimeout(recycle); });
+  }
+  // Open event streams would hold server.close() forever; end them and stop the scheduler first.
+  const closeServer = server.close.bind(server);
+  server.close = (callback) => {
+    for (const stream of [...streams]) stream.end("bye");
+    bearingsSource.close?.();
+    return closeServer(callback);
+  };
+  server.bearings = bearingsSource;
   server.previewLifecycle = lifecycle;
   server.shutdownPreviews = () => lifecycle.close();
   server.on("close", () => { lifecycle.close().catch(() => {}); });

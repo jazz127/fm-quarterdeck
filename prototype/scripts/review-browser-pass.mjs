@@ -120,7 +120,7 @@ try {
     const initial = { mode: q('#review-toggle').checked, panel: q('#review-panel').hidden, chat: q('#review-panel-toggle').hidden, hash: location.hash };
     click('#review-toggle'); // Exercise the prior click-to-annotate path explicitly.
     const overview = q('#overview-view');
-    q('#projects').style.minHeight = '2000px';
+    q('#call-cards').style.minHeight = '2000px';
     overview.scrollTop = 120;
     const beforeScroll = overview.scrollTop;
     pointerClick('[data-view="preferences"].primary-tab');

@@ -11,7 +11,7 @@
     "dev": "FM_DEV=1 FM_REFRESH_MS=${FM_REFRESH_MS:-15000} node --watch server.js",
     "pretest": "node scripts/check-validation-runtime.mjs",
     "test": "node --test",
-    "test:browser": "node scripts/hardening-browser-pass.mjs && node scripts/mixed-lane-browser-pass.mjs && node scripts/lanes-first-paint-browser-pass.mjs && node scripts/last-viewed-browser-pass.mjs && node scripts/compact-messages-browser-pass.mjs && node scripts/kind-navigation-browser-pass.mjs && node scripts/review-annotation-format-browser-pass.mjs"
+    "test:browser": "node scripts/hardening-browser-pass.mjs && node scripts/mixed-lane-browser-pass.mjs && node scripts/lanes-first-paint-browser-pass.mjs && node scripts/last-viewed-browser-pass.mjs && node scripts/compact-messages-browser-pass.mjs && node scripts/kind-navigation-browser-pass.mjs && node scripts/review-annotation-format-browser-pass.mjs && node scripts/captain-call-live-browser-pass.mjs"
   },
   "engines": {
     "node": ">=18"
