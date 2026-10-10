@@ -39,3 +39,14 @@ test("the latest inbox note is pending, acknowledged, or replied without closing
   assert.equal(newer.sentReceipt, "pending", "a later unread note wins over an older reply");
   assert.equal(classifyAnsweredCalls([], { pending: [answerNote()], replies: [{ id: "answer-1", body: "gone" }] }).length, 0, "a closed call is not returned");
 });
+
+test("receipt deduplication retains batch siblings while handled wins for a duplicate item", () => {
+  const other = { ...taskCard, key: "decision:other", task: "other", answer: { question: "other" } };
+  const first = answerNote();
+  const second = { ...answerNote(null, { task: "other", question: "other" }), request_id: "quarterdeck-call:other" };
+  const cards = classifyAnsweredCalls([taskCard, other], { handled: [first], pending: [first, second], replies: [] });
+  assert.equal(cards[0].answered, true);
+  assert.equal(cards[0].sentReceipt, "acknowledged");
+  assert.equal(cards[1].answered, true);
+  assert.equal(cards[1].sentReceipt, "pending");
+});
