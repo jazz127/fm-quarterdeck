@@ -233,16 +233,32 @@ test("real fixed child proves health, exits on controller crash, and stale owner
   const script = path.join(root, "owner.mjs");
   await writeFile(script, `import {PreviewLifecycle} from ${JSON.stringify(new URL("../preview-lifecycle.js", import.meta.url).href)};
     const c = new PreviewLifecycle(${JSON.stringify(registered)}, ${JSON.stringify(options)});
+    const fail = c.fail.bind(c);
+    c.fail = (id, error) => { fail(id, error); process.send({ error: error.message, problem: c.problem }); };
     await c.ready; await c.select('dev-one');
-    const timer = setInterval(() => { if (c.status('dev-one').state === 'ready') { clearInterval(timer); process.send(c.owned.identity); } }, 10);`);
+    const timer = setInterval(() => {
+      const status = c.status('dev-one');
+      // Ready can become Idling before this process is scheduled again. Both
+      // retain exact health proof; require completed startup and its timestamp.
+      if (status.health === 'running' && status.checkedAt && c.owned && !c.owned.starting) {
+        clearInterval(timer); process.send({ identity: c.owned.identity, state: status.state });
+      } else if (c.problem || status.state === 'failed' || status.state === 'revision-mismatch') {
+        clearInterval(timer); process.send({ error: status.reason, problem: c.problem });
+      }
+    // Deliberately poll slower than the controller's 250ms idle transition,
+    // reproducing a CI observer that misses the brief Ready state.
+    }, 1000);`);
   const owner = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   let recovered;
   t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await recovered?.close(); await rm(root, { recursive: true, force: true }); });
-  const evidence = await new Promise((resolve, reject) => {
+  const announcement = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Real child failed to start")), 10000);
-    owner.once("message", (message) => { clearTimeout(timer); resolve(message); });
+    owner.once("message", (message) => { clearTimeout(timer); message.error ? reject(new Error(JSON.stringify(message))) : resolve(message); });
     owner.once("error", (error) => { clearTimeout(timer); reject(error); });
+    owner.once("exit", (code, signal) => { clearTimeout(timer); reject(new Error(`Real controller exited before readiness: ${code ?? signal}`)); });
   });
+  const evidence = announcement.identity;
+  assert.ok(["ready", "idling"].includes(announcement.state), "slow observer sees healthy completed startup even after the Ready transition");
   assert.equal(sameIdentity(evidence, await processIdentity(evidence.pid)), true);
   assert.equal(await readFile(path.join(root, ".agentos-runtime/dev-one/home/runtime-marker"), "utf8"), "durable");
   assert.equal(git("status", "--porcelain"), "");
@@ -254,7 +270,7 @@ test("real fixed child proves health, exits on controller crash, and stale owner
   recovered = new PreviewLifecycle(registered, options); await recovered.ready;
   assert.equal(recovered.problem, undefined); assert.equal(recovered.owned, null);
   assert.equal(recovered.status("main").state, "ready");
-  await recovered.select("dev-one"); await wait(() => recovered.status("dev-one").state === "ready");
+  await recovered.select("dev-one"); await wait(() => recovered.status("dev-one").health === "running" && !recovered.owned?.starting);
   assert.notEqual(recovered.owned.generation, evidence.generation);
   assert.equal(git("status", "--porcelain"), "");
   assert.equal(await readFile(path.join(root, ".agentos-runtime/dev-one/home/runtime-marker"), "utf8"), "durable");

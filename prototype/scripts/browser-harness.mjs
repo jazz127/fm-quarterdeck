@@ -100,12 +100,12 @@ export async function openBrowser() {
       const request = pending.get(reply.id);
       if (!request) return;
       pending.delete(reply.id); clearTimeout(request.timer);
-      reply.error ? request.reject(Error(JSON.stringify(reply.error))) : request.resolve(reply.result);
+      reply.error ? request.reject(Object.assign(Error(`${request.method}: ${JSON.stringify(reply.error)}`), { cdpError: reply.error })) : request.resolve(reply.result);
     });
     const command = (method, params = {}) => new Promise((resolve, reject) => {
       const requestId = ++id;
       const timer = setTimeout(() => { pending.delete(requestId); reject(Error(`${method} timed out`)); }, 10000);
-      pending.set(requestId, { resolve, reject, timer });
+      pending.set(requestId, { resolve, reject, timer, method });
       ws.send(JSON.stringify({ id: requestId, method, params }));
     });
     const evaluate = async (expression) => {
