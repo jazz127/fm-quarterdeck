@@ -4,7 +4,7 @@ window.overviewTabs = (() => {
   const ORDER = ["calls", "landed"];
   const LABELS = { calls: "Captain's Call", landed: "Just landed" };
 
-  function createController({ root, tabs, panels, counts = {}, storage = null, media = null, doc = document } = {}) {
+  function createController({ root, tabs, panels, counts = {}, freshness = () => null, storage = null, media = null, doc = document } = {}) {
     if (!tabs || !panels?.calls || !panels?.landed) return { paint() {}, select() {}, destroy() {} };
     let selected = "calls";
     try {
@@ -32,8 +32,11 @@ window.overviewTabs = (() => {
         const on = !narrow || name === selected;
         const count = Number(counts[name]?.());
         const n = Number.isSafeInteger(count) && count >= 0 ? count : 0;
+        const model = freshness();
+        const state = model?.state;
+        const label = state === "loading" || state === "unavailable" ? state : model?.stale || state === "stale" ? `${n} · stale` : String(n);
         if (button) {
-          button.textContent = `${LABELS[name]} (${n})`;
+          button.textContent = `${LABELS[name]} (${label})`;
           if (narrow) {
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", String(name === selected));

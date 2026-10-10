@@ -6,8 +6,8 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 
 ## Source and authority
 
-- Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run.
-- It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The snapshot's own documented observational cache refresh is the only fleet-side write, the same as a plain `/bearings`.
+- Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run. Dashboard children set `FM_SSH_BIN=/usr/bin/false` and `FM_SNAPSHOT_BUDGET=1`: remote homes use Firstmate's validated parent-side ledger cache, with at most one second for remote collection. This prevents dashboard reads from staging remote jobs. Firstmate owns cache refresh; missing caches remain unmeasured, and expired contribution observations remain incomplete. The 45 s outer budget is unchanged.
+- It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The canonical collector may prepare its parent cache directory, but the disabled transport cannot produce fresh remote results or overwrite cached ledgers. Quarterdeck does not refresh other homes.
 - Each snapshot run may also read the selected home's `.lavish/bearings-board.html` when that path is a regular file of at most 1 MiB. The read is UTF-8 text. Quarterdeck takes the JSON inside `<script id="bearings-data" type="application/json">` and checks `schema` `fm-bearings-board.v1`, a non-empty `home`, a timestamp `generated`, and an array `captains_call`. A raw `<` in that block is rejected, matching the builder's `\u003c` escape, so the block cannot be closed early. The page is never executed. A missing file, symlink, oversized file, bad encoding, or failed check leaves options on the snapshot path below. How a fresh card becomes choices is owned by Answers.
 - Validation fails closed: `schema` must be `fm-bearings.v1`, and `decisions_open`, `omitted` and `contributions` (`captain[]`, `known`, `checked`, `proven_clear`) must have the expected types. A missing home or script, a failed run or invalid output never synthesizes calls: with a previous good model it stays visible as `state: "stale"`; without one the model is `state: "unavailable"` with no cards.
 
@@ -19,7 +19,7 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 { schema, rev, state, observedAt, checkedAt, generatedAt, stale, error, cards[], coverage, omitted[], landed[] }
 ```
 
-- `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed) or `unavailable`.
+- `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed, or is null when only the age ceiling expired) or `unavailable`.
 - `observedAt`: when these calls were last produced. `checkedAt`: the latest run attempt. `generatedAt`: the snapshot clock.
 - `cards[]`, in snapshot order:
   - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
@@ -34,6 +34,12 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 
 Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `call` and `landed`. Later Underway and Charted Next sections add entries without changing the transport.
 
+## Feed health
+
+`GET /api/health` stays HTTP 200 with `ok:true` for service readiness and adds `status:"ok"|"degraded"` plus `bearings:{rev,state,observedAt,checkedAt,stale,error,ageMs,maxAgeMs,remoteCollection:"cache"}`. Only a ready, current snapshot reports status ok; loading, unavailable and stale data are degraded. Health reads do not run collection or wait for it. Age is measured from the last successful observation, never the latest failed attempt.
+
+Overview badges show `?` for loading or unavailable readings, keep stale counts explicitly labelled, and hide a zero badge only for a current reading. Phone tabs show loading/unavailable instead of zero and label stale counts. Freshness observations update both sections even when the content revision is unchanged. Both sections disclose that remote homes use cached readings; the call coverage footer uses the last-success age.
+
 ## Card clocks and sorting
 
 Each card has `clock:{label,at}`. Decision clocks use the newest durable `updated_at`, `hold_set_at` or `created` source field. The selected-home ledger supplements `(since YYYY-MM-DD)` creation dates and a leading `Captain hold set:` stamp when the snapshot omits them. Merge clocks use contribution `checked_at`. Missing evidence shows **unknown**, never file mtimes, snapshot time or first-seen time. Date-only creation evidence retains its date and says **time unknown** rather than inventing midnight. Full timestamps display absolute local time and a ticking relative age; ticks change only clock text and pause during text selection.
@@ -44,11 +50,11 @@ Each card has `clock:{label,at}`. Decision clocks use the newest durable `update
 
 - Runs happen only while someone watches: an open stream, or a `GET /api/bearings` within the last 60 s. With nobody watching there are no watchers, timers or runs.
 - While watched, a run is requested by: `fs.watch` of `data/backlog.md` and `state/*.meta` (non-recursive, so the snapshot's cache subdirectory never triggers); a 10 s mtime/size fingerprint of the same names as a backstop; the age ceiling; and the first watcher when the cache is older than 60 s.
-- Requests are debounced 2 s. Run starts are at least `FM_BEARINGS_MIN_GAP_MS` apart (default 30000, floor 15000). `FM_BEARINGS_MAX_AGE_MS` (default 300000, floor 60000) bounds model age while watched. One run at a time; a request during a run queues one follow-up.
+- Requests are debounced 2 s. Run starts are at least `FM_BEARINGS_MIN_GAP_MS` apart (default 30000, floor 15000). `FM_BEARINGS_MAX_AGE_MS` (default 300000, floor 60000) marks the last good model stale at the age ceiling, including when nobody watches. One run at a time; a request during a run queues one follow-up.
 
 ## Transport
 
-- `GET /api/bearings?since=<rev>` returns `{unchanged:true, rev, state, observedAt, checkedAt, stale, error}` when `rev` still matches, else the full model. Reads come from cache and never wait for a run. Previews proxy it.
+- `GET /api/bearings?since=<rev>` returns `{unchanged:true, rev, state, observedAt, checkedAt, stale, error, ageMs, maxAgeMs}` when `rev` still matches, else the full model. Reads come from cache and never wait for a run. Previews proxy it.
 - `GET /api/bearings/stream` (host only; 404 through a preview path; 503 beyond 16 streams per process): `text/event-stream`, `no-store`, `x-accel-buffering: no`, never gzipped.
   - On connect: `retry: 3000`, `event: hello {servedCommit}`, then `event: model` with `id: <rev>` unless `Last-Event-ID` already equals the current `rev`, in which case `event: observed`.
   - `event: model` (with `id`) when the calls change; `event: observed` with freshness fields after a run that changed nothing.

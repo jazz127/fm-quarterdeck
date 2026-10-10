@@ -440,7 +440,7 @@ test("GET /api/bearings serves the cached model, ?since answers unchanged, and n
   assert.equal(model.cards.length, 3);
   assert.doesNotMatch(JSON.stringify(model), /\/srv\/|synthetic\/home/);
   const unchanged = await (await fetch(`${base}/api/bearings?since=${model.rev}`)).json();
-  assert.deepEqual(Object.keys(unchanged).sort(), ["checkedAt", "error", "firstmateActivity", "observedAt", "rev", "stale", "state", "unchanged"]);
+  assert.deepEqual(Object.keys(unchanged).sort(), ["ageMs", "checkedAt", "error", "firstmateActivity", "maxAgeMs", "observedAt", "rev", "stale", "state", "unchanged"]);
   assert.equal(unchanged.unchanged, true);
   assert.equal(unchanged.firstmateActivity.lastTurnAt, null);
   assert.ok(Number.isFinite(Date.parse(unchanged.firstmateActivity.readAt)));
@@ -525,4 +525,59 @@ test("streams are capped, recycled, refused through preview paths, and ended by 
   await new Promise((resolve) => server.close(resolve));
   await c.until(() => c.ended, "server.close ends open streams instead of hanging");
   assert.equal(c.events.at(-1).event, "bye");
+});
+
+test("dashboard snapshots skip staged remote jobs and bound collection independently", async (context) => {
+  const raw = await fixture("clear");
+  const home = await syntheticHome(context, `printf '%s|%s' "$FM_SSH_BIN" "$FM_SNAPSHOT_BUDGET" > "$FM_HOME/policy"\ncat "$FM_HOME/fixture.json"`);
+  await writeFile(path.join(home, "fixture.json"), JSON.stringify(raw));
+  await createSnapshotRunner(home)();
+  assert.equal(await readFile(path.join(home, "policy"), "utf8"), "/usr/bin/false|1");
+});
+
+test("health separates HTTP readiness from missing, stale and empty bearings", async (context) => {
+  const source = controlledRunner(new BearingsUnavailable("Bearings snapshot timed out"));
+  const clock = fakeClock();
+  const { base, hub } = await liveServer(context, { source, clock });
+  const health = async () => (await fetch(`${base}/api/health`)).json();
+  assert.equal((await health()).bearings.state, "loading");
+  const leave = hub.subscribe(() => {});
+  context.after(leave);
+  hub.touch();
+  await clock.advance(0);
+  let body = await health();
+  assert.equal(body.ok, true, "HTTP service remains ready for recovery");
+  assert.equal(body.status, "degraded");
+  assert.equal(body.bearings.state, "unavailable");
+  assert.equal(body.bearings.ageMs, null);
+  source.set(await fixture("clear"));
+  await clock.advance(30000);
+  hub.request();
+  await clock.advance(2000);
+  body = await health();
+  assert.equal(body.status, "ok");
+  assert.equal(body.bearings.state, "ready");
+  assert.equal(body.bearings.ageMs, 0);
+  source.set(new BearingsUnavailable("Bearings snapshot timed out"));
+  await clock.advance(30000);
+  hub.request();
+  await clock.advance(2000);
+  body = await health();
+  assert.equal(body.status, "degraded");
+  assert.equal(body.bearings.state, "stale");
+  assert(body.bearings.ageMs >= 30000);
+});
+
+test("an unwatched last-good snapshot becomes stale at its age ceiling", async () => {
+  const clock = fakeClock();
+  const source = controlledRunner(await fixture("clear"));
+  const { hub } = hubFor(clock, source);
+  const leave = hub.subscribe(() => {});
+  await clock.advance(0);
+  leave();
+  await clock.advance(300000);
+  assert.equal(hub.current().state, "stale");
+  assert.equal(hub.current().stale, true);
+  assert.equal(hub.freshness().ageMs, 300000);
+  hub.close();
 });

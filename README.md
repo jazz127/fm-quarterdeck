@@ -56,6 +56,7 @@ The server defaults to `127.0.0.1:4173`. From the same host:
 
 ```bash
 curl http://127.0.0.1:4173/api/health
+# ok is HTTP readiness; status and bearings report fleet-feed health.
 # Open http://127.0.0.1:4173 in your chosen browser.
 ```
 

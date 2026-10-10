@@ -531,8 +531,11 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
     const executable = path.join(home, "bin", "fm-bearings-snapshot.sh");
     try { await accessImpl(executable, constants.X_OK); } catch { throw new BearingsUnavailable("Firstmate bearings snapshot is not installed"); }
     return new Promise((resolve, reject) => {
-      // Never --include-prs: the background loop makes no GitHub calls.
-      const child = spawnImpl(executable, ["--json"], { env: { ...process.env, FM_HOME: home }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      // Remote collection stages tracked jobs in other homes. Dashboard reads use
+      // Firstmate's validated parent cache instead; Firstmate owns its refresh.
+      // Bound even a collector that waits for its disabled transport. Keep the
+      // independent 45 s process budget and never opt into GitHub discovery.
+      const child = spawnImpl(executable, ["--json"], { env: { ...process.env, FM_HOME: home, FM_SSH_BIN: "/usr/bin/false", FM_SNAPSHOT_BUDGET: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
       let stdout = "", stderr = "", failure = null, settled = false;
       const stop = (reason) => {
         failure ||= reason;
@@ -620,7 +623,15 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
   const listeners = new Set();
 
   const watched = () => !closed && (listeners.size > 0 || now() - pollSeenAt < pollTtlMs);
-  const freshness = () => ({ rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error });
+  const age = () => model.observedAt ? Math.max(0, now() - Date.parse(model.observedAt)) : null;
+  const current = () => {
+    if (model.state === "ready" && age() >= ceiling) model = { ...model, state: "stale", stale: true };
+    return model;
+  };
+  const freshness = () => {
+    current();
+    return { rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error, ageMs: age(), maxAgeMs: ceiling };
+  };
   const emit = (event) => { for (const listener of [...listeners]) { try { listener(event); } catch {} } };
 
   function publish(next) {
@@ -692,7 +703,7 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
     rerun = false;
   }
   return {
-    current: () => model,
+    current,
     freshness,
     subscribe(listener) {
       listeners.add(listener);

@@ -52,7 +52,13 @@ test("live model and observation feed the patcher, badge and independent Overvie
   assert.equal(app.run('window.callObservations.length'), 1);
   assert.match(app.node('#view-freshness').title, /Snapshot failed/);
   app.run("window.callHooks.onConnection({state:'reconnecting'})");
-  assert.equal(app.node('#fleet-state b').textContent, 'disconnected');
+  assert.equal(app.node('#fleet-state b').textContent, 'stale');
+  app.run("window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Snapshot timed out'})");
+  assert.equal(app.node('#call-badge').textContent, '?');
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
+  app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').hidden, true);
 });
 
 test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {

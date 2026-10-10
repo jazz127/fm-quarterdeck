@@ -254,7 +254,7 @@ window.bearingsView = (() => {
     const parts = [];
     if (model.state === "loading") parts.push("Checking Firstmate…");
     else if (model.state === "unavailable") parts.push(`Unavailable${model.error ? ` · ${model.error}` : ""}`);
-    else parts.push(`${model.stale || model.state === "stale" ? "Stale · last known calls" : "Firstmate"} · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)} · ${age(model.checkedAt)}`);
+    else parts.push(`${model.stale || model.state === "stale" ? "Stale · last known calls" : "Firstmate"} · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)} · last success ${age(model.observedAt)}`);
     if (model.stale && model.error) parts.push(model.error);
     for (const omitted of model.omitted || []) {
       if (omitted.kind === "deferred-holds" && count(omitted.count)) parts.push(`+${omitted.count} later-dated or blocked calls not shown`);

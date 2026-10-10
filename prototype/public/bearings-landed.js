@@ -147,6 +147,7 @@ window.bearingsLanded = (() => {
       if (!rows.length) {
         if (model.state === "loading") return "Checking for landings…";
         if (model.state === "unavailable") return "Just landed unavailable";
+        if (model.stale || model.state === "stale") return "Last known landings · stale; recent completions are unknown.";
         return "No recent completions are in the current baseline.";
       }
       if (!reviewing && rows.every(acknowledged)) return "Acknowledged landings are hidden. Use Acknowledged to review them.";
@@ -163,9 +164,11 @@ window.bearingsLanded = (() => {
       const count = cards().filter(acknowledged).length;
       const fresh = newCount();
       if (badge) {
-        badge.textContent = String(fresh);
-        badge.hidden = fresh === 0;
-        badge.setAttribute("aria-label", fresh === 1 ? "1 new landing" : `${fresh} new landings`);
+        const unknown = ["loading", "unavailable"].includes(model.state);
+        const stale = model.stale || model.state === "stale";
+        badge.textContent = unknown ? "?" : stale ? `${fresh} · stale` : String(fresh);
+        badge.hidden = !unknown && !stale && fresh === 0;
+        badge.setAttribute("aria-label", unknown ? `Just landed ${model.state}` : `${fresh} new landing${fresh === 1 ? "" : "s"}${stale ? " · stale" : ""}`);
       }
       if (toggle) {
         toggle.textContent = `Acknowledged (${count})`;
@@ -363,6 +366,7 @@ window.bearingsLanded = (() => {
 
     return {
       update(next) { model = next || model; render(); },
+      observe(next) { if (next?.rev === model.rev) { model = { ...model, ...next }; paintChrome(); } },
       count: () => cards().length,
       newCount,
       destroy() {

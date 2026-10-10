@@ -547,7 +547,7 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   let composed = null, composedFrom = null;
   const listeners = new Set();
   let timer = null;
-  const freshness = () => { const model = current(); return { rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error }; };
+  const freshness = () => { const model = current(); return { ...hub.freshness(), rev: model.rev }; };
   // Recompose only when the hub published a new model object or the chat asks changed.
   let composedBase = null;
   function current() {

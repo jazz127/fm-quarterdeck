@@ -1721,9 +1721,11 @@ function renderCallBadge(model) {
   for (const id of ["#call-badge", "#call-mobile-badge"]) {
     const badge = $(id);
     if (!badge) continue;
-    badge.textContent = String(count);
-    badge.hidden = count === 0;
-    badge.setAttribute("aria-label", `${count} Captain's Calls`);
+    const unknown = ["loading", "unavailable"].includes(model?.state);
+    const stale = model?.stale || model?.state === "stale";
+    badge.textContent = unknown ? "?" : stale ? `${count} · stale` : String(count);
+    badge.hidden = !unknown && !stale && count === 0;
+    badge.setAttribute("aria-label", unknown ? `Captain's Calls ${model.state}` : `${count} Captain's Calls${stale ? " · stale" : ""}`);
   }
   if (count > callCount) $("#sr-announcer").textContent = `${count} Captain's Calls need your attention`;
   callCount = count;
@@ -1741,6 +1743,8 @@ function observeBearings(data) {
   item.lastSuccess = data.observedAt ? Date.parse(data.observedAt) : null;
   item.stale = Boolean(data.stale);
   item.error = data.error || null;
+  renderCallBadge(callPatcher?.applied ? { ...callPatcher.applied, ...data } : data);
+  overviewTabs?.paint();
   renderFreshness();
 }
 // Answer and overflow controllers re-apply their per-card state after every patcher fill.
@@ -1861,12 +1865,13 @@ const overviewTabs = window.overviewTabs?.createController?.({
   tabs: $("#overview-section-tabs"),
   panels: { calls: $("#overview-primary"), landed: $("#overview-secondary") },
   counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0 },
+  freshness: () => freshness.bearings,
   storage: localStorage,
   media: window.matchMedia?.("(max-width: 720.005px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
   onModel(model) { callPatcher.update(model); landedBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { callPatcher.observe(data); observeBearings(data); },
+  onObserved(data) { callPatcher.observe(data); landedBoard?.observe?.(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
@@ -1882,7 +1887,7 @@ function renderFreshness() {
   const item = freshness[key];
   const expired = key !== "bearings" && item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
   const disconnected = key === "bearings" && ["disconnected", "reconnecting"].includes(item.connection);
-  const condition = disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
+  const condition = key === "bearings" && item.state === "unavailable" ? "unavailable" : key === "bearings" && item.stale ? "stale" : disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
   const last = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : "No successful reading yet";
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");
@@ -1893,7 +1898,7 @@ function renderFreshness() {
   el.title = full;
   el.setAttribute("aria-label", full);
   const pill = $("#fleet-state");
-  pill.classList.toggle("offline", condition === "disconnected" || condition === "stale");
+  pill.classList.toggle("offline", ["unavailable", "disconnected", "stale"].includes(condition));
   $("#fleet-state b").textContent = condition;
   pill.title = full;
   pill.setAttribute("aria-label", full);
