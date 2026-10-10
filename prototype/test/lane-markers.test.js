@@ -18,8 +18,8 @@ const turn = (text, seconds) => JSON.stringify({
   message: { role: "assistant", content: [{ type: "text", text }] },
 });
 
-test("canonical fm-lanes examples survive transcript ingestion and safe render preparation", async (t) => {
-  const skill = await readFile(new URL("../../skills/fm-lanes/SKILL.md", import.meta.url), "utf8");
+test("canonical fmqd-lanes examples survive transcript ingestion and safe render preparation", async (t) => {
+  const skill = await readFile(new URL("../../skills/fmqd-lanes/SKILL.md", import.meta.url), "utf8");
   // Use the skill's actual multi-lane example, not a separately maintained tag template.
   const example = skill.slice(skill.indexOf("[fm-lane General]\nAll crewmates"), skill.indexOf("**Incorrect (trailing cross-project line):**"));
   assert.match(example, /^\[fm-lane General\]\n/);

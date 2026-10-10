@@ -4,10 +4,10 @@ A skill in source is not activated in a Firstmate home. These integrations are o
 
 | Integration | Contract | Canonical source |
 | --- | --- | --- |
-| fm-lanes | Captain-facing project/theme/General display envelopes; not authority, destination or work ownership | `skills/fm-lanes/SKILL.md` |
-| fm-toolcheck | Read-only scoped audit of public Kunchenguid-owned tools declared by installed bootstrap; no installs/upgrades | `skills/fm-toolcheck/`, [TOOLCHECK.md](TOOLCHECK.md) |
-| fm-quartermaster | Explicit advisory outsider review of loops, regressions, architecture and waste; bounded investigations need existing authority, workers gain no delegation authority | `skills/fm-quartermaster/SKILL.md` |
-| fm-quarterdeck-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fm-quarterdeck-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
+| fmqd-lanes | Captain-facing project/theme/General display envelopes; not authority, destination or work ownership | `skills/fmqd-lanes/SKILL.md` |
+| fmqd-toolcheck | Read-only scoped audit of public Kunchenguid-owned tools declared by installed bootstrap; no installs/upgrades | `skills/fmqd-toolcheck/`, [TOOLCHECK.md](TOOLCHECK.md) |
+| fmqd-quartermaster | Explicit advisory outsider review of loops, regressions, architecture and waste; bounded investigations need existing authority, workers gain no delegation authority | `skills/fmqd-quartermaster/SKILL.md` |
+| fmqd-quarterdeck-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fmqd-quarterdeck-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
 | Captain ask Stop hook | Code-enforced structured task markers against selected-home open captain holds; bounded diagnostic fail-open, no model or stock Firstmate edits | `scripts/captain-ask-stop-hook.mjs`, `scripts/captain-ask-hook-install.mjs` |
 | Mechanical helpers | Opt-in lane syntax check, receipt-proven note reply+ack, owned standalone restart after landing; no automatic installation or shared takeover | `scripts/check-lane-envelopes.mjs`, `scripts/quarterdeck-note-close.mjs`, `scripts/quarterdeck-watch.mjs` |
 | Tier-aware delivery | Future Firstmate integration must independently implement/validate the [branch contract](branching-and-preview-model.md) | Not implied by UI labels |
@@ -54,7 +54,7 @@ Installed artifacts:
   paths, the pinned script and optional `CLAUDE_CONFIG_DIR`. The original ask-only
   installer remains compatible; it is not the unified installation owner.
 - Four home-local `.agents/skills/` links, each explicitly tagged in the ownership
-  manifest (skill discovery names stay compatible). Claude's stock `../.agents/skills`
+  manifest, using the four `fmqd-` names above. Claude's stock `../.agents/skills`
   alias is preserved; an absent discovery path gets that alias, while an existing
   real `.claude/skills/` directory gets four links. Other aliases are refused.
   No user-global skill directory or other home is inspected or changed. Pi's
@@ -103,7 +103,7 @@ check/trust, config, transaction/runtime state and every retained tagged pin fil
 It inspects only the integration's home-local ownership surfaces, not arbitrary
 private transcripts or another home's/global discovery namespace. It does not
 delete anything; retained cache entries are explicitly marked `retained:true`.
-`fm-toolcheck` calls status/verify, compares the installed pin to the selected
+`fmqd-toolcheck` calls status/verify, compares the installed pin to the selected
 checkout's local main, and prints an exact review-only reinstall command; it never
 runs installation. See [TOOLCHECK.md](TOOLCHECK.md).
 
@@ -127,16 +127,36 @@ interruption: prove its owner is gone first. Unrecognized/conflicting destinatio
 refuse adoption even if they look similar. A new pin requires uninstall, then
 install; the operator owns that deliberate two-step update window.
 
+Quarterdeck skill discovery now uses `fmqd-lanes`, `fmqd-quarterdeck-health`,
+`fmqd-quartermaster` and `fmqd-toolcheck`. The previous names `fm-lanes`,
+`fm-quarterdeck-health`, `fm-quartermaster` and `fm-toolcheck` remain only as
+compatibility evidence in inspection, immutable onboarding templates and migration
+regressions. Status/verify report `legacy-skill-names:reinstall-required` for an
+old-name journal. Preserve `state/quarterdeck-health.json` outside the home, run
+the normal uninstall using the original pin or current reviewed installer, then
+install the new reviewed revision with that saved config. The journal removes
+both Agent and Claude projections, preserving unrelated/upstream skills; no
+manual skill cleanup is needed for an intact unified install. Old pins remain
+inert and explicitly retained in inventory. Inventory also recognizes old-name
+links to tagged pins after journal loss, but grants no removal/adoption authority.
+Unjournaled legacy destinations still refuse a fresh install.
+
+This skill rename preserves the registered `fm-quarterdeck-health` check ID,
+its lock/stamp filenames, the `fm-quarterdeck` ownership tag and existing state
+namespaces. Onboarding's separately confirmed workflow writes preference v3;
+exact shipped v1/v2 bytes remain available for guarded upgrades/removal, never
+rewritten in place. Unified skill repinning does not rewrite an onboarding block.
+
 A previous **unified but untagged** v1 journal is backward-compatible with
 uninstall, including its original exact hook/block, skill links and check id.
 Status/verify flag it `legacy-untagged-install:reinstall-required`; install refuses
 to silently upgrade it. After approval, preserve private config, uninstall and
 install from current reviewed main. Unjournaled home-local legacy artifacts are
 reported but not adopted or removed without their original owner. Existing
-preference/config namespaces and skill discovery names are not cosmetically
-renamed; tags live in contents or the explicit ownership manifest. Only the
-registered check id and ephemeral runtime lock/stamp names deliberately change
-for this tagging rollout (an old throttle stamp is not migrated).
+preference/config namespaces are not cosmetically renamed; tags live in contents
+or the explicit ownership manifest. The earlier tagging rollout changed the
+registered check id and ephemeral runtime lock/stamp names (an old throttle
+stamp is not migrated).
 
 The audited legacy installation has a separately owned ask hook, copied health
 check/trust, global skill links from two historical pins, an unmarked operating
@@ -207,11 +227,11 @@ procedures below document separately owned legacy installations for original-own
 rollback, not approval to create new hand-edited preferences or projections.
 Never mix their ownership with the unified journal or use them to remove unified
 artifacts. Any new Quarterdeck Firstmate-side artifact must carry `fm-quarterdeck`
-and be owned by the installer, uninstall, inventory and fm-toolcheck.
+and be owned by the installer, uninstall, inventory and fmqd-toolcheck.
 
 Pin a clean stable approved source revision, never a disposable task worktree. Independently review each skill, discovery policy and target. Before replacing any existing installation, retain a verified private rollback copy, inspect type/bytes/target and compare at the moment of the authorized change. Unexpected entries, changed bytes or symlinks refuse blind replacement.
 
-`skills/fm-lanes/verify-legacy.mjs` is a read-only preflight against a caller-supplied baseline hash. It refuses changed bytes, unexpected entries and symlinks, performs no writes, and does not approve activation. Public example neutralization may intentionally differ from an installed copy: review that exact diff and obtain approval rather than bypassing the preflight or asserting byte equivalence.
+`skills/fmqd-lanes/verify-legacy.mjs` is a read-only preflight against a caller-supplied baseline hash. It refuses changed bytes, unexpected entries and symlinks, performs no writes, and does not approve activation. Public example neutralization may intentionally differ from an installed copy: review that exact diff and obtain approval rather than bypassing the preflight or asserting byte equivalence.
 
 Only after separate authorization may the operator project one verified symlink from the chosen discovery location to the pinned canonical skill directory. Record the exact revision and target privately. Repinning requires renewed review; rollback restores the verified retained copy/target. Removal deletes only the verified projection, not canonical content. Repository documentation never authorizes removing a standalone installation.
 

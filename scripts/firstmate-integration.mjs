@@ -8,7 +8,10 @@ import path from 'node:path';
 import { hookEntry } from './captain-ask-hook-install.mjs';
 
 const source = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const skills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
+const skills = ['fmqd-lanes', 'fmqd-quarterdeck-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
+// Prior discovery names are inspection-only; the saved journal owns removal.
+const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
+const knownSkills = [...skills, ...legacySkills];
 const tag = 'fm-quarterdeck';
 const marker = '<!-- fm-quarterdeck:integration:v1 -->';
 const endMarker = '<!-- /fm-quarterdeck:integration:v1 -->';
@@ -213,8 +216,8 @@ function taggedManifest(manifest) {
 }
 async function legacyArtifacts(home) {
   const found = [];
-  const claudeLinks = await captureDiscovery(home) === 'directory' ? skills.map(name => `.claude/skills/${name}`) : [];
-  for (const file of ['state/quarterdeck-health.check.sh', 'state/quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.check.sh', 'state/fm-quarterdeck-health.check-trust', ...skills.map(name => `.agents/skills/${name}`), ...claudeLinks]) {
+  const claudeLinks = await captureDiscovery(home) === 'directory' ? knownSkills.map(name => `.claude/skills/${name}`) : [];
+  for (const file of ['state/quarterdeck-health.check.sh', 'state/quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.check.sh', 'state/fm-quarterdeck-health.check-trust', ...knownSkills.map(name => `.agents/skills/${name}`), ...claudeLinks]) {
     if (await capture(home, file)) found.push(file);
   }
   const settings = await capture(home, '.claude/settings.local.json');
@@ -274,7 +277,7 @@ async function inventory(home, manifest, lockFile) {
   if (preferences?.bytes && textOf(preferences).includes(marker) && !artifacts.some(item => item.file === 'data/captain.md')) await add('data/captain.md', 'preferences', { marker });
   const discovery = await captureDiscovery(home);
   for (const base of ['.agents/skills', ...(discovery === 'directory' ? ['.claude/skills'] : [])]) {
-    for (const name of skills) {
+    for (const name of knownSkills) {
       const file = `${base}/${name}`;
       await parents(home, file);
       if (!(await info(path.join(home, file)))?.isSymbolicLink()) continue;
@@ -308,6 +311,7 @@ export async function integrate(mode, selectedHome, { revision, config = {} } = 
         return { installed: false, ok: mode === 'status' && !legacy.length, needsReinstall: true, problems: ['not-installed', ...legacy.map(file => `legacy-untagged:${file}`)] };
       }
       const problems = [];
+      if (manifest.operations.some(op => ['.agents/skills/', '.claude/skills/'].some(base => legacySkills.some(name => op.file === base + name)))) problems.push('legacy-skill-names:reinstall-required');
       if (!taggedManifest(manifest)) problems.push('legacy-untagged-install:reinstall-required');
       try { await verifyPin(home, manifest.pin); } catch { problems.push('pin-drift'); }
       for (const op of manifest.operations) {

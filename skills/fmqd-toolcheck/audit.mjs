@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { quarterdeckReport } from './quarterdeck.mjs';
 
 const args = process.argv.slice(2);
-if (args.includes('--help')) { console.log('Usage: node skills/fm-toolcheck/audit.mjs --firstmate-root /path/to/firstmate [--quarterdeck-root /path/to/fm-quarterdeck] [--releases]'); process.exit(0); }
+if (args.includes('--help')) { console.log('Usage: node skills/fmqd-toolcheck/audit.mjs --firstmate-root /path/to/firstmate [--quarterdeck-root /path/to/fm-quarterdeck] [--releases]'); process.exit(0); }
 const options = {};
 for (let i = 0; i < args.length; i++) {
   const key = args[i];

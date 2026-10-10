@@ -59,7 +59,7 @@ preference record; it does not recursively load this reference.
   Never enable Funnel, open public listeners or weaken origin/revision guards.
   Server-side reachability is not proof of a separate user's device access;
   disclose that gap. Follow [launch ownership](docs/tailscale-launch.md) and the
-  [health skill](skills/fm-quarterdeck-health/SKILL.md) for exact procedures.
+  [health skill](skills/fmqd-quarterdeck-health/SKILL.md) for exact procedures.
 
 ## Lane envelopes and captain calls
 
@@ -68,7 +68,7 @@ preference record; it does not recursively load this reference.
   use `General` for cross-project material. No orphaned text or nested blocks.
   Keep at most two semantic levels; workers, branches and task ids are not lane
   levels. Separate topics into sequential blocks. See
-  [fm-lanes](skills/fm-lanes/SKILL.md) for grouping and review boundaries.
+  [fmqd-lanes](skills/fmqd-lanes/SKILL.md) for grouping and review boundaries.
 - Lanes are presentation, not ownership, routing destinations or implementation
   batches. Group execution only when outcome, target, state owner, authority,
   validation and rollback align; do not delay independent urgent work for a lane.
@@ -167,9 +167,9 @@ preference record; it does not recursively load this reference.
   output but invents none; prefer a Quarterdeck-only projection and record its
   design in [architecture](docs/ARCHITECTURE.md). Preserve missing/stale/partial
   evidence and provenance. Primary chat composers address only primary Firstmate.
-- Use [fm-toolcheck](skills/fm-toolcheck/SKILL.md) only as a requested read-only
+- Use [fmqd-toolcheck](skills/fmqd-toolcheck/SKILL.md) only as a requested read-only
   audit, never an upgrade authorization. Deliberately consider
-  [fm-quartermaster](skills/fm-quartermaster/SKILL.md) at meaningful evidence
+  [fmqd-quartermaster](skills/fmqd-quartermaster/SKILL.md) at meaningful evidence
   boundaries, not on every change; its bounded one-shot review is advisory and
   gives workers no delegation or execution authority.
 

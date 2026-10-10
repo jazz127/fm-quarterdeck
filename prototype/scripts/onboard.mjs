@@ -21,7 +21,7 @@ export async function runOnboarding(options, { env = process.env, question, outp
   const home = options.home ?? await question("Select the authoritative Firstmate FM_HOME (absolute path): ");
   const preview = previewOnboarding(home, { authoritativeHome: env.FM_HOME, remove: options.remove });
   output(`Selected authoritative FM_HOME: ${home}\nTarget: data/captain.md\nOperation: ${preview.action}${preview.changed ? "" : " (already current; no change)"}`);
-  output("Quarterdeck canonical skills: skills/fm-lanes, skills/fm-toolcheck, skills/fm-quartermaster.\nDiscover/project only from a clean stable approved checkout; never a disposable worktree.\nFollow docs/FIRSTMATE-INTEGRATIONS.md for separately approved per-skill discovery, pinning and removal. No projection is changed by this command.");
+  output("Quarterdeck canonical skills: skills/fmqd-lanes, skills/fmqd-toolcheck, skills/fmqd-quartermaster.\nDiscover/project only from a clean stable approved checkout; never a disposable worktree.\nFollow docs/FIRSTMATE-INTEGRATIONS.md for separately approved per-skill discovery, pinning and removal. No projection is changed by this command.");
   output(options.remove ? "Preview: remove only the recognized intact Quarterdeck block; all outside bytes remain intact." : `Preview of the owned block (no user text is printed):\n${preview.block}`);
   if (options.preview) {
     output("Preview only; nothing written or bound. Rerun without --preview to select and confirm this home.");

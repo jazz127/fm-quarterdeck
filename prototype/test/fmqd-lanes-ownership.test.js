@@ -4,14 +4,14 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { verifyLegacySkill } from "../../skills/fm-lanes/verify-legacy.mjs";
+import { verifyLegacySkill } from "../../skills/fmqd-lanes/verify-legacy.mjs";
 
 const repo = new URL("../../", import.meta.url);
 const file = (name) => new URL(name, repo);
 
-test("fm-lanes canonical skill keeps flat routing and bounded semantic taxonomy", async () => {
-  const skill = await readFile(file("skills/fm-lanes/SKILL.md"), "utf8");
-  assert.equal((await stat(file("skills/fm-lanes/SKILL.md"))).isFile(), true);
+test("fmqd-lanes canonical skill keeps flat routing and bounded semantic taxonomy", async () => {
+  const skill = await readFile(file("skills/fmqd-lanes/SKILL.md"), "utf8");
+  assert.equal((await stat(file("skills/fmqd-lanes/SKILL.md"))).isFile(), true);
   assert.match(skill, /Unconditional Wrapping:.*Every single message.*MUST be wrapped/);
   assert.match(skill, /\[fm-lane <LaneName>\].*\[end <LaneName>\]/);
   assert.match(skill, /at most \*\*two semantic levels\*\*: project\/repository first, then a coherent feature or capability theme/);
@@ -29,10 +29,10 @@ test("fm-lanes canonical skill keeps flat routing and bounded semantic taxonomy"
 });
 
 test("read-only preflight refuses changed legacy bytes or entry without overwriting", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "fm-lanes-legacy-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "fmqd-lanes-legacy-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const legacy = path.join(root, "legacy");
-  const expected = await readFile(file("skills/fm-lanes/SKILL.md"));
+  const expected = await readFile(file("skills/fmqd-lanes/SKILL.md"));
   await mkdir(legacy);
   await writeFile(path.join(legacy, "SKILL.md"), expected);
   const hash = createHash("sha256").update(expected).digest("hex");

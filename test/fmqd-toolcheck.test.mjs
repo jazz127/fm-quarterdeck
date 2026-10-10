@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const audit = fileURLToPath(new URL('../skills/fm-toolcheck/audit.mjs', import.meta.url));
+const audit = fileURLToPath(new URL('../skills/fmqd-toolcheck/audit.mjs', import.meta.url));
 const git = (dir, ...args) => {
   const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
@@ -21,7 +21,7 @@ function goBinary(module, version) {
   return Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.alloc(32), header, str(Buffer.from('go1.25.0')), str(text)]);
 }
 test('bootstrap scope, ownership, shadowing, provenance, compatibility and no mutations', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-toolcheck-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fmqd-toolcheck-'));
   try {
     const root = path.join(tmp, 'fm'), bin = path.join(root, 'bin'), early = path.join(tmp, 'early'), late = path.join(tmp, 'late'), clone = path.join(tmp, 'clone');
     for (const d of [bin, early, late, clone]) fs.mkdirSync(d, { recursive: true });
@@ -57,7 +57,7 @@ test('bootstrap scope, ownership, shadowing, provenance, compatibility and no mu
 });
 
 test('static Go version claims, verified nested clone, false owner and bounded traversal without execution', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-toolcheck-native-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fmqd-toolcheck-native-'));
   try {
     const root = path.join(tmp, 'fm'), bin = path.join(root, 'bin'), commands = path.join(tmp, 'commands');
     fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(commands);

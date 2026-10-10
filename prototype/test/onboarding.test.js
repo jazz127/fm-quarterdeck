@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { BASE_PREFERENCES, CURRENT_VERSION, OWNED_VERSIONS, ownedBlock, preferencePlan, previewOnboarding, applyOnboarding } from "../onboarding.js";
 import { parsePreferences } from "../preferences.js";
 import { parseArgs, runOnboarding } from "../scripts/onboard.mjs";
@@ -83,11 +84,32 @@ test("Quarterdeck upgrades or removes shipped v1 preferences without changing us
   assert.equal(fs.readFileSync(captain, "utf8"), prefix + legacy + suffix);
   assert.equal(preferencePlan(prefix + legacy + suffix, { remove: true }).next, prefix + suffix);
   applyOnboarding(preview, `seed ${home}`);
-  assert.equal(fs.readFileSync(captain, "utf8"), prefix + ownedBlock(2, BASE_PREFERENCES) + suffix);
+  assert.equal(fs.readFileSync(captain, "utf8"), prefix + ownedBlock(CURRENT_VERSION, BASE_PREFERENCES) + suffix);
   assert.equal(seed(home).changed, false);
   seed(home, { remove: true });
   assert.equal(fs.readFileSync(captain, "utf8"), prefix + suffix);
   assert.throws(() => preferencePlan(prefix + legacy.replace("AgentOS base", "Edited base") + suffix), /edited|unrecognized/);
+});
+
+test("skill prefix v3 retains shipped preference bytes and upgrades/removes intact v2 blocks", (t) => {
+  assert.equal(CURRENT_VERSION, 3);
+  const hashes = {
+    1: "78911b668327b6f4a6b2551348c151989440585b1c8759ca23c322ddcbe55020",
+    2: "06dc37a913a5a8d9a21987b94a8ff4c75917817f1672770824cd6f1ae26cb66c",
+  };
+  for (const [version, hash] of Object.entries(hashes)) assert.equal(createHash("sha256").update(OWNED_VERSIONS[version]).digest("hex"), hash);
+  const legacy = ownedBlock(2, OWNED_VERSIONS[2]);
+  const prefix = "User choices\r\n", suffix = "\nUser suffix";
+  const { home, captain } = fixture(t, prefix + legacy + suffix);
+  assert.equal(preferencePlan(prefix + legacy + suffix, { remove: true }).next, prefix + suffix);
+  seed(home);
+  assert.equal(fs.readFileSync(captain, "utf8"), prefix + ownedBlock(CURRENT_VERSION, BASE_PREFERENCES) + suffix);
+  for (const name of ["lanes", "toolcheck", "quartermaster"]) {
+    assert.ok(BASE_PREFERENCES.includes(`/fmqd-${name}`));
+    assert.ok(!BASE_PREFERENCES.includes(`/fm-${name}`));
+  }
+  seed(home, { remove: true });
+  assert.equal(fs.readFileSync(captain, "utf8"), prefix + suffix);
 });
 
 test("malformed, duplicate, edited, unknown or hash-spoofed markers refuse seed and removal", (t) => {
@@ -110,7 +132,7 @@ test("confirmation binds exact home and operation; preview and cancellation neve
   const output = [];
   const question = async () => { throw new Error("No prompt expected"); };
   await runOnboarding({ home, preview: true }, { env: {}, question, output: (s) => output.push(s) });
-  assert.match(output.join("\n"), /skills\/fm-lanes.*skills\/fm-toolcheck.*skills\/fm-quartermaster/);
+  assert.match(output.join("\n"), /skills\/fmqd-lanes.*skills\/fmqd-toolcheck.*skills\/fmqd-quartermaster/);
   assert.doesNotMatch(output.join("\n"), /My custom text/);
   assert.match(output.join("\n"), /nothing written or bound/);
   for (const confirmation of ["", "yes", `seed ${home}-other`, `remove ${home}`]) {
