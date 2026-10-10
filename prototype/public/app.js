@@ -933,7 +933,12 @@ function renderLanes(data) {
   $("#secondmate-filter").innerHTML = '<option value="">All messages</option>' + mateOptions.map(({ id, loaded }) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}${loaded ? "" : " · source unavailable"}</option>`).join("");
   $("#secondmate-filter").value = selectedSecondmate;
   const windowButton = $("#transcript-load-more");
-  $("#transcript-window-status").hidden = !transcriptCoverage.expandable;
+  const olderHistoryTruncated = [...sources, ...mateSources].some((source) => source.loaded && source.omittedBytes > 0);
+  $("#transcript-window-status").hidden = !olderHistoryTruncated && !transcriptCoverage.expandable;
+  $("#transcript-window-hint").textContent = olderHistoryTruncated
+    ? `Older history truncated · Newest whole records shown. Search covers loaded records.${transcriptWindowBytes >= 8 * 1024 * 1024 ? " 8 MiB/source limit reached." : ""}`
+    : "Recent source windows · Search covers loaded records.";
+  windowButton.hidden = !transcriptCoverage.expandable;
   windowButton.disabled = false;
   windowButton.textContent = `Load more records (${Math.min(8, transcriptWindowBytes / (1024 * 1024) * 2)} MiB/source)`;
   if (!sources.some((session) => session.id === selectedTranscriptSession)) selectedTranscriptSession = "";

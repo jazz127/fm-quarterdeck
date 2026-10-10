@@ -3029,3 +3029,27 @@ test("second-mate selector composes with existing filters and preserves All orde
   assert.equal(ids(), 'primary,alpha-1,beta-1,alpha-2');
   assert.equal(app.run("selectedSessionId"), '');
 });
+
+test("older-history disclosure persists at the maximum window without offering an impossible expansion", () => {
+  const app = ui();
+  const render = (sessions, secondmateSources, windowMiB, expandable) => app.run(`
+    transcriptWindowBytes = ${windowMiB} * 1024 * 1024;
+    renderLanes(${JSON.stringify({ lanes: [lane("acme", [record({ text: "acme newest reply" })])], transcript: {
+      sessions, secondmateSources, warnings: [], note: "Synthetic coverage", expandable,
+    } })});
+  `);
+  const source = { id: "synthetic-main", source: "synthetic-main", loaded: true, omittedBytes: 1000 };
+  render([source], [], 1, true);
+  assert.equal(app.node("#transcript-window-status").hidden, false);
+  assert.match(app.node("#transcript-window-hint").textContent, /Older history truncated.*Search covers loaded records/);
+  assert.equal(app.node("#transcript-load-more").hidden, false);
+  render([source], [], 8, false);
+  assert.equal(app.node("#transcript-window-status").hidden, false);
+  assert.match(app.node("#transcript-window-hint").textContent, /8 MiB\/source limit reached/);
+  assert.equal(app.node("#transcript-load-more").hidden, true);
+  assert.match(app.node("#messages").innerHTML, /acme newest reply/);
+  render([], [source], 8, false);
+  assert.equal(app.node("#transcript-window-status").hidden, false, "delivered mate sources disclose truncation too");
+  render([{ ...source, omittedBytes: 0 }], [], 8, false);
+  assert.equal(app.node("#transcript-window-status").hidden, true, "complete history has no truncation warning");
+});
