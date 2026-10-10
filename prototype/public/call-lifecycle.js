@@ -63,7 +63,8 @@ window.callLifecycle = (() => {
       const local = receiptPosture(answer.receipt?.state);
       const localReply = local === "replied" ? replyText(answer.receipt?.reply) : "";
       const answerIsLatest = !latest || Boolean(answer.noteId && answer.noteId === latest.noteId);
-      const answerIsNewer = Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
+      const answerInHistory = Boolean(answer.noteId && captain.some((entry) => entry.noteId === answer.noteId));
+      const answerIsNewer = !answerInHistory && Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
       if (answerIsLatest || answerIsNewer) {
         if (!posture || POSTURE_RANK[local] > POSTURE_RANK[posture] || answerIsNewer) {
           posture = local;
@@ -73,15 +74,15 @@ window.callLifecycle = (() => {
     }
 
     const held = answer?.heldReply != null && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
+    const heldInHistory = Boolean(answer?.heldNoteId && captain.some((entry) => entry.noteId === answer.heldNoteId));
     if (held && (!latest
-      || (answer.heldAt && latest.at && String(answer.heldAt) > String(latest.at))
+      || (!heldInHistory && answer.heldAt && latest.at && String(answer.heldAt) > String(latest.at))
       || (answer.heldNoteId && answer.heldNoteId === latest.noteId && posture !== "replied"))) {
       posture = "replied";
       reply = replyText(answer.heldReply);
     }
 
-    // A thread send the history does not list yet is newer than the reply already on the card.
-    if (thread?.captainAsked === true) {
+    if (thread?.captainNoteId && !captain.some((entry) => entry.noteId === thread.captainNoteId)) {
       posture = "pending";
       reply = "";
     }

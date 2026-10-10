@@ -468,10 +468,10 @@ test("queued answers list for the review queue, send together with their own ids
 });
 
 test("Send batch relays every queued card on its own route and those cards become Sent", async () => {
-  const asked = new Set();
+  const asked = new Map();
   const t = setup({
-    responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:06.000Z" } }],
-    onAsked: (key) => asked.add(key),
+    responses: [{ status: 202, body: { state: "accepted", noteId: "thread-note", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 202, body: { state: "accepted", noteId: "answer-note", sentAt: "2026-01-02T03:04:06.000Z" } }],
+    onAsked: (key, noteId) => asked.set(key, noteId),
   });
   t.patcher.update(model([decision(), merge()]));
   const first = "decision:alpha-call";
@@ -482,13 +482,14 @@ test("Send batch relays every queued card on its own route and those cards becom
   radio.checked = true;
   radio.dispatchEvent({ type: "change" });
   t.submit(second);
-  const thread = (key) => ({ captainAsked: asked.has(key) });
+  const thread = (key) => ({ captainNoteId: asked.get(key) });
   const stateOf = (key, card) => t.win.callLifecycle.cardState({ card, answer: t.answers.state(key), thread: thread(key) });
   assert.equal(stateOf(first, decision()), "queued");
   assert.equal(stateOf(second, merge()), "queued");
   assert.equal(await t.answers.sendQueued(), true);
   assert.deepEqual(t.fetches.map((entry) => [entry.url, entry.body.key]), [["/api/bearings/thread", first], ["/api/bearings/answer", second]]);
   assert.equal(t.answers.state(first), null, "a sent thread note stays out of the answer sent phase");
+  assert.equal(asked.get(first), "thread-note");
   assert.equal(t.part(first, "text").readOnly, false, "a sent thread card can still ask a follow-up");
   assert.equal(t.part(first, "text").disabled, false);
   assert.equal(Boolean(t.node(first).querySelector("input[type='radio']")?.disabled), false);

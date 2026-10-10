@@ -236,6 +236,7 @@ Queued review does not use that hatch.
 Queue stays hidden while the answer is Sent, and **Answer again** returns that box to compose before a reply.
 A reply returns that answer to compose on its own: the radios and the note unlock, Your answer hides, and the reply banner replaces the Sent label.
 A thread note that marked the card Sent leaves the box in compose for a follow-up; the hatch and label still show until Firstmate replies.
+The latest captain note in durable history owns the receipt label and reply, even when a retry reports a later send time for an older note. An accepted thread note keeps its note identity in this tab until that specific note appears in history, including across reloads and stale in-flight reads.
 A dashed border marks the Sent dot and a dotted border marks the Procrastinated dot, so the colour is not the only signal.
 
 The status control above the cards is one group: **Active**, **Queued**, **Sent**, **Procrastinated**, and **All**, each with its count.
@@ -335,6 +336,7 @@ Nothing is written under `FM_HOME`.
 The model must be `ready` or `stale`, and the key must be a landed card still on that model, or the post is 409.
 The body is at most 1 KiB, same-origin JSON, with no query.
 The text box is a follow-up, not an answer and not Procrastinate.
+Before sending a landed follow-up, this tab saves its exact words and request ID in session storage under `fm-quarterdeck-landed-follow.v1:<key>`. An unconfirmed send locks Edit and restores the same queued payload after reload; only an explicit Retry send reconciles it. A retry rejection keeps that uncertain payload locked. Once delivery is confirmed, the next follow-up can use new words and a new ID. A first-attempt refusal permits editing. If the tab cannot save the attempted payload, delivery stops with a visible error.
 Queue, then Send, posts `POST /api/bearings/thread` with `{requestId, key, text}` where `key` is `landed:<task id>`.
 Firstmate replies in that thread.
 The note says nothing was decided.

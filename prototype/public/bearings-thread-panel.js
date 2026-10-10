@@ -15,7 +15,14 @@ window.bearingsThread = (() => {
     let pollTimer = null;
     let destroyed = false;
     const stateOf = (key) => {
-      if (!states.has(key)) states.set(key, { entries: null, error: null, notice: null });
+      if (!states.has(key)) {
+        let captainNoteId = null;
+        try {
+          const saved = JSON.parse(storage?.getItem(STATE_PREFIX + key) || "null");
+          if (typeof saved?.captainNoteId === "string") captainNoteId = saved.captainNoteId;
+        } catch {}
+        states.set(key, { entries: null, error: null, notice: null, captainNoteId });
+      }
       return states.get(key);
     };
     const cardNode = (key) => [...list.querySelectorAll("[data-call-key]")].find((node) => keyOf(node) === key) || null;
@@ -167,12 +174,14 @@ window.bearingsThread = (() => {
         response = await fetchImpl(`/api/bearings/thread?key=${encodeURIComponent(key)}`, { cache: "no-store" });
         body = await response.json().catch(() => null);
       } catch {}
-      if (destroyed) return;
+      if (destroyed || states.get(key) !== state) return;
       state.loading = false;
       if (response?.ok && body && Array.isArray(body.entries)) {
         Object.assign(state, { entries: body.entries, omitted: body.omitted || 0, transcript: body.transcript || null, checkedAt: body.checkedAt || null });
-        // History is the durable signal. Keep the local receipt until that history includes the ask.
-        if (body.entries.some((entry) => entry?.kind === "ask" && entry?.from === "captain")) state.captainAsked = false;
+        if (state.captainNoteId && body.entries.some((entry) => entry?.kind === "ask" && entry?.from === "captain" && entry.noteId === state.captainNoteId)) {
+          state.captainNoteId = null;
+          try { storage?.removeItem(STATE_PREFIX + key); } catch {}
+        }
         // The first read marks replies already on the card as seen. Later replies count as new.
         if (!state.baselined) { markRead(state); state.baselined = true; }
         state.error = null;
@@ -184,10 +193,10 @@ window.bearingsThread = (() => {
     }
 
     // The answer controller calls this after a confirmed thread note so the receipt shows at once.
-    // captainAsked keeps the card Sent until the reloaded history includes that note.
-    function noteSent(key) {
+    function noteSent(key, noteId) {
       const state = stateOf(key);
-      state.captainAsked = true;
+      state.captainNoteId = noteId;
+      try { storage?.setItem(STATE_PREFIX + key, JSON.stringify({ captainNoteId: noteId })); } catch {}
       state.notice = "Question sent to Firstmate; the reply appears here";
       state.error = null;
       rerender(key);

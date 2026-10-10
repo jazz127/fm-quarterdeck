@@ -132,7 +132,7 @@ window.bearingsAnswerForm = (() => {
       // A reply returns the answer to compose. The lifecycle banner shows the reply.
       if (state?.phase === "sent" && state.receipt?.state === "replied") {
         clearDraft(key);
-        state = { phase: "compose", heldReply: typeof state.receipt.reply === "string" ? state.receipt.reply : "", heldAt: state.sentAt || new Date().toISOString(), heldNoteId: state.noteId };
+        state = { phase: "compose", heldReply: typeof state.receipt.reply === "string" ? state.receipt.reply : "", heldAt: state.sentAt, heldNoteId: state.noteId };
         states.set(key, state);
       }
       const rev = card?.rev || node.getAttribute("data-call-rev");
@@ -267,8 +267,8 @@ window.bearingsAnswerForm = (() => {
         if (thread) {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
           // which keeps the card Sent until that note is acknowledged or Firstmate replies.
+          onAsked(key, body?.noteId);
           update(key, null, focus ? "text" : null);
-          onAsked(key);
           return true;
         }
         update(key, { phase: "sent", path, requestId: state.requestId, noteId: body?.noteId, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);

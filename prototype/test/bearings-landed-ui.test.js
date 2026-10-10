@@ -20,8 +20,10 @@ function setup() {
   let entries = [];
   const acks = {};
   const sends = [];
+  const saved = new Map();
   const board = context.window.bearingsLanded.createController({
     list, toggle, doc: dom.document, timers, uuid: () => "00000000-0000-4000-8000-000000000001",
+    storage: { getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: (key) => saved.delete(key) },
     fetchImpl: async (url, options) => {
       if (options?.method === "POST") {
         const body = JSON.parse(options.body);
