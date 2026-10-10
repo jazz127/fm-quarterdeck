@@ -560,7 +560,7 @@ export function composeCallModel(base, asks, chatView) {
     }
     
     // Fallback: derive Yes/No options if the card is a decision and still has no structured options
-    if (rest.type === "decision" && rest.answer && (!rest.answer.options || !rest.answer.options.length)) {
+    if (rest.type === "decision" && rest.answer && (!rest.answer.options || !rest.answer.options.length) && !/credential|authentication|access|login/i.test(`${rest.verb || ""} ${rest.summary || ""}`)) {
       if (!modified) {
         const { rev, ...withoutRev } = rest;
         rest = withoutRev;
