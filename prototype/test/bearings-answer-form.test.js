@@ -117,7 +117,7 @@ function tabStorage() {
 }
 
 test("nothing is sent until Queue and then an explicit Send; the sent answer clears its draft and shows receipts", async () => {
-  const t = setup({ responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
+  const t = setup({ responses: [{ status: 202, body: { state: "accepted", noteId: "note-accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
   const card = decision();
   card.answer = { ...card.answer, options: [{ value: "staged", label: "Staged", hint: "Fewer users" }], recommend: "staged" };
   t.patcher.update(model([card]));
@@ -151,6 +151,7 @@ test("nothing is sent until Queue and then an explicit Send; the sent answer cle
   assert.equal(t.fetches[0].url, "/api/bearings/answer");
   assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: "a1", selection: "staged", note: "Use the Tuesday window" });
   assert.equal(t.answers.state(key).phase, "sent");
+  assert.equal(t.answers.state(key).noteId, "note-accepted");
   assert.equal(t.patcher.drafts.text(key), "", "sent words are not 'unsent text'");
   assert.equal(t.part(key, "receipt").hidden, false);
   assert.match(t.part(key, "receipt-text").textContent, /^Sent to Firstmate: Staged - Use the Tuesday window · waiting/);
@@ -199,6 +200,7 @@ test("nothing is sent until Queue and then an explicit Send; the sent answer cle
   await flush();
   assert.equal(t.answers.state(key).phase, "compose", "a reply unlocks the answer");
   assert.equal(t.answers.state(key).heldReply, "Holding until Tuesday");
+  assert.equal(t.answers.state(key).heldNoteId, "note-accepted");
   assert.equal(t.part(key, "receipt").hidden, true, "the card banner owns the reply");
   assert.equal(t.part(key, "text").readOnly, false);
   assert.equal(radio.disabled, false);

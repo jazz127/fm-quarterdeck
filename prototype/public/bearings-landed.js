@@ -104,20 +104,27 @@ window.bearingsLanded = (() => {
       }
       if (history) history.hidden = !(expandable && state.open);
       if (log && expandable && state.open) {
-        log.replaceChildren(...entries.map((entry) => {
-          const item = doc.createElement("li");
-          item.className = `call-thread-entry call-thread-${entry.from === "captain" ? "captain" : "firstmate"}`;
-          const head = doc.createElement("p");
-          head.className = "call-thread-head";
-          const who = doc.createElement("strong");
-          who.textContent = entry.from === "captain" ? "You asked" : "Firstmate replied";
-          head.append(who);
-          const body = doc.createElement("p");
-          body.className = "call-thread-text";
-          body.textContent = entry.text || "";
-          item.append(head, body);
-          return item;
-        }));
+        entries.forEach((entry, index) => {
+          let item = log.children[index];
+          if (!item) {
+            item = doc.createElement("li");
+            const head = doc.createElement("p");
+            head.className = "call-thread-head";
+            head.append(doc.createElement("strong"));
+            const body = doc.createElement("p");
+            body.className = "call-thread-text";
+            item.append(head, body);
+            log.append(item);
+          }
+          const className = `call-thread-entry call-thread-${entry.from === "captain" ? "captain" : "firstmate"}`;
+          if (item.className !== className) item.className = className;
+          const who = item.querySelector("strong");
+          const label = entry.from === "captain" ? "You asked" : "Firstmate replied";
+          if (who.textContent !== label) who.textContent = label;
+          const body = item.querySelector(".call-thread-text");
+          if (body.textContent !== (entry.text || "")) body.textContent = entry.text || "";
+        });
+        while (log.children.length > entries.length) log.children[log.children.length - 1].remove();
       }
       const draft = draftOf(key);
       if (entries.length === 1 && !draft.notice) {
@@ -184,6 +191,8 @@ window.bearingsLanded = (() => {
 
     function render() {
       const rows = cards();
+      const focused = list.contains(doc.activeElement) ? doc.activeElement : null;
+      const selection = focused?.tagName === "TEXTAREA" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
       const keys = new Set(rows.map((card) => card.key));
       for (const node of [...list.querySelectorAll("[data-landed-key]")]) {
         if (!keys.has(node.getAttribute("data-landed-key"))) node.remove();
@@ -191,6 +200,7 @@ window.bearingsLanded = (() => {
       for (const key of [...drafts.keys()]) if (!keys.has(key)) drafts.delete(key);
       for (const key of [...histories.keys()]) if (!keys.has(key)) histories.delete(key);
       text?.prune?.([...keys]);
+      let position = list.querySelector("[data-landed-key]");
       for (const card of rows) {
         let node = nodeOf(card.key);
         if (!node || node.getAttribute("data-landed-rev") !== card.rev) {
@@ -200,15 +210,22 @@ window.bearingsLanded = (() => {
           fresh.setAttribute("data-landed-rev", card.rev);
           fresh.setAttribute("data-call-type", "landed");
           fresh.innerHTML = cardHtml(card);
-          if (node) node.replaceWith(fresh);
-          node = fresh;
+          if (node) {
+            node.querySelector(".call-chrome").replaceWith(fresh.querySelector(".call-chrome"));
+            node.setAttribute("data-landed-rev", card.rev);
+          } else node = fresh;
         }
-        list.append(node);
+        if (node !== position) list.insertBefore(node, position);
+        position = node.nextElementSibling;
         paintCard(node, card);
         text?.render?.(node);
         if (!historyOf(card.key).loaded && !node.hidden) void loadHistory(card.key);
       }
       paintChrome();
+      if (focused?.isConnected && doc.activeElement !== focused && !focused.disabled) {
+        focused.focus({ preventScroll: true });
+        if (selection) focused.setSelectionRange(...selection);
+      }
     }
 
     async function readJson(response) {

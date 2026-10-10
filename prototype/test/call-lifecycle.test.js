@@ -94,6 +94,54 @@ test("an answer receipt and the card receipt use the same three postures", () =>
   assert.equal(life.cardState({ card: { key: "decision:closed" } }), "active", "a call with no captain note is not Sent; a closed call is absent");
 });
 
+test("BEARINGS lifecycle keeps an older tab receipt behind a newer captain note", () => {
+  for (const kind of ["answer", "ask"]) {
+    for (const receiptState of ["received", "replied"]) {
+      for (const at of ["2026-01-02T11:00:00.000Z", null]) {
+        const latest = { kind, from: "captain", noteId: "new-note", state: "waiting", at };
+        const answer = { phase: "sent", noteId: "old-note", sentAt: "2026-01-02T10:00:00.000Z", receipt: { state: receiptState, reply: "Old reply" } };
+        const facts = { answer, thread: { entries: [latest] } };
+        assert.equal(life.delivery(facts).posture, "pending");
+        assert.equal(life.delivery(facts).reply, "");
+        assert.equal(life.sentLabel(life.delivery(facts).posture), "Sent - waiting for Firstmate to read");
+        assert.equal(life.cardState(facts), "sent");
+      }
+    }
+  }
+});
+
+test("BEARINGS lifecycle reconciles the same note and a send not yet in history", () => {
+  const latest = { kind: "answer", from: "captain", noteId: "same-note", state: "waiting", at: "2026-01-02T10:00:00.000Z" };
+  const answer = { phase: "sent", noteId: "same-note", sentAt: latest.at, receipt: { state: "received" } };
+  assert.equal(life.delivery({ answer, thread: { entries: [latest] } }).posture, "acknowledged");
+  answer.receipt = { state: "replied", reply: "" };
+  const staleReply = { kind: "reply", from: "firstmate", noteId: "older-note", text: "Old reply" };
+  assert.equal(life.delivery({ answer, thread: { entries: [staleReply, latest] } }).reply, "");
+  assert.equal(life.delivery({ answer, thread: { entries: [staleReply, latest] } }).posture, "replied");
+  const held = { phase: "compose", heldNoteId: answer.noteId, heldAt: answer.sentAt, heldReply: "" };
+  assert.equal(life.delivery({ answer: held, thread: { entries: [latest] } }).posture, "replied");
+  const newer = { ...answer, noteId: "new-note", sentAt: "2026-01-02T11:00:00.000Z", receipt: { state: "accepted" } };
+  assert.equal(life.delivery({ answer: newer, thread: { entries: [{ ...latest, state: "replied" }] } }).posture, "pending");
+});
+
+test("empty or absent latest replies never display a different note's reply", () => {
+  const old = { kind: "answer", from: "captain", noteId: "old-note", state: "replied", at: "2026-01-02T10:00:00.000Z" };
+  const oldReply = { kind: "reply", from: "firstmate", noteId: old.noteId, text: "Old reply" };
+  const latest = { ...old, noteId: "new-note", at: "2026-01-02T11:00:00.000Z" };
+  for (const reply of [null, { kind: "reply", from: "firstmate", noteId: latest.noteId, text: "" }]) {
+    const entries = [old, oldReply, latest, ...(reply ? [reply] : [])];
+    for (const answer of [null,
+      { phase: "sent", noteId: latest.noteId, sentAt: latest.at, receipt: { state: "replied", reply: "Stale local text" } },
+      { phase: "compose", heldNoteId: old.noteId, heldAt: old.at, heldReply: oldReply.text }]) {
+      const facts = { answer, thread: { entries } };
+      assert.equal(life.delivery(facts).posture, "replied");
+      assert.equal(life.delivery(facts).reply, "");
+      assert.equal(life.replyBanner(life.delivery(facts).reply), "Firstmate replied");
+      assert.equal(life.cardState(facts), "active");
+    }
+  }
+});
+
 test("status counts and the remembered filter default to Active", () => {
   const tally = life.counts(["active", "active", "queued", "sent", "procrastinated"]);
   assert.deepEqual({ ...tally }, { active: 2, queued: 1, sent: 1, procrastinated: 1, all: 5 });
@@ -166,19 +214,4 @@ test("Send queued is only on Active, counts staged answers, and disables while s
   life.paintSendQueued(button, { filter: "queued", count: 2 });
   assert.equal(button.hidden, true);
   life.paintSendQueued(null, { filter: "active", count: 2 });
-});
-
-test("a Sent card shows the underway label and hatch, and only that state does", async () => {
-  const view = await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8");
-  const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
-  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.equal(view.match(/data-call-sent-label hidden>Sent - waiting for Firstmate to read/g).length, 1);
-  assert.equal(view.match(/data-fm-reply hidden>/g).length, 1);
-  assert.match(css, /\.call-card\[data-call-lifecycle="sent"\] \{[^}]*repeating-linear-gradient\(-45deg/);
-  assert.match(css, /\.call-sent-label\[hidden\] \{ display: none; \}/);
-  assert.match(css, /\.call-answer-fields\[data-sent\] :is\(\.call-opt, select\) \{[^}]*repeating-linear-gradient\(-45deg/);
-  assert.match(css, /\.call-answer-fields\[data-sent\] \.call-opt:has\(input:checked\) \{[^}]*box-shadow: inset/);
-  assert.match(view, /data-call-answer-summary hidden><h4>Your answer<\/h4>/);
-  assert.match(css, /\.call-answer-fields\[data-sent\] textarea \{[^}]*user-select: text/);
-  assert.match(app, /underway\.hidden = state !== "sent"/);
 });

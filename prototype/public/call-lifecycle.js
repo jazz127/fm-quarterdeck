@@ -38,14 +38,10 @@ window.callLifecycle = (() => {
     return typeof value === "string" ? value.trim() : "";
   }
 
-  // The reply joined to this captain note, else the latest reply text when the note is replied.
   function replyFor(entry, entries) {
     if (!entry || !Array.isArray(entries)) return "";
-    const matched = entries.find((item) => item && item.kind === "reply" && item.noteId && entry.noteId && item.noteId === entry.noteId && replyText(item.text));
-    if (matched) return replyText(matched.text);
-    if (entry.state !== "replied") return "";
-    const replies = entries.filter((item) => item && item.kind === "reply" && replyText(item.text));
-    return replies.length ? replyText(replies[replies.length - 1].text) : "";
+    const matched = entries.find((item) => item && item.kind === "reply" && item.noteId && entry.noteId && item.noteId === entry.noteId);
+    return replyText(matched?.text);
   }
 
   function cardPosture(card) {
@@ -66,23 +62,22 @@ window.callLifecycle = (() => {
     if (answer?.phase === "sent") {
       const local = receiptPosture(answer.receipt?.state);
       const localReply = local === "replied" ? replyText(answer.receipt?.reply) : "";
-      const answerIsLatest = !latest || latest.kind === "answer";
+      const answerIsLatest = !latest || Boolean(answer.noteId && answer.noteId === latest.noteId);
       const answerIsNewer = Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
       if (answerIsLatest || answerIsNewer) {
-        if (!posture || POSTURE_RANK[local] >= POSTURE_RANK[posture] || answerIsNewer) {
+        if (!posture || POSTURE_RANK[local] > POSTURE_RANK[posture] || answerIsNewer) {
           posture = local;
-          reply = local === "replied" ? (localReply || reply) : "";
+          reply = localReply;
         }
       }
     }
 
     const held = answer?.heldReply != null && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
-    if (held && answer.heldAt && latest?.at && String(answer.heldAt) > String(latest.at)) {
+    if (held && (!latest
+      || (answer.heldAt && latest.at && String(answer.heldAt) > String(latest.at))
+      || (answer.heldNoteId && answer.heldNoteId === latest.noteId && posture !== "replied"))) {
       posture = "replied";
       reply = replyText(answer.heldReply);
-    } else if (held && posture !== "pending" && posture !== "acknowledged") {
-      posture = "replied";
-      reply = reply || replyText(answer.heldReply);
     }
 
     // A thread send the history does not list yet is newer than the reply already on the card.
