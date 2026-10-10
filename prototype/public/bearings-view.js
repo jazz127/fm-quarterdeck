@@ -60,17 +60,17 @@ window.bearingsView = (() => {
     }
     return null;
   }
-  function disclosureHtml(headingId, panelId, text, card, fields) {
+  function disclosureHtml(headingId, panelId, text, card, fields, tag = "h3") {
     const shown = fullest(text, fields.map(([field]) => card[field]));
-    if (!sourceShortened(shown)) return `<h3 id="${headingId}">${escape(shown)}</h3>`;
+    if (!sourceShortened(shown)) return `<${tag} id="${headingId}">${escape(shown)}</${tag}>`;
     const others = fields.filter(([field]) => typeof card[field] === "string" && collapsed(card[field]) && collapsed(card[field]) !== collapsed(shown));
     const body = others.length
       ? others.map(([field, label]) => `<p><span class="call-meta">${escape(label)}</span><br>${escape(card[field])}</p>`).join("")
       : `<p>This is the full text Quarterdeck received.</p>`;
-    return `<h3 id="${headingId}" data-call-truncated><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="${panelId}">${escape(shown)}</button></h3><div class="call-full" id="${panelId}" data-call-full hidden>${body}</div>`;
+    return `<${tag} id="${headingId}" data-call-truncated><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="${panelId}">${escape(shown)}</button></${tag}><div class="call-full" id="${panelId}" data-call-full hidden>${body}</div>`;
   }
-  function headlineHtml(id, text, card) {
-    return disclosureHtml(`call-decide-${id}`, `call-full-${id}`, text, card, RECORDED);
+  function headlineHtml(id, text, card, tag = "h3") {
+    return disclosureHtml(`call-decide-${id}`, `call-full-${id}`, text, card, RECORDED, tag);
   }
   // Just landed uses the same continuation rule. The backlog title replaces a
   // shortened snapshot "what" only when it continues that cut.
