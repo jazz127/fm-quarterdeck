@@ -70,6 +70,13 @@ window.bearingsLive = (() => {
       timers.clearTimeout(retryTimer);
       retryTimer = timers.setTimeout(() => { retryTimer = null; catchUpAndOpen(); }, delay);
     }
+    function streamFailed() {
+      closeStream();
+      failures += 1;
+      status(recoveringRevision ? "revision" : "reconnecting");
+      onStreamLost();
+      scheduleRetry();
+    }
     function goLive() {
       recoveringRevision = false;
       failures = 0;
@@ -92,7 +99,9 @@ window.bearingsLive = (() => {
     function openStream() {
       if (!started || !visible() || source) return;
       if (!streamAllowed || typeof EventSourceImpl !== "function") { status(recoveringRevision ? "revision" : "polling"); poll(); return; }
-      const events = new EventSourceImpl(streamUrl);
+      let events;
+      try { events = new EventSourceImpl(streamUrl); }
+      catch { streamFailed(); return; }
       source = events;
       const parse = (event) => { try { return JSON.parse(event.data); } catch { return null; } };
       // Closed EventSources can still have queued callbacks; they no longer own the feed.
@@ -122,11 +131,7 @@ window.bearingsLive = (() => {
       events.onerror = () => {
         if (events.revisionHandled || source !== events) return;
         // Take reconnection over from EventSource so backoff and polling stay bounded.
-        closeStream();
-        failures += 1;
-        status(recoveringRevision ? "revision" : "reconnecting");
-        onStreamLost();
-        scheduleRetry();
+        streamFailed();
       };
     }
     function resume() {

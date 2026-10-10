@@ -7,10 +7,13 @@ import { fakeTimers } from "./helpers/call-dom.js";
 const code = await readFile(new URL("../public/bearings-live.js", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function setup({ streamAllowed = true, bootRevision = "a".repeat(40), fetchFails = false, fetchResponse } = {}) {
+function setup({ streamAllowed = true, bootRevision = "a".repeat(40), fetchFails = false, fetchResponse, sourceThrows = 0 } = {}) {
   const sources = [];
   class FakeEventSource {
-    constructor(url) { this.url = url; this.listeners = new Map(); this.closed = false; sources.push(this); }
+    constructor(url) {
+      if (sourceThrows > 0) { sourceThrows -= 1; throw new Error("stream construction refused"); }
+      this.url = url; this.listeners = new Map(); this.closed = false; sources.push(this);
+    }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
     close() { this.closed = true; }
     emit(type, data) { this.listeners.get(type)?.({ data: JSON.stringify(data) }); }
@@ -147,6 +150,47 @@ test("stream errors fall back to 15 s polling and retry with 3 s, 10 s, then 30 
   assert.equal(sources.length, 4, "third failure waits 30 s");
   sources[3].emit("hello", { servedCommit: "a".repeat(40) });
   assert.equal(seen.connection.at(-1), "live");
+});
+
+test("EventSource construction failures use the same backoff and polling fallback", async () => {
+  const { live, sources, fetches, seen, timers } = setup({ sourceThrows: Infinity });
+  live.start();
+  await flush();
+  assert.equal(live.connected, false);
+  assert.equal(seen.connection.at(-1), "reconnecting");
+  assert.equal(seen.lost, 1);
+  timers.advance(3000);
+  await flush();
+  assert.equal(seen.lost, 2);
+  timers.advance(10000);
+  await flush();
+  assert.equal(seen.lost, 3);
+  const polled = fetches.length;
+  timers.advance(15000);
+  await flush();
+  assert.ok(fetches.length > polled, "HTTP polling remains active when the constructor keeps throwing");
+  assert.equal(seen.lost, 3, "the third retry waits the full 30 seconds");
+  timers.advance(15000);
+  await flush();
+  assert.equal(seen.lost, 4);
+  assert.equal(sources.length, 0);
+  live.stop();
+  assert.equal(timers.pending(), 0);
+});
+
+test("a refused EventSource construction can recover without a reload", async () => {
+  const { live, sources, seen, timers } = setup({ sourceThrows: 1 });
+  live.start();
+  await flush();
+  assert.equal(seen.connection.at(-1), "reconnecting");
+  timers.advance(3000);
+  await flush();
+  assert.equal(sources.length, 1);
+  sources[0].emit("hello", { servedCommit: "a".repeat(40) });
+  assert.equal(seen.connection.at(-1), "live");
+  assert.equal(live.connected, true);
+  assert.equal(timers.pending(), 0);
+  live.stop();
 });
 
 test("previews never open a stream and poll with ?since instead", async () => {

@@ -175,7 +175,19 @@ try {
       if(sources[1].closed || pending.length || models.join(',')!=='current,resumed') throw Error('closed stream still owns feed');
       const refresh = live.refresh(); sources[1].emit('model',{rev:'pushed',cards:[]}); pending.shift()('older'); await refresh;
       if(live.rev!=='pushed' || models.at(-1)!=='pushed') throw Error('catch-up rolled back push');
-      return 'PASS pagehide, replacement-stream ownership, and pushed-model race';
+      const retries = new Map(), fallbackStates = []; let timerId = 0;
+      const fallback = window.bearingsLive.createBearingsLive({ win: new EventTarget(), doc: document,
+        EventSourceImpl: class { constructor() { throw Error('stream construction refused'); } },
+        fetchImpl: async () => ({ok:true,json:async()=>({rev:'fallback',cards:[]})}),
+        timers: {setTimeout:(fn,ms)=>{const id=++timerId;retries.set(id,ms);return id;},clearTimeout:id=>retries.delete(id)},
+        onConnection: state => fallbackStates.push(state.state), onStreamLost: () => {}
+      });
+      try {
+        fallback.start(); await settle();
+        if(fallback.connected || fallbackStates.at(-1)!=='reconnecting' || ![...retries.values()].includes(15000) || ![...retries.values()].includes(3000)) throw Error('constructor failure did not poll and retry');
+      } finally { fallback.stop(); }
+      if(retries.size) throw Error('constructor fallback timers survived stop');
+      return 'PASS pagehide, replacement-stream ownership, pushed-model race, and constructor-failure fallback';
     } finally { live.stop(); }
   }`);
   // Transcript cards load and stream without a snapshot write or an AI call.
