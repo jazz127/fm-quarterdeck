@@ -188,7 +188,7 @@ test("explicit transcript lane wins over text, file name and General; lane filte
     window: {}, lanes, feedLaneOverrideId: null, allLanesSelected: false, laneStatusFilter: "all",
     selectedLaneIds: new Set(["alpha", "general"]),
     selectedMessageTypes: new Set(["captain", "conversation", "supervision"]),
-    selectedSessionId: null, selectedTranscriptSession: "", transcriptQuery: "",
+    selectedSessionId: null, selectedTranscriptSession: "", selectedSecondmate: "", transcriptQuery: "",
   });
   vm.runInContext(bulkControls, context);
   vm.runInContext(messageKinds, context);
