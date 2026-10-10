@@ -18,7 +18,7 @@ export const THREAD_NOTE_TAG = "fm-quarterdeck-thread";
 export const MAX_THREAD_BODY_BYTES = 4096;
 export const MAX_QUESTION_BYTES = 2000;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CARD_KEY = /^(?:decision|merge|chat):[A-Za-z0-9._-]{1,160}$/;
+const CARD_KEY = /^(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}$/;
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const PREFIX = "quarterdeck-thread:";
@@ -43,10 +43,15 @@ const threadPrefix = (key) => `${PREFIX}${threadKeyPart(key)}:`;
 // The task a card is about: the card's own task, or the one its key names.
 export function cardTask(card, key) {
   if (card?.task) return card.task;
-  const match = /^(?:decision|merge):(.+)$/.exec(key);
+  const match = /^(?:decision|merge|landed):(.+)$/.exec(key);
   return match ? match[1] : null;
 }
-const cardLabel = (card, key) => card?.type === "chat" ? `Chat ask ${key.slice(5)}` : `${key.startsWith("merge:") ? "Merge" : "Decision"} ${cardTask(card, key)}`;
+const cardByKey = (model, key) => (model?.cards || []).find((entry) => entry.key === key) || (model?.landed || []).find((entry) => entry.key === key);
+const cardLabel = (card, key) => {
+  if (card?.type === "chat" || key.startsWith("chat:")) return `Chat ask ${key.slice(5)}`;
+  const kind = card?.type === "landed" || key.startsWith("landed:") ? "Landed" : key.startsWith("merge:") ? "Merge" : "Decision";
+  return `${kind} ${cardTask(card, key)}`;
+};
 
 // Free text keeps its line breaks but never serves an absolute path or control characters.
 export function threadText(value, max = MAX_ENTRY_CHARS) {
@@ -60,7 +65,7 @@ export function threadText(value, max = MAX_ENTRY_CHARS) {
 function parseBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "key,requestId,text") refuse(400, "invalid", "Ask must be exactly requestId, key and text");
   if (typeof body.requestId !== "string" || !REQUEST_ID.test(body.requestId)) refuse(400, "invalid", "Ask request id must be a lowercase UUID");
-  if (!validCardKey(body.key)) refuse(400, "invalid", "Ask must name a Captain's Call card");
+  if (!validCardKey(body.key)) refuse(400, "invalid", "Ask must name an open card");
   if (typeof body.text !== "string") refuse(400, "invalid", "Ask text must be text");
   const text = body.text.replace(/\r\n?/g, "\n").trim();
   if (!text) refuse(422, "empty", "Write a question first");
@@ -173,7 +178,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const previous = sent.get(parsed.requestId);
       if (previous && previous.digest !== digest) refuse(409, "request-reused", "This request id was already used for a different question");
       const record = previous || (() => {
-        const card = (model?.cards || []).find((entry) => entry.key === parsed.key);
+        const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
         return { digest, key: parsed.key, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
@@ -186,8 +191,8 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
     // best effort and its absence is reported, never hidden.
     async history(key, model) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
-      if (!validCardKey(key)) refuse(400, "invalid", "Thread must name a Captain's Call card");
-      const card = (model?.cards || []).find((entry) => entry.key === key) || null;
+      if (!validCardKey(key)) refuse(400, "invalid", "Thread must name an open card");
+      const card = cardByKey(model, key) || null;
       const entries = [];
       const data = await receipts(home);
       const notes = new Map();

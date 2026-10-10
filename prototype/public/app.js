@@ -1759,12 +1759,14 @@ function renderCallLifecycle() {
     const node = [...list.querySelectorAll("[data-call-key]")].find((item) => item.dataset.callKey === card.key);
     if (!node) continue;
     const answer = callAnswers?.state(card.key) || null;
-    const state = api.cardState({
+    const facts = {
       card,
       answer,
       thread: callThreads?.state(card.key) || null,
       procrastinated: Boolean(callProcrastinate?.parked(card.key)),
-    });
+    };
+    const posture = api.delivery?.(facts) || { posture: null, reply: "" };
+    const state = api.cardState(facts);
     states.push(state);
     node.setAttribute("data-call-lifecycle", state);
     node.toggleAttribute("data-call-answered", Boolean(card.answered || answer?.phase === "sent"));
@@ -1778,7 +1780,22 @@ function renderCallLifecycle() {
       if (badge.textContent) badge.textContent = "";
     }
     const underway = node.querySelector("[data-call-sent-label]");
-    if (underway) underway.hidden = state !== "sent";
+    if (underway) {
+      underway.hidden = state !== "sent";
+      if (state === "sent" && api.sentLabel) {
+        const text = api.sentLabel(posture.posture);
+        if (underway.textContent !== text) underway.textContent = text;
+      }
+    }
+    const banner = node.querySelector("[data-fm-reply]");
+    if (banner) {
+      const showReply = state === "active" && posture.posture === "replied";
+      banner.hidden = !showReply;
+      if (showReply && api.replyBanner) {
+        const text = api.replyBanner(posture.reply);
+        if (banner.textContent !== text) banner.textContent = text;
+      }
+    }
     callProcrastinate?.render(node);
     const focused = node.contains(document.activeElement);
     const selected = callPatcher.tracker.state().selected === card.key;
@@ -1803,6 +1820,7 @@ function renderCallLifecycle() {
     if (empty.textContent !== text) empty.textContent = text;
   }
   renderCallBadge(model);
+  overviewTabs?.paint();
 }
 $("#call-lifecycle-filter")?.addEventListener("click", (event) => {
   const button = event.target?.closest?.("[data-call-lifecycle]");
@@ -1837,8 +1855,17 @@ callDismiss = callPatcher && window.bearingsDismiss?.createDismissController({
   focusTarget: () => [...document.querySelectorAll('.primary-tab[data-view="overview"], [data-mobile-view="overview"]')].find((node) => node.getClientRects().length),
   onDismiss(key) { if (callPatcher.tracker.state().selected === key) callPatcher.tracker.deselect(); },
 });
+const landedBoard = window.bearingsLanded?.createController?.({ list: $("#landed-cards"), toggle: $("#landed-ack-toggle"), badge: $("#landed-new-count"), onChange: () => overviewTabs?.paint() });
+const overviewTabs = window.overviewTabs?.createController?.({
+  root: $("#overview-view"),
+  tabs: $("#overview-section-tabs"),
+  panels: { calls: $("#overview-primary"), landed: $("#overview-secondary") },
+  counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0 },
+  storage: localStorage,
+  media: window.matchMedia?.("(max-width: 720.005px)"),
+});
 const callLive = window.bearingsLive?.createBearingsLive({
-  onModel(model) { callPatcher.update(model); renderCallBadge(model); observeBearings(model); },
+  onModel(model) { callPatcher.update(model); landedBoard?.update(model); renderCallBadge(model); observeBearings(model); },
   onObserved(data) { callPatcher.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { extractAsks } from '../prototype/chat-asks.js';
 import { readBacklogHoldRecords } from '../prototype/bearings.js';
 import { claudeProjectDirectory, claudeTurns } from '../prototype/claude-transcript.js';
+import { checkLaneEnvelopes } from './check-lane-envelopes.mjs';
 
 async function bounded(file, max, tail = false) {
   const handle = await open(file, 'r');
@@ -22,7 +23,7 @@ async function bounded(file, max, tail = false) {
   } finally { await handle.close(); }
 }
 
-export async function checkStop(input, { home = process.env.FM_HOME, configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude') } = {}) {
+export async function checkStop(input, { home = process.env.FM_HOME, configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), enforceLanes = process.env.FM_QUARTERDECK_ENFORCE_LANES === '1' } = {}) {
   try {
     if (!home || !path.isAbsolute(home)) throw new Error('FM_HOME must be explicit and absolute');
     const root = await realpath(home);
@@ -51,6 +52,9 @@ export async function checkStop(input, { home = process.env.FM_HOME, configDir =
       finalId = id;
     }
     if (final === null) throw new Error('final assistant message absent from bounded transcript tail');
+    if (enforceLanes && final.trim() && checkLaneEnvelopes(final).length) return {
+      decision: 'block', reason: 'Wrap the complete captain-facing reply in flat matching [fm-lane <LaneName>] / [end <LaneName>] blocks. Lane labels are presentation only, not task ownership.'
+    };
     const asks = extractAsks(final);
     if (!asks.length) return {};
     const open = new Set((await readBacklogHoldRecords(root)).filter(row => row.open).map(row => row.task));

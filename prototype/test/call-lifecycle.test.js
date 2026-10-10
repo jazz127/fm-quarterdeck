@@ -52,6 +52,48 @@ test("lifecycle priority is procrastinated, then sent, then queued, then active"
   assert.equal(life.cardState({ card, answer: { phase: "confirm" }, procrastinated: true }), "procrastinated");
 });
 
+test("receipt posture moves a sent note from unread to acknowledged to active", () => {
+  const card = { key: "decision:alpha-call", answered: false };
+  const ask = (state, text) => ({ kind: "ask", from: "captain", state, noteId: "note-1", at: "2026-01-02T10:00:00.000Z", text: "Defer. I will want to test this first" });
+  const reply = { kind: "reply", from: "firstmate", noteId: "note-1", at: "2026-01-02T10:05:00.000Z", text: "Noted. It stays open for you." };
+  const pending = life.delivery({ card, thread: { entries: [ask("waiting")] } });
+  assert.equal(pending.posture, "pending");
+  assert.equal(life.sentLabel(pending.posture), "Sent - waiting for Firstmate to read");
+  assert.equal(life.cardState({ card, thread: { entries: [ask("waiting")] } }), "sent");
+  const acknowledged = life.delivery({ card, thread: { entries: [ask("received")] } });
+  assert.equal(acknowledged.posture, "acknowledged");
+  assert.equal(life.sentLabel(acknowledged.posture), "Firstmate is on it");
+  assert.equal(life.cardState({ card, thread: { entries: [ask("received")] } }), "sent");
+  const replied = life.delivery({ card, thread: { entries: [ask("replied"), reply] } });
+  assert.equal(replied.posture, "replied");
+  assert.equal(replied.reply, "Noted. It stays open for you.");
+  assert.equal(life.replyBanner(replied.reply), "Firstmate replied: Noted. It stays open for you.");
+  assert.equal(life.cardState({ card, thread: { entries: [ask("replied"), reply] } }), "active");
+  assert.equal(life.cardState({ card, thread: { entries: [ask("replied"), reply] }, procrastinated: true }), "procrastinated");
+  const followUp = life.delivery({ card, thread: { entries: [ask("replied"), reply, { kind: "ask", from: "captain", state: "waiting", at: "2026-01-02T11:00:00.000Z", text: "One more note" }] } });
+  assert.equal(followUp.posture, "pending");
+  assert.equal(life.cardState({ card, thread: { entries: [ask("replied"), reply], captainAsked: true } }), "sent");
+});
+
+test("an answer receipt and the card receipt use the same three postures", () => {
+  const card = { key: "decision:alpha-call" };
+  const accepted = life.delivery({ card, answer: { phase: "sent", receipt: { state: "accepted" } } });
+  assert.equal(accepted.posture, "pending");
+  assert.equal(accepted.reply, "");
+  assert.equal(life.cardState({ card, answer: { phase: "sent", receipt: { state: "received" } } }), "sent");
+  assert.equal(life.sentLabel("acknowledged"), "Firstmate is on it");
+  const answered = life.delivery({ card, answer: { phase: "sent", sentAt: "2026-01-02T12:00:00.000Z", receipt: { state: "replied", reply: "Holding until Tuesday" } } });
+  assert.equal(answered.posture, "replied");
+  assert.equal(life.replyBanner(answered.reply), "Firstmate replied: Holding until Tuesday");
+  assert.equal(life.cardState({ card, answer: { phase: "compose", heldReply: "Holding until Tuesday", heldAt: "2026-01-02T12:00:00.000Z" } }), "active");
+  assert.equal(life.delivery({ card: { ...card, sentReceipt: "acknowledged" } }).posture, "acknowledged");
+  assert.equal(life.delivery({ card: { ...card, answered: true } }).posture, "pending");
+  assert.equal(life.delivery({ card: { ...card, sentReceipt: "replied", sentReply: "Done for now" } }).reply, "Done for now");
+  assert.equal(life.cardState({ card: { ...card, sentReceipt: "replied", sentReply: "Done for now" } }), "active");
+  assert.equal(life.replyBanner(""), "Firstmate replied");
+  assert.equal(life.cardState({ card: { key: "decision:closed" } }), "active", "a call with no captain note is not Sent; a closed call is absent");
+});
+
 test("status counts and the remembered filter default to Active", () => {
   const tally = life.counts(["active", "active", "queued", "sent", "procrastinated"]);
   assert.deepEqual({ ...tally }, { active: 2, queued: 1, sent: 1, procrastinated: 1, all: 5 });
@@ -130,7 +172,8 @@ test("a Sent card shows the underway label and hatch, and only that state does",
   const view = await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8");
   const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
   const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.equal(view.match(/data-call-sent-label hidden>Sent - waiting for Firstmate/g).length, 1);
+  assert.equal(view.match(/data-call-sent-label hidden>Sent - waiting for Firstmate to read/g).length, 1);
+  assert.equal(view.match(/data-fm-reply hidden>/g).length, 1);
   assert.match(css, /\.call-card\[data-call-lifecycle="sent"\] \{[^}]*repeating-linear-gradient\(-45deg/);
   assert.match(css, /\.call-sent-label\[hidden\] \{ display: none; \}/);
   assert.match(css, /\.call-answer-fields\[data-sent\] :is\(\.call-opt, select\) \{[^}]*repeating-linear-gradient\(-45deg/);

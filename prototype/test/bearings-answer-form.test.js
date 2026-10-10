@@ -197,7 +197,17 @@ test("nothing is sent until Queue and then an explicit Send; the sent answer cle
   assert.match(t.part(key, "receipt-text").textContent, /received by Firstmate/);
   t.timers.advance(15000);
   await flush();
-  assert.match(t.part(key, "receipt-text").textContent, /Firstmate replied: Holding until Tuesday/);
+  assert.equal(t.answers.state(key).phase, "compose", "a reply unlocks the answer");
+  assert.equal(t.answers.state(key).heldReply, "Holding until Tuesday");
+  assert.equal(t.part(key, "receipt").hidden, true, "the card banner owns the reply");
+  assert.equal(t.part(key, "text").readOnly, false);
+  assert.equal(radio.disabled, false);
+  assert.equal(radio.checked, false);
+  assert.equal(t.part(key, "text").value, "");
+  assert.equal(t.part(key, "summary").hidden, true);
+  assert.equal(t.part(key, "compose").hidden, false);
+  assert.equal(t.win.callLifecycle.cardState({ card, answer: t.answers.state(key) }), "active");
+  assert.equal(t.win.callLifecycle.replyBanner(t.answers.state(key).heldReply), "Firstmate replied: Holding until Tuesday");
   t.timers.advance(60000);
   await flush();
   assert.equal(t.fetches.length, 3, "a replied answer stops polling");

@@ -105,10 +105,20 @@ test("Overview retains KPIs, replaces only the project tree with accessible live
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
   const overview = html.slice(html.indexOf('<section id="overview-view"'), html.indexOf('<section id="work-view"'));
   assert.match(overview, /id="summary"/);
+  assert.ok(overview.indexOf('id="summary"') < overview.indexOf('id="overview-section-tabs"') && overview.indexOf('id="overview-section-tabs"') < overview.indexOf('id="overview-columns"'));
+  assert.match(overview, /id="overview-section-tabs"[\s\S]*role="tablist"[\s\S]*id="overview-tab-calls"[\s\S]*Captain's Call \(0\)[\s\S]*id="overview-tab-landed"[\s\S]*Just landed \(0\)/);
+  assert.match(html, /<script src="\/bearings-landed\.js"><\/script>\s*<script src="\/overview-tabs\.js"><\/script>/);
   assert.match(overview, /id="overview-columns"/);
   assert.match(overview, /id="overview-primary"[\s\S]*id="captain-call" aria-labelledby="call-heading"/);
-  assert.match(overview, /id="overview-secondary"><\/div>/);
-  assert.doesNotMatch(overview.slice(overview.indexOf('id="overview-secondary"')), /placeholder|coming soon|Charted/i);
+  assert.match(overview, /id="overview-secondary"[\s\S]*id="just-landed"/);
+  assert.match(overview, /id="just-landed-heading"[\s\S]*Just landed <b id="landed-new-count" class="call-badge" hidden>0<\/b>/);
+  assert.match(overview, /id="landed-ack-toggle"/);
+  assert.match(overview, /Checking for landings/);
+  assert.doesNotMatch(overview.slice(overview.indexOf('id="overview-secondary"')), /placeholder|coming soon|Charted|Procrastinate/i);
+  const landedJs = await readFile(new URL("../public/bearings-landed.js", import.meta.url), "utf8");
+  assert.match(landedJs, /No recent completions are in the current baseline\./);
+  assert.match(landedJs, /data-landed-key/);
+  assert.doesNotMatch(landedJs, /data-call-key|data-call-procrastinate/);
   assert.match(overview, /id="call-status"[^>]*role="status"/);
   assert.doesNotMatch(overview, /id="projects"|overview-status|Repositories →/);
   const app = ui();
@@ -2625,7 +2635,12 @@ test("Overview and Work Split wide-screen viewport utilization: scoped width exp
   // Scoped width expansion rules
   assert.match(css, /#overview-view > \*,\s*#work-view > \* \{[\s\S]*?max-width:\s*100%;/);
   assert.match(css, /\.overview-columns \{ display: grid; grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); gap: 22px; align-items: start; \}/);
-  assert.match(css, /@media \(max-width: 720\.005px\) \{[\s\S]*?#overview-secondary \{ display: none; \}/);
+  assert.match(css, /@media \(max-width: 720\.005px\) \{[\s\S]*?\.overview-columns \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.overview-section-tabs \{ display: none; \}/);
+  assert.match(css, /@media \(max-width: 720\.005px\) \{\n  \.call-card \{ padding: 14px 12px 12px; \}[\s\S]*?\.overview-section-tabs \{ display: flex; /);
+  assert.doesNotMatch(css, /#overview-secondary \{ display: none; \}/);
+  assert.match(css, /\.call-card \.call-head-pill\.landed-ack \{ min-height: 44px; \}/);
+  assert.match(css, /#landed-ack-toggle \{ min-height: 44px;/);
   assert.match(css, /#work-view section \{[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%;/);
   assert.match(css, /#work-view section > p\.muted \{[\s\S]*?max-width:\s*80ch;/);
 

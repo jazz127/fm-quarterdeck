@@ -520,6 +520,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 }
 /* Overview body matches the bearings board: two equal columns under the controls. */
 .overview-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+.overview-section-tabs { display: none; }
 #overview-primary, #overview-secondary { min-width: 0; }
 
 #work-view section {
@@ -1795,6 +1796,10 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .call-head { position: relative; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; }
 .call-head-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; min-width: 0; max-width: 100%; }
 .call-card .call-head-pill { display: inline-flex; align-items: center; justify-content: center; width: auto; max-width: 100%; min-height: 0; margin: 0; padding: 5px 9px 4px; border: 1.5px solid var(--text); border-radius: 6px; box-shadow: 2px 2px 0 var(--text); background: var(--surface); color: var(--text); font-size: 11px; font-weight: 800; line-height: 1.2; letter-spacing: 0.04em; white-space: nowrap; }
+.call-card .call-head-pill.landed-ack { min-height: 44px; }
+#landed-ack-toggle { min-height: 44px; padding: 6px 10px; border: 1.5px solid var(--text); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; font-weight: 700; }
+#landed-ack-toggle[aria-pressed="true"] { background: var(--accent); color: #fff; box-shadow: 2px 2px 0 var(--text); }
+#landed-ack-toggle:disabled { color: var(--muted); }
 .call-card .call-head-dismiss { border-style: dashed; }
 .call-card .state-chip { display: inline-flex; align-items: center; max-width: 100%; padding: 5px 9px 4px; border: 1.5px solid var(--text); border-radius: 6px; box-shadow: 2px 2px 0 var(--text); background: var(--accent); color: #fff; font-size: 11px; font-weight: 800; line-height: 1.2; letter-spacing: 0.04em; white-space: normal; overflow-wrap: anywhere; }
 .call-card[data-call-type="merge"] .state-chip { background: color-mix(in srgb, var(--amber) 72%, white); color: var(--text); }
@@ -1805,6 +1810,8 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .call-lifecycle-dot[data-call-lifecycle="procrastinated"] { background: var(--muted); border-style: dotted; }
 .call-sent-label { align-self: flex-start; max-width: 100%; margin: 0; padding: 3px 8px; border: 1px dashed var(--blue); border-radius: 6px; background: color-mix(in srgb, var(--surface) 88%, var(--blue)); color: var(--text); font-size: 12px; font-weight: 800; line-height: 1.3; letter-spacing: 0.01em; }
 .call-sent-label[hidden] { display: none; }
+.call-reply-banner { margin: 0; max-width: 100%; padding: 10px 12px; border: 1.5px solid var(--text); border-left: 4px solid var(--blue); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 1rem; font-weight: 800; line-height: 1.4; box-shadow: 2px 2px 0 var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.call-reply-banner[hidden] { display: none; }
 .call-your-answer { display: grid; gap: 4px; margin: 0; min-width: 0; max-width: 100%; padding: 10px 12px; border: 1.5px solid var(--text); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 2px 2px 0 var(--text); }
 .call-your-answer[hidden] { display: none; }
 .call-your-answer h4 { margin: 0; font-size: 11px; font-weight: 800; letter-spacing: 0.07em; line-height: 1.2; text-transform: uppercase; color: var(--muted); }
@@ -1941,15 +1948,15 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 @keyframes call-arrival { from { box-shadow: 0 0 0 2px var(--accent), 3px 3px 0 var(--text); } to { box-shadow: 3px 3px 0 var(--text); } }
 @media (prefers-reduced-motion: reduce) { .call-card-new { animation: none; } .call-card-leaving { transition: none; } }
 @media (forced-colors: active) {
-  .call-card, .call-card .state-chip, .call-card .call-head-pill, .call-lifecycle-filter button, .call-send-queued, .call-opt-rec, .call-answer-actions .call-answer-queue { border-color: CanvasText; box-shadow: none; background: Canvas; color: CanvasText; }
+  .call-card, .call-card .state-chip, .call-card .call-head-pill, .call-lifecycle-filter button, #landed-ack-toggle, .call-send-queued, .call-opt-rec, .call-answer-actions .call-answer-queue { border-color: CanvasText; box-shadow: none; background: Canvas; color: CanvasText; }
   .call-send-queued:disabled { color: GrayText; border-color: GrayText; }
-  .call-lifecycle-filter button[aria-pressed="true"] { outline: 2px solid CanvasText; }
+  .call-lifecycle-filter button[aria-pressed="true"], #landed-ack-toggle[aria-pressed="true"] { outline: 2px solid CanvasText; }
   .call-lifecycle-dot { border-color: CanvasText; background: CanvasText; }
   .call-context-ask dd { color: CanvasText; }
   .call-lifecycle-dot[data-call-lifecycle="sent"] { border-style: dashed; }
   .call-lifecycle-dot[data-call-lifecycle="procrastinated"] { border-style: dotted; }
   .call-card[data-call-lifecycle="sent"] { border-style: dashed; background: Canvas; color: CanvasText; }
-  .call-sent-label { color: CanvasText; border-color: CanvasText; background: Canvas; }
+  .call-sent-label, .call-reply-banner { color: CanvasText; border-color: CanvasText; background: Canvas; box-shadow: none; }
   .call-your-answer { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; }
   .call-your-answer h4, .call-your-answer-hint, .call-your-answer time { color: CanvasText; }
   .call-opt:has(input:checked), .call-answer-confirm, .call-answer-receipt, .call-status { border-color: Highlight; }
@@ -1959,8 +1966,22 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   .call-answer-fields[data-sent] .call-opt:has(input:checked) { border-style: solid; border-color: Highlight; }
   .call-thread, .call-thread-captain { border-color: Highlight; }
   .call-opt-rec { color: CanvasText; border-color: CanvasText; }
+  .overview-section-tabs button { border-color: CanvasText; box-shadow: none; background: Canvas; color: CanvasText; }
+  .overview-section-tabs button[aria-selected="true"] { outline: 2px solid CanvasText; }
 }
-@media (max-width: 720.005px) { .call-card { padding: 14px 12px 12px; } .call-thread-history { padding: 10px; } .call-opt-body { flex-basis: calc(100% - 28px); } .call-opt-rec { margin-left: 28px; } .call-status { top: 0; } .call-read-only { display: block; margin-left: 0; } .overview-columns { grid-template-columns: 1fr; } #overview-secondary { display: none; } }
+@media (max-width: 720.005px) {
+  .call-card { padding: 14px 12px 12px; }
+  .call-thread-history { padding: 10px; }
+  .call-opt-body { flex-basis: calc(100% - 28px); }
+  .call-opt-rec { margin-left: 28px; }
+  .call-status { top: 0; }
+  .call-read-only { display: block; margin-left: 0; }
+  .overview-columns { grid-template-columns: 1fr; }
+  .overview-section-tabs { display: flex; gap: 8px; margin: 0 0 12px; }
+  .overview-section-tabs button { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 6px 10px; border: 1.5px solid var(--text); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
+  .overview-section-tabs button[aria-selected="true"] { background: var(--accent); color: #fff; box-shadow: 2px 2px 0 var(--text); }
+  .overview-section-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+}
 
 /* Taxonomy is presentation-only; compact native disclosures keep all slices usable.
    Cohesive 3-tier visual hierarchy: Repository (Deck) -> Lane (Workstream) -> Theme (Grouping) */

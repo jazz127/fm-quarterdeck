@@ -2,7 +2,7 @@
 // captain click: Queue locks the note and shows exactly what will go to Firstmate, and
 // only Send (this card) or Send batch (the review queue) relays it. A checked option is an
 // answer. Text with no option is a card thread note. That path does not use the answer
-// phase sent; the thread receipt marks the card Sent on the lifecycle toggle.
+// phase sent; the thread receipt marks the card Sent until Firstmate replies or closes it.
 // A retry after an unconfirmed send is another explicit click and reuses the same request id.
 // A card leaves only when Firstmate's next snapshot drops it; this controller never removes a card.
 window.bearingsAnswerForm = (() => {
@@ -129,6 +129,12 @@ window.bearingsAnswerForm = (() => {
       const key = keyOf(node);
       if (!form || !key) return;
       let state = states.get(key);
+      // A reply returns the answer to compose. The lifecycle banner shows the reply.
+      if (state?.phase === "sent" && state.receipt?.state === "replied") {
+        clearDraft(key);
+        state = { phase: "compose", heldReply: typeof state.receipt.reply === "string" ? state.receipt.reply : "", heldAt: state.sentAt || new Date().toISOString() };
+        states.set(key, state);
+      }
       const rev = card?.rev || node.getAttribute("data-call-rev");
       // The captain reviewed a different version of this call: never send it as-is.
       if (state && ["confirm", "failed"].includes(state.phase) && state.cardRev !== rev) {
@@ -260,7 +266,7 @@ window.bearingsAnswerForm = (() => {
         clearDraft(key);
         if (thread) {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
-          // which is what makes the card Sent until Firstmate closes the call.
+          // which keeps the card Sent until that note is acknowledged or Firstmate replies.
           update(key, null, focus ? "text" : null);
           onAsked(key);
           return true;
