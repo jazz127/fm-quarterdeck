@@ -421,7 +421,10 @@ test("server starts and serves validated configured fleet data", async (context)
   const { port } = server.address();
 
   const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
-  assert.deepEqual(health, { ok: true, service: "fm-quarterdeck" });
+  assert.equal(health.ok, true);
+  assert.equal(health.service, "fm-quarterdeck");
+  assert.equal(health.status, "degraded");
+  assert.equal(health.bearings.state, "loading");
 
   const dashboard = await fetch(`http://127.0.0.1:${port}/api/dashboard`).then((response) => response.json());
   assert.equal(dashboard.fleet.source, "configured status");
