@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fingerprint } from "./agent-state.js";
+import { parseStatusLine } from "./firstmate-records.js";
 const exec = promisify(execFile);
 export const WORK_STATUSES = ["active", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
@@ -66,26 +67,51 @@ export function resolveRepositoryIdentity(recorded, state, projectPaths = new Ma
   return { repositoryPath, repository };
 }
 
-export function foldStatusLines(lines) {
-  const events = lines.map((line, index) => {
-    const match = line.match(/^([a-z-]+)(?:\s+\[([^\]]+)\])?:\s*(.+)$/i);
-    return { state: match?.[1].toLowerCase() || "update", text: match?.[3] || line, line, index, key: match?.[2]?.match(/(?:^|\s)key=([a-zA-Z0-9._-]+)(?=\s|$)/)?.[1] || line.match(/\[key=([a-zA-Z0-9._-]+)\]/)?.[1] || null };
-  });
+export function foldStatusLines(lines, { kind = "unknown" } = {}) {
+  const events = lines.map((line, index) => ({ ...parseStatusLine(line), line, index }));
   const open = new Map();
   const resolved = new Set();
+  const decisionStates = ["blocked", "needs-decision"];
+  const waitingStates = ["blocked", "paused", "needs-decision", "waiting"];
+  const waitingEvents = new Map();
+  const close = (key, phaseKey) => {
+    open.delete(key);
+    const remaining = (waitingEvents.get(key) || []).filter((index) => {
+      if (phaseKey !== undefined && !decisionStates.includes(events[index].state) && events[index].phaseKey !== phaseKey) return true;
+      resolved.add(index);
+      return false;
+    });
+    if (remaining.length) waitingEvents.set(key, remaining);
+    else waitingEvents.delete(key);
+  };
   for (const event of events) {
-    if (["blocked", "paused", "needs-decision", "waiting"].includes(event.state) && event.key) { open.set(event.key, event); resolved.delete(event.key); }
-    else if (event.state === "resolved" && event.key && open.has(event.key)) { open.delete(event.key); resolved.add(event.key); }
+    if (waitingStates.includes(event.state) && event.transitionAllowed) {
+      if (!waitingEvents.has(event.key)) waitingEvents.set(event.key, []);
+      waitingEvents.get(event.key).push(event.index);
+    }
+    if (["done", "failed"].includes(event.state) && ["ship", "scout"].includes(kind)) {
+      for (const key of open.keys()) close(key);
+    } else if (event.transitionAllowed) {
+      if (decisionStates.includes(event.state)) {
+        open.delete(event.key);
+        open.set(event.key, event);
+      } else if (["resolved", "captain-held"].includes(event.state)) close(event.key, event.phaseKey);
+    }
   }
-  const actionable = events.filter((event) => !["resolved", "update"].includes(event.state) && !(event.key && resolved.has(event.key) && ["blocked", "paused", "needs-decision", "waiting"].includes(event.state)));
-  return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1), pendingIssues: [...open.values()].map(({ key, state }) => ({ key, state })) };
+  const latestEvent = events.filter((event) => event.state !== "update").at(-1);
+  const actionable = events.filter((event) => !["resolved", "update"].includes(event.state) && !resolved.has(event.index)
+    && (event.state !== "captain-held" || event === latestEvent));
+  return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1),
+    pendingIssues: [...open.values()].map(({ key, state, text }) => ({ key, state, text })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [] }) {
-  if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, activeBlockers = [] }) {
+  if (state === "needs-decision" || pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
+  if (holdOpen && (holdDeferred || activeBlockers.length)) return "waiting";
+  if (holdOpen && holdKind === "captain") return "captain-action";
+  if (holdActive) return "waiting";
   if (pendingIssues.length) return "waiting";
-  if (state === "needs-decision") return "captain-action";
-  if (["blocked", "paused", "waiting"].includes(state)) return "waiting";
+  if (["blocked", "paused", "waiting", "captain-held"].includes(state)) return "waiting";
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";
   if (state === "done") return "newly-done";
   if (queued && !inFlight) return "backlog";
@@ -301,7 +327,10 @@ export async function projectWork(records, state, { durability = verifyDurabilit
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
       lane, theme, status, sourceState: record.state,
       endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
-      retained: Boolean(record.retained), pendingIssues: record.pendingIssues || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
+      retained: Boolean(record.retained), pendingIssues: (record.pendingIssues || []).map((issue) => ({ ...issue, ...(issue.text ? { text: safeWorkNote(issue.text) } : {}) })),
+      holdKind: record.holdKind ? safeWorkNote(record.holdKind) : null, holdReason: record.holdReason ? safeWorkNote(record.holdReason) : null, holdUntil: record.holdUntil || null,
+      holdOpen: Boolean(record.holdOpen), holdActive: Boolean(record.holdActive), holdDeferred: Boolean(record.holdDeferred),
+      blockers: record.blockers || [], activeBlockers: record.activeBlockers || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
       unboundCommit: Boolean(record.unboundCommit && !bound),
       delivery: completionFingerprint ? evidence.some((entry) => entry.tier === "production") ? "Live production" : evidence.some((entry) => entry.tier === "uat") ? "Live UAT · ready for review" : "Ready for review · deployment unknown" : "Not completed",
