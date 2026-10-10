@@ -31,6 +31,14 @@ test("message kinds catalog defaults, migrates legacy prefs, and maps type ids",
   assert.equal(api.stored().has("input"), false);
   assert.equal(api.DEFAULT_IDS.includes("input"), false);
   assert.equal(api.label("conversation"), "Firstmate replies");
+  assert.equal(api.label("narration"), "Firstmate progress");
+  assert.equal(api.known("narration"), true);
+  assert.equal(api.DEFAULT_IDS.includes("narration"), false);
+  assert.equal(api.stored().has("narration"), false);
+  assert.equal(api.typeId({ role: "firstmate", kind: "narration" }), "narration");
+  const saved = {};
+  saved[api.KEY] = JSON.stringify(["captain", "conversation", "supervision"]);
+  assert.equal(kinds(saved).stored().has("narration"), false, "a stored preference does not gain progress lines");
   assert.equal(api.icon("tools"), "tools");
   assert.match(api.svg("tools"), /message-kind-svg/);
   assert.match(api.svg("unknown-kind"), /circle|M9\.1 9/);

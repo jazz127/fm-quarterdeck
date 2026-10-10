@@ -27,7 +27,7 @@ import { readPreferences } from "./preferences.js";
 import { readHealthPreferences, saveHealthPreferences, validHealthPreferences } from "./health-preferences.js";
 import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
-import { announceReview, inboxReady, inboxReceipts, inboxReviewState } from "./inbox.js";
+import { announceReview, inboxReady, inboxReceipts, inboxReviewState, SAFE_NOTE_ID } from "./inbox.js";
 import { VERIFIED_CAPTAIN, inboxInput, verifiedQuarterdeckNote } from "./authorship.js";
 import { lstat, open, readFile, readdir, stat } from "node:fs/promises";
 import os from "node:os";
@@ -388,7 +388,7 @@ function publicMessage({ author, role, source, text, timestamp, timestampSource 
 
 function messageOrder(message) {
   if (message.role === "captain" || message.kind === "input") return 0;
-  if (message.kind === "thinking") return 1;
+  if (message.kind === "thinking" || message.kind === "narration") return 1;
   if (message.kind === "crew") return 3;
   return 2;
 }
@@ -692,6 +692,58 @@ async function readOptionalBrief(home, id) {
   } finally { await handle?.close(); }
 }
 
+// Captain-facing replies written by `fm-inbox.sh reply` live in state/inbox/.replies.
+// Review reads them through receipts; Fleet Chats reads the same files directly.
+// Symlinks are not followed. Names that are not note ids are ignored.
+async function readInboxReplies(home, reader) {
+  const directory = path.join(home, "state", "inbox", ".replies");
+  let info;
+  try { info = await lstat(directory); }
+  catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return []; throw error; }
+  if (!info.isDirectory()) return [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  const messages = [];
+  const seen = new Set();
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!SAFE_NOTE_ID.test(entry.name) || entry.isSymbolicLink() || !entry.isFile()) continue;
+    const fullPath = path.join(directory, entry.name);
+    let fileStat;
+    try { fileStat = await lstat(fullPath); }
+    catch (error) { if (error?.code === "ENOENT") continue; throw error; }
+    if (!fileStat.isFile()) continue;
+    const parsed = parseHeaderRecord(await reader.text(fullPath));
+    if (!parsed.body) continue;
+    const headerId = SAFE_NOTE_ID.test(parsed.headers.id || "") ? parsed.headers.id : "";
+    const inReplyTo = headerId || entry.name;
+    const recordId = `state/inbox/.replies/${inReplyTo}`;
+    if (seen.has(recordId)) continue;
+    seen.add(recordId);
+    const { timestamp, timestampSource } = recordTimestamp(parsed.headers, fileStat);
+    reader.takeMessage();
+    messages.push({
+      ...publicMessage({
+        author: "Firstmate",
+        role: "firstmate",
+        kind: "conversation",
+        state: "reply",
+        source: `state/inbox/.replies/${entry.name}`,
+        text: parsed.body,
+        timestamp,
+        timestampSource,
+        sourceSequence: Number(parsed.headers.seq) || 0,
+      }),
+      recordId,
+      inReplyTo,
+    });
+  }
+  return messages;
+}
+
+function noteIdFromSource(source) {
+  const stem = String(source || "").split("/").pop()?.replace(/\.(?:note|msg)$/, "") || "";
+  return SAFE_NOTE_ID.test(stem) ? stem : "";
+}
+
 // Claude Code keeps transcripts under the server user's config directory;
 // only this home's encoded project directory inside it is ever read.
 export function claudeConfigDir(env) {
@@ -703,7 +755,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
   if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
   try {
-    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision] = await Promise.all([
+    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision, inboxReplies] = await Promise.all([
       readFile(path.join(resolvedHome, "data", "projects.md"), "utf8"),
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
@@ -711,6 +763,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir, windowBytes }) : { messages: [], coverage: {} },
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
       includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
+      includeHistory ? readInboxReplies(resolvedHome, reader) : [],
     ]);
     const projects = parseProjects(registry);
     const repositoryPaths = await repositoryPathsForHome(resolvedHome, projects);
@@ -798,8 +851,29 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     // The outcome ledger is authoritative when Pi also stores a displayed ⛵ mirror.
     const outcomeTexts = new Set(supervision.messages.map((message) => message.text));
     const transcriptMessages = transcript.messages.filter((message) => message.kind !== "supervision" || !outcomeTexts.has(message.text.replace(/^⛵\s*/, "")));
-    const allCaptainMessages = [...captainNotes, ...transcriptMessages];
-    const unscopedCaptainNotes = captainNotes.filter((message) => !message.taskId);
+    const surfaced = new Set();
+    for (const message of [...captainNotes, ...transcriptMessages, ...outboxMessages, ...supervision.messages]) {
+      if (typeof message.recordId === "string") surfaced.add(message.recordId);
+    }
+    const noteById = new Map();
+    for (const note of captainNotes) {
+      if (!note.source.endsWith(".note")) continue;
+      const id = noteIdFromSource(note.source);
+      if (id && !noteById.has(id)) noteById.set(id, note);
+    }
+    const linkedReplies = [];
+    const orphanReplies = [];
+    for (const reply of inboxReplies) {
+      if (surfaced.has(reply.recordId) || surfaced.has(reply.source)) continue;
+      surfaced.add(reply.recordId);
+      surfaced.add(reply.source);
+      const note = noteById.get(reply.inReplyTo);
+      if (!note) { orphanReplies.push(reply); continue; }
+      if (note.taskId) reply.taskId = note.taskId;
+      linkedReplies.push(reply);
+    }
+    const allCaptainMessages = [...captainNotes, ...transcriptMessages, ...linkedReplies, ...orphanReplies];
+    const unscopedCaptainNotes = [...captainNotes.filter((message) => !message.taskId), ...linkedReplies.filter((message) => !message.taskId)];
     const unroutedOutbox = outboxMessages.filter((message) => !message.taskId || !taskIds.has(message.taskId));
     const markedReplies = new Map(allCaptainMessages.map((message) => [message, explicitLaneBlocks(message, projects)]));
     const sharedMessages = [...unscopedCaptainNotes, ...unroutedOutbox];

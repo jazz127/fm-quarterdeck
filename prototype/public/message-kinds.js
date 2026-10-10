@@ -10,6 +10,7 @@ window.messageKinds = (() => {
     conversation: wrap('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>'), // message-square
     supervision: wrap('<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>'), // badge-check
     thinking: wrap('<circle cx="12" cy="12" r="9" stroke-dasharray="3.2 3.5"/>'), // circle-dashed
+    narration: wrap('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" stroke-dasharray="4 3"/>'), // message-square, dashed: progress, not a reply
     steer: wrap('<path d="M4 4v7a4 4 0 0 0 4 4h12"/><path d="m15 11 5 4-5 4"/>'), // corner-down-right
     crew: wrap('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'), // users
     branch: wrap('<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M6 8.5v7"/><path d="M8.5 6h5a4 4 0 0 1 4 4"/>'), // git-branch
@@ -24,6 +25,8 @@ window.messageKinds = (() => {
     { id: "conversation", label: "Firstmate replies", icon: "conversation", filterGlyph: "conversation", svg: ICONS.conversation },
     { id: "supervision", label: "supervision outcomes", icon: "supervision", filterGlyph: "supervision", svg: ICONS.supervision },
     { id: "thinking", label: "thinking", icon: "thinking", filterGlyph: "thinking", svg: ICONS.thinking },
+    // Assistant text written before a tool call. Off by default; not a reply.
+    { id: "narration", label: "Firstmate progress", icon: "narration", filterGlyph: "narration", svg: ICONS.narration },
     { id: "steer", label: "steers", icon: "steer", filterGlyph: "steer", svg: ICONS.steer },
     { id: "crew", label: "crew status", icon: "crew", filterGlyph: "crew", svg: ICONS.crew },
     { id: "branch", label: "crew replies", icon: "branch", filterGlyph: "branch", svg: ICONS.branch },

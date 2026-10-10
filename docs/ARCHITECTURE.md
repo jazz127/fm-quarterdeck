@@ -37,7 +37,8 @@ Task inbox records are internal steers. Outcomes use recorded epochs. Optional e
 | Kind | Meaning | Default |
 | --- | --- | --- |
 | captain | Stored human turns/notes | on |
-| conversation | Firstmate replies / main mirrors | on |
+| conversation | Firstmate replies / main mirrors, including inbox replies | on |
+| narration | Pre-tool Firstmate progress | off |
 | supervision | Durable fleet outcome notes | on |
 | thinking | Native stored assistant thinking only | on when available |
 | branch | Crew branch replies | off |
