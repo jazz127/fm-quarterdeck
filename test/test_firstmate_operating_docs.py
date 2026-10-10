@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import unittest
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,12 +14,13 @@ class FirstmateOperatingDocsTests(unittest.TestCase):
             self.assertIn(link, (ROOT / name).read_text())
 
     def test_relative_policy_links_resolve_inside_source(self):
+        # Check published link destinations; URL fragments are not file names.
         text = (ROOT / "FIRSTMATE.md").read_text()
         links = re.findall(r"\]\(([^)]+)\)", text)
         self.assertTrue(links)
         for link in links:
             with self.subTest(link=link):
-                target = (ROOT / link).resolve()
+                target = (ROOT / urlsplit(link).path).resolve()
                 self.assertTrue(target.is_relative_to(ROOT))
                 self.assertTrue(target.is_file())
 
