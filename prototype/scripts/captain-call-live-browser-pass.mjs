@@ -148,6 +148,36 @@ try {
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
   await browser('newpage', `http://127.0.0.1:${server.address().port}/#overview`);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
+  // Deterministic transport races in the real page realm, isolated from the UI's feed.
+  await evaluate(`async () => {
+    const models = [], states = [], sources = [], pending = [];
+    const lifecycle = new EventTarget();
+    class Source {
+      constructor() { this.events = new EventTarget(); this.closed = false; sources.push(this); }
+      addEventListener(type, fn) { this.events.addEventListener(type, fn); }
+      close() { this.closed = true; }
+      emit(type, data) { this.events.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data) })); }
+    }
+    const live = window.bearingsLive.createBearingsLive({ win: lifecycle, doc: document, timers: window,
+      EventSourceImpl: Source, bootRevision: window.FM_BOOT_REVISION,
+      fetchImpl: () => new Promise(resolve => pending.push(rev => resolve({ok:true,json:async()=>({rev,cards:[]})}))),
+      onModel: model => models.push(model.rev), onConnection: state => states.push(state.state), onRevision: () => { throw Error('obsolete revision'); }
+    });
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    try {
+      live.start(); lifecycle.dispatchEvent(new Event('pagehide')); pending.shift()('hidden'); await settle();
+      if(models.length || sources.length || states.at(-1)!=='paused') throw Error('late pagehide catch-up');
+      lifecycle.dispatchEvent(new Event('pageshow')); pending.shift()('current'); await settle();
+      const old = sources[0];
+      lifecycle.dispatchEvent(new Event('pagehide')); lifecycle.dispatchEvent(new Event('pageshow'));
+      pending.shift()('resumed'); await settle();
+      old.emit('model',{rev:'obsolete',cards:[]}); old.emit('bye',{}); old.emit('revision',{});
+      if(sources[1].closed || pending.length || models.join(',')!=='current,resumed') throw Error('closed stream still owns feed');
+      const refresh = live.refresh(); sources[1].emit('model',{rev:'pushed',cards:[]}); pending.shift()('older'); await refresh;
+      if(live.rev!=='pushed' || models.at(-1)!=='pushed') throw Error('catch-up rolled back push');
+      return 'PASS pagehide, replacement-stream ownership, and pushed-model race';
+    } finally { live.stop(); }
+  }`);
   // Transcript cards load and stream without a snapshot write or an AI call.
   for (const scheme of ['light', 'dark']) {
     await browser('emulate', '--color-scheme', scheme);

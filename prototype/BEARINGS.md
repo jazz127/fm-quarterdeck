@@ -55,6 +55,7 @@ Each card has `clock:{label,at}`. Decision clocks use the newest durable `update
   - A `: hb` comment every 20 s. Each heartbeat and push first re-checks the served revision; on a mismatch the stream sends `event: revision` and ends.
   - Streams are recycled after 10 min with `event: bye`; `server.close()` ends open streams with `bye` and stops the scheduler.
 - The client keeps one `EventSource` per visible tab and closes it on `hidden` and `pagehide`. Becoming visible fetches `?since` first, then reopens. On a stream error it runs the review config recheck, polls `?since` every 15 s, and retries the stream after 3 s, 10 s, then 30 s. `bye` reconnects at once. A `hello` whose served commit differs from the page's boot revision shows the existing "Quarterdeck updated" notice and rebinds this document's live transport to that commit. A server `revision` event shows the same notice, marks Captain's Call freshness updating, and retries with the same backoff until a hello restores the feed. Reload stays available and is not automatic. The server still closes a stream whose checkout no longer matches its boot commit.
+- Late HTTP responses and queued events from closed streams cannot overwrite a newer read or pushed model. Suspension invalidates pending reads and reconnect continuations, including `pagehide` while the document still reports visible; a stopped controller cannot reopen from an earlier lifecycle.
 
 ## Engagement hold
 

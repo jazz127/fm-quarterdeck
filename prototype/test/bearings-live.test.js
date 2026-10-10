@@ -7,7 +7,7 @@ import { fakeTimers } from "./helpers/call-dom.js";
 const code = await readFile(new URL("../public/bearings-live.js", import.meta.url), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function setup({ streamAllowed = true, bootRevision = "a".repeat(40), fetchFails = false } = {}) {
+function setup({ streamAllowed = true, bootRevision = "a".repeat(40), fetchFails = false, fetchResponse } = {}) {
   const sources = [];
   class FakeEventSource {
     constructor(url) { this.url = url; this.listeners = new Map(); this.closed = false; sources.push(this); }
@@ -23,6 +23,7 @@ function setup({ streamAllowed = true, bootRevision = "a".repeat(40), fetchFails
   const fetchImpl = async (url) => {
     fetches.push(url);
     if (fetchFails) throw new Error("offline");
+    if (fetchResponse) return fetchResponse(url);
     return { ok: true, json: async () => url.includes("since=") ? { unchanged: true, rev: "r1", state: "ready" } : { rev: "r1", state: "ready", cards: [] } };
   };
   const context = vm.createContext({ window: {} });
@@ -156,6 +157,110 @@ test("previews never open a stream and poll with ?since instead", async () => {
   timers.advance(15000);
   await flush();
   assert.deepEqual(fetches, ["/api/bearings", "/api/bearings?since=r1"]);
+});
+
+function deferredResponse() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, reject, resolve: (rev) => resolve({ ok: true, json: async () => ({ rev, cards: [] }) }) };
+}
+
+test("suspending during catch-up ignores its late response and does not reopen on pagehide", async () => {
+  for (const action of ["stop", "hidden", "pagehide"]) {
+    const pending = deferredResponse();
+    const { live, sources, seen, doc, docListeners, winListeners } = setup({ fetchResponse: () => pending.promise });
+    live.start();
+    if (action === "stop") live.stop();
+    if (action === "hidden") { doc.visibilityState = "hidden"; docListeners.get("visibilitychange")(); }
+    if (action === "pagehide") winListeners.get("pagehide")();
+    pending.resolve("late");
+    await flush();
+    assert.equal(seen.models.length, 0, action);
+    assert.equal(sources.length, 0, action);
+    assert.equal(seen.connection.at(-1), "paused", action);
+  }
+});
+
+test("a late failure after suspension does not replace paused status", async () => {
+  const pending = deferredResponse();
+  const { live, seen } = setup({ fetchResponse: () => pending.promise });
+  live.start();
+  live.stop();
+  pending.reject(new Error("offline"));
+  await flush();
+  assert.equal(seen.connection.at(-1), "paused");
+});
+
+test("out-of-order catch-ups cannot roll back a newer reading", async () => {
+  const pending = [];
+  const { live, seen } = setup({ fetchResponse: () => { const read = deferredResponse(); pending.push(read); return read.promise; } });
+  const first = live.refresh();
+  const second = live.refresh();
+  pending[1].resolve("newer");
+  await second;
+  pending[0].resolve("older");
+  await first;
+  assert.deepEqual(seen.models.map(model => model.rev), ["newer"]);
+  assert.equal(live.rev, "newer");
+});
+
+test("stop/start isolates the new catch-up from the previous lifecycle", async () => {
+  const pending = [];
+  const { live, sources, seen } = setup({ fetchResponse: () => { const read = deferredResponse(); pending.push(read); return read.promise; } });
+  live.start();
+  live.stop();
+  live.start();
+  pending[0].resolve("old-lifecycle");
+  await flush();
+  assert.equal(seen.models.length, 0);
+  assert.equal(sources.length, 0, "the previous resume continuation must not open a stream");
+  pending[1].resolve("current-lifecycle");
+  await flush();
+  assert.deepEqual(seen.models.map(model => model.rev), ["current-lifecycle"]);
+  assert.equal(sources.length, 1);
+});
+
+test("a pushed model supersedes an in-flight catch-up", async () => {
+  const pending = deferredResponse();
+  let initial = true;
+  const { live, sources, seen } = setup({ fetchResponse: () => {
+    if (!initial) return pending.promise;
+    initial = false;
+    return { ok: true, json: async () => ({ rev: "r1", cards: [] }) };
+  } });
+  live.start();
+  await flush();
+  const refresh = live.refresh();
+  sources[0].emit("model", { rev: "r3", cards: [] });
+  pending.resolve("r2");
+  await refresh;
+  assert.deepEqual(seen.models.map(model => model.rev), ["r1", "r3"]);
+  assert.equal(live.rev, "r3");
+});
+
+test("queued events from a closed stream cannot affect its replacement", async () => {
+  const { live, sources, seen, timers, winListeners } = setup();
+  live.start();
+  await flush();
+  const closed = sources[0];
+  winListeners.get("pagehide")();
+  winListeners.get("pageshow")();
+  await flush();
+  const current = sources[1];
+  current.emit("hello", { servedCommit: "a".repeat(40) });
+  const models = seen.models.length, observed = seen.observed.length;
+  for (const event of ["hello", "model", "observed", "revision", "bye"]) {
+    closed.emit(event, { servedCommit: "b".repeat(40), rev: "obsolete", cards: [] });
+  }
+  closed.onerror();
+  await flush();
+  assert.equal(current.closed, false);
+  assert.equal(sources.length, 2);
+  assert.equal(seen.models.length, models);
+  assert.equal(seen.observed.length, observed);
+  assert.equal(seen.revision, 0);
+  assert.equal(seen.connection.at(-1), "live");
+  assert.equal(timers.pending(), 0);
 });
 
 test("the server's recycle bye reconnects immediately", async () => {
