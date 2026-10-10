@@ -159,6 +159,10 @@
         <section id="overview-view" class="product-view feature-view active" aria-label="Fleet overview">
           <header class="feature-head compact-head"><div><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge" aria-label="Firstmate activity"></span></header>
           <div id="summary" class="summary-grid"></div>
+          <div id="overview-section-tabs" class="overview-section-tabs" role="tablist" aria-label="Overview sections">
+            <button type="button" id="overview-tab-calls" role="tab" aria-selected="true" aria-controls="overview-primary" tabindex="0" data-overview-tab="calls">Captain's Call (0)</button>
+            <button type="button" id="overview-tab-landed" role="tab" aria-selected="false" aria-controls="overview-secondary" tabindex="-1" data-overview-tab="landed">Just landed (0)</button>
+          </div>
           <div id="overview-columns" class="overview-columns">
             <div id="overview-primary">
               <p id="overview-state" class="notice hidden" role="status"></p>
@@ -182,13 +186,23 @@
               </section>
             </div>
             <div id="overview-secondary">
-              <section id="secondmates-section" aria-labelledby="secondmates-heading" hidden>
-                <h2 id="secondmates-heading" class="section-heading">Second mates <span id="secondmates-count"></span></h2>
-                <p id="secondmates-state" class="notice" role="status" hidden></p>
-                <div id="secondmates" class="secondmate-grid"></div>
+              <section id="just-landed" aria-labelledby="just-landed-heading">
+                <div class="call-lifecycle-bar">
+                  <h2 id="just-landed-heading" class="section-heading">Just landed <b id="landed-new-count" class="call-badge" hidden>0</b></h2>
+                  <button type="button" id="landed-ack-toggle" aria-pressed="false" disabled>Acknowledged (0)</button>
+                </div>
+                <p class="call-meta" data-landed-invalid hidden></p>
+                <div id="landed-cards" class="call-cards" aria-live="polite">
+                  <p class="call-empty" data-landed-empty>Checking for landings…</p>
+                </div>
               </section>
             </div>
           </div>
+          <section id="secondmates-section" aria-labelledby="secondmates-heading" hidden>
+            <h2 id="secondmates-heading" class="section-heading">Second mates <span id="secondmates-count"></span></h2>
+            <p id="secondmates-state" class="notice" role="status" hidden></p>
+            <div id="secondmates" class="secondmate-grid"></div>
+          </section>
         </section>
 
         <section id="work-view" class="product-view feature-view" aria-label="Work split">
@@ -331,6 +345,8 @@
     <script src="/bearings-dismiss.js"></script>
     <script src="/bearings-thread-panel.js"></script>
     <script src="/bearings-procrastinate.js"></script>
+    <script src="/bearings-landed.js"></script>
+    <script src="/overview-tabs.js"></script>
     <script src="/call-lifecycle.js"></script>
     <script src="/bearings-live.js"></script>
     <script type="module" src="/app.js"></script>

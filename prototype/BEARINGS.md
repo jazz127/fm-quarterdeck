@@ -7,7 +7,7 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 ## Source and authority
 
 - Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run.
-- It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The snapshot's own documented observational cache refresh is the only fleet-side write, the same as a plain `/bearings`.
+- It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The snapshot's own documented observational cache refresh is the only fleet-side write, the same as a plain `/bearings`.
 - Each snapshot run may also read the selected home's `.lavish/bearings-board.html` when that path is a regular file of at most 1 MiB. The read is UTF-8 text. Quarterdeck takes the JSON inside `<script id="bearings-data" type="application/json">` and checks `schema` `fm-bearings-board.v1`, a non-empty `home`, a timestamp `generated`, and an array `captains_call`. A raw `<` in that block is rejected, matching the builder's `\u003c` escape, so the block cannot be closed early. The page is never executed. A missing file, symlink, oversized file, bad encoding, or failed check leaves options on the snapshot path below. How a fresh card becomes choices is owned by Answers.
 - Validation fails closed: `schema` must be `fm-bearings.v1`, and `decisions_open`, `omitted` and `contributions` (`captain[]`, `known`, `checked`, `proven_clear`) must have the expected types. A missing home or script, a failed run or invalid output never synthesizes calls: with a previous good model it stays visible as `state: "stale"`; without one the model is `state: "unavailable"` with no cards.
 
@@ -16,7 +16,7 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 `GET /api/bearings` returns:
 
 ```
-{ schema, rev, state, observedAt, checkedAt, generatedAt, stale, error, cards[], coverage, omitted[] }
+{ schema, rev, state, observedAt, checkedAt, generatedAt, stale, error, cards[], coverage, omitted[], landed[] }
 ```
 
 - `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed) or `unavailable`.
@@ -24,14 +24,15 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 - `cards[]`, in snapshot order:
   - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
   - `merge:<task>` for each `contributions.captain` row without a live decision for the same task: `{key, type:"merge", task, kind, url, reason, owner, repo, checkedAt, answer, rev}`. `url` is `https:` only, otherwise `null`.
+  - `landed:<task>` for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
   - `answer` is `null` (answer in chat) or `{question, options[{value,label,hint}], recommend, close, freeform:true}`; see Answers.
   - `rev` is a 16-hex sha256 of the card's canonical JSON; an unchanged card keeps its `rev`.
 - `coverage`: `{known, checked, complete, provenClear, captainOmitted, unmeasuredHomes}`. Say "Nothing needs your action right now" only when `provenClear`; otherwise "No decision is recorded · checked X of Y".
-- `omitted[]`: `{kind:"deferred-holds", count}` (blocked, dated or aged holds not shown), `{kind:"decisions-bound", shown, total}`, `{kind:"invalid-rows", count}`.
-- The snapshot hub hashes call content, coverage, omissions and nonempty ledger hold evidence via `contentRevision` in `bearings.js`, never the snapshot clock. The served model also includes chat coverage and receipt-derived answered flags in its revision, so unchanged content is not pushed again; see Chat asks and Lifecycle.
+- `omitted[]`: `{kind:"deferred-holds", count}` (blocked, dated or aged holds not shown), `{kind:"decisions-bound", shown, total}`, `{kind:"invalid-rows", count}`, and `{kind:"invalid-landed", count}` when a landed row is dropped.
+- The snapshot hub hashes call content, coverage, omissions, nonempty ledger hold evidence and nonempty landed cards via `contentRevision` in `bearings.js`, never the snapshot clock. The served model also includes chat coverage and receipt-derived answered flags in its revision, so unchanged content is not pushed again; see Chat asks and Lifecycle. An empty landed list leaves the hash unchanged.
 - Privacy: `repo` is a basename, report and checkout paths are never served, and absolute paths inside free text are reduced to `…/<last segment>`.
 
-Sections are pluggable (`SECTIONS` in `bearings.js`); Phase 1 enables only `call`. Later Underway, Landed and Charted Next sections add entries without changing the transport.
+Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `call` and `landed`. Later Underway and Charted Next sections add entries without changing the transport.
 
 ## Card clocks and sorting
 
@@ -115,6 +116,10 @@ If the headline is still shortened, it is a button (`[data-call-text-toggle]`) t
 When none of those differ, the panel says this is the full text Quarterdeck received.
 That open or closed choice is memory for the tab only.
 The card still says, beside the task id, that the snapshot shortened the text and names that id.
+Just landed uses this same rule for its snapshot `what` and the checked item's backlog title.
+A shortened landing artifact that begins with `https://` is replaced only by the longest backlog `https` URL that continues that prefix.
+A landing can disclose its title and its artifact separately, and each open or closed choice is remembered on its own.
+A shortened landing says the snapshot shortened it, and the task id stays on the card.
 `public/bearings-overflow.js` stays loaded and does nothing while no `[data-call-more]` control is present.
 
 ## Answers
@@ -155,9 +160,10 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
    - A thread note uses `POST /api/bearings/thread` with exactly `{requestId, key, text}`.
      `202` clears the draft and returns to *compose*.
      It does not use the answer phase *sent*.
-     The receipt is the history entry reloaded immediately, and the card's lifecycle becomes Sent while the call stays open (see Lifecycle).
+     The receipt is the history entry reloaded immediately, and the card's lifecycle becomes Sent while that note is still pending or only acknowledged (see Lifecycle).
    - An answer uses `POST /api/bearings/answer` with `{requestId, key, cardRev, selection, note}`.
      `202` → *sent*: answer drafts are cleared (so a resolved card shows no "unsent text" stub) and a receipt line follows Firstmate's inbox receipts: waiting → received → replied (polled every 15 s while visible and not yet replied).
+     A reply leaves *sent* for *compose*, unlocks the controls, and the card returns to Active with that reply at the top.
    - unconfirmed (network error or `5xx`) → *failed*: **Retry send** is another explicit click and reuses the same request id, so Firstmate records one note.
      Reloading during *sending* also restores this uncertain retry state; it never resends automatically.
    - refused (`4xx`) → *refused*: the server's reason is shown and the fields unlock.
@@ -206,14 +212,18 @@ Firstmate's lavish adapter rule maps it to one keyed line: `<question>\t<selecti
 
 Every open card has exactly one lifecycle state, derived by `public/call-lifecycle.js` from data the page already holds.
 Nothing new is stored as a card status.
-The order is fixed: **Procrastinated** (an unexpired Quarterdeck procrastination) wins over **Sent** (an answer or a captain thread note already sent, and the call still open), which wins over **Queued** (the one-box item is staged in the local queue: *confirm*, *sending*, or *failed*), which wins over **Active** (the call is waiting on the captain).
+The order is fixed: Procrastinated, then Sent, then Queued, then Active.
+**Active:** the call is waiting on the captain, including after Firstmate has replied while the call stays open, and that reply is shown at the top with the controls unlocked and the thread kept.
+**Queued:** the one-box item is staged locally (*confirm*, *sending*, or *failed*) and Firstmate has not accepted it.
+**Sent:** an accepted captain note is still with Firstmate: a pending note reads Sent - waiting for Firstmate to read, and an acknowledged note with no reply reads Firstmate is on it.
+**Procrastinated:** an unexpired Quarterdeck procrastination is in force, and it wins until the time passes or the captain brings the card back.
 A refused or empty compose box is not Queued.
-A Firstmate question, chat line, or reply is not Sent.
+A Firstmate question, chat line, or reply is not Sent by itself.
 Failed and in-flight sends stay Queued until accepted.
-The state is a small coloured dot on the card, one colour per state: Active green, Queued amber, Sent blue, Procrastinated muted.
-The dot's accessible name is that state.
-The status word lives on the toggle.
-A Sent card also shows **Sent - waiting for Firstmate**, a muted card body, and a subtle diagonal hatch.
+The dot stays one colour per state: Active green, Queued amber, Sent blue, Procrastinated muted.
+Both Sent labels use that same blue dot.
+The dot's accessible name is the state name, and the status word lives on the toggle.
+A Sent card shows its receipt label, a muted card body, and a subtle diagonal hatch.
 Card text stays readable and selectable, and the thread control stays usable.
 A sent answer keeps its radios and note on the card: the radios are disabled, and the note is read-only so it can still be selected.
 A sent answer also shows **Your answer** under that label and above the ask.
@@ -223,8 +233,9 @@ A card that is Sent only because of a thread note does not show it.
 On a sent answer, each option row and any select uses the same muted diagonal hatch as the card.
 The chosen radio keeps an accent bar, and a select keeps its selected text.
 Queued review does not use that hatch.
-Queue stays hidden, and **Answer again** returns that box to compose.
-A thread note that marked the card Sent leaves the box in compose for a follow-up; the hatch and label still show.
+Queue stays hidden while the answer is Sent, and **Answer again** returns that box to compose before a reply.
+A reply returns that answer to compose on its own: the radios and the note unlock, Your answer hides, and the reply banner replaces the Sent label.
+A thread note that marked the card Sent leaves the box in compose for a follow-up; the hatch and label still show until Firstmate replies.
 A dashed border marks the Sent dot and a dotted border marks the Procrastinated dot, so the colour is not the only signal.
 
 The status control above the cards is one group: **Active**, **Queued**, **Sent**, **Procrastinated**, and **All**, each with its count.
@@ -239,12 +250,18 @@ Card nodes, threads, drafts, and correction controls stay in place when a filter
 If hiding the card would strand focus, focus moves to that state's button.
 The Overview count badge counts Active cards, the ones waiting on the captain.
 
-`answered-calls.js` still classifies open cards from the existing inbox's pending/handled `quarterdeck-call:` notes and their validated `fm-bearings-answer.v1` envelopes (schema, channel, type and exact question/intake key).
+`answered-calls.js` still classifies open cards from the existing inbox's pending and handled notes.
+An answer note matches its validated `fm-bearings-answer.v1` envelope (schema, channel, type and exact question/intake key).
+A thread note matches the card key.
+The latest of those notes sets `sentReceipt`: pending while the note is still pending, acknowledged once it is handled and has no reply, and replied when a reply is present.
 The selected home's receipts are read at most once per 15 seconds while the call source refreshes; a failed read retains previous evidence.
 The sending tab also uses its accepted answer state immediately, including across reload.
-A captain thread note is Sent from the thread history (`kind` `ask` or `answer`, `from` `captain`) or from the sending tab's receipt until that history includes it.
+The latest captain note decides the posture the card shows: thread history (`kind` `ask` or `answer`, `from` `captain`, `state` waiting, received, or replied), the sending tab's answer receipt, or `sentReceipt` before that history loads.
+A pending note stays Sent until Firstmate acknowledges it.
+An acknowledged note with no reply stays Sent.
+A reply, while the call is still open, returns the card to Active.
 A presentation revision change does not confirm the call or make a sent answer unsent.
-Reply or receipt intake status is **not confirmation**: Firstmate confirms by removing the call from bearings.
+Reply or receipt intake status is not confirmation: Firstmate confirms by removing the call from bearings.
 Gone calls disappear from every filter; the existing unsent-text stub protection still applies.
 Chat-only cards retain their existing accepted-answer resolution behavior.
 
@@ -259,7 +276,7 @@ The **Procrastinated** status lists those cards with the local time each returns
 The menu stays on the card pill in every status, including Sent, and in the Procrastinated view.
 Extending adds the chosen length to a return time that is still in the future; otherwise it starts from now.
 A procrastinated card stays Procrastinated even when it is also sent or queued, until **Bring back now** or the time passes.
-The record is keyed by the stable card key, never by the card revision.
+The record is keyed by the stable card key, never by the card revision. Just landed does not use this control.
 A snapshot revision change, Update now, and a reload keep that return time until it passes or the captain chooses Bring back now.
 This tab remembers the return times in sessionStorage under `fm-quarterdeck-call-procrastination.v1`, so a reload shows the same cards as Procrastinated before the server answers, and a failed read retries.
 A successful read replaces that memory, so Bring back now and a call Firstmate drops both win.
@@ -277,10 +294,57 @@ An unknown or closed key is 409 `gone`.
 A successful post returns the same `{schema, until}` map.
 Saving a busy or invalid file is 503.
 
+## Just landed
+
+Overview's second column shows the snapshot's `landed` rows as poster cards in the same visual language as Captain's Call.
+At the phone one-column breakpoint, the Overview body starts with two tabs, Captain's Call (N) and Just landed (N), and shows one section at a time.
+Captain's Call N counts every open card, including filtered cards.
+Just landed N counts landings whose current rev is not the acknowledged rev.
+The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
+The phone tab still shows Just landed (0) when none are new, the same way Captain's Call (0) stays visible.
+The chosen tab is remembered for that viewer in localStorage under `fm-quarterdeck-overview-tab.v1`.
+A desktop width keeps both columns, with the same 22px gap, and does not show the tabs.
+The source is the same guarded snapshot.
+There is no board builder and no read of another home.
+Each row supplies `id`, `what`, `artifact` and `owner`.
+The card key is `landed:<id>`.
+`what` stays the snapshot text, path-redacted, and is the card's identity.
+For a `(main)` landing, the selected home's checked backlog line supplies `backlogTitle`, using the same title split as an unchecked decision title.
+An unchecked line does not supply a landed title.
+The card shows that title by the Long text rule, and does not invent words the records do not contain.
+`url` is an `https` link with no userinfo, at most 2000 characters, shown in full.
+A shortened `https://` artifact is completed only by the Long text continuation rule.
+The exact text `local main` is a label, not a link.
+Other artifact text is path-redacted and is not a URL.
+`-` and an empty artifact are not recorded.
+`repo` and the landed clock come from the selected home's checked backlog line only when `owner` is `(main)`: `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`.
+A `(main)` snapshot `landedAt` may also supply that clock, and the newer of the two is kept.
+Another home's ledger is never read, so its repository and time stay unknown.
+A date-only clock says time unknown.
+Duplicate or invalid rows are withheld as omitted kind `invalid-landed`.
+A missing `landed` array yields an empty column and does not make Captain's Call unavailable.
+Acknowledge is Quarterdeck viewing state in `quarterdeck-landed-acknowledgements.json`, beside `FM_QUARTERDECK_STATE_PATH` and outside `FM_HOME`.
+`POST /api/bearings/landed/ack` with exactly `{key}` records the open card's current `rev`.
+The card stays hidden while that rev matches.
+A later landing with a different rev shows again.
+`GET /api/bearings/landed/acks` returns `{schema:"fm-quarterdeck-landed-ack.v1", acks}`.
+**Acknowledged (N)** shows the hidden cards and does not clear the record.
+Both routes are host only.
+A preview gets 404.
+Nothing is written under `FM_HOME`.
+The model must be `ready` or `stale`, and the key must be a landed card still on that model, or the post is 409.
+The body is at most 1 KiB, same-origin JSON, with no query.
+The text box is a follow-up, not an answer and not Procrastinate.
+Queue, then Send, posts `POST /api/bearings/thread` with `{requestId, key, text}` where `key` is `landed:<task id>`.
+Firstmate replies in that thread.
+The note says nothing was decided.
+There is no Procrastinate control on these cards.
+The model rev includes landed cards when any are present.
+
 ## Card threads
 
 The one text box opens a thread scoped to one card when no option is selected.
-Its stable id is the card key (`decision:<task>`, `merge:<task>`, `chat:<16 hex>`).
+Its stable id is the card key (`decision:<task>`, `merge:<task>`, `chat:<16 hex>`, `landed:<task>`).
 There is no model call: Quarterdeck relays the captain's note and joins existing records; Firstmate answers.
 
 - **Asking** (`public/bearings-answer-form.js` sends; `public/bearings-thread-panel.js` shows the history): text with no option selected is the thread note.
@@ -289,7 +353,7 @@ There is no model call: Quarterdeck relays the captain's note and joins existing
   **Send** posts `POST /api/bearings/thread` with exactly `{requestId, key, text}`.
   `202` clears the draft and returns the card to *compose*.
   It does not use the answer phase *sent*.
-  The card becomes Sent on the lifecycle control while the call stays open.
+  The card becomes Sent on the lifecycle control while that note is pending or only acknowledged, and returns to Active once Firstmate replies.
   The receipt is the history entry, reloaded immediately, with the notice "Question sent to Firstmate; the reply appears here".
   An unconfirmed send (network or `5xx`) shows **Retry send**, which reuses the same request id.
   A `4xx` shows the server's reason and unlocks the box.
@@ -314,7 +378,7 @@ There is no model call: Quarterdeck relays the captain's note and joins existing
   The box's draft and an unconfirmed send persist with the answer state (`fm-quarterdeck-call-answer.v1:<key>`, including `path:"thread"`), and reload never resends.
   Threads of cards that leave are forgotten.
 - **`POST /api/bearings/thread`** (host only; 404 through a preview path): same-origin JSON with no query, at most 4 KiB, served revision unchanged (409 `revision`). Body exactly `{requestId, key, text}`: a lowercase UUID, a card key, and at most 2000 UTF-8 bytes without control characters other than line breaks. The key must be an open card (409 `gone`); answerable or not does not matter. The process remembers 200 request ids, so a retry resends the identical note even after the card left, and reusing an id for different words is 409. Delivery is `fm-inbox.sh note --request-id quarterdeck-thread:<key>:<requestId>` (the same guarded, idempotent path answers and review notes use; a key that would overflow the 128-character id grammar is replaced by `h-<16 hex>` of it). `202 {state:"accepted", requestId, key, noteId, replay, sentAt}`; unconfirmed is `502 unconfirmed`.
-- **Note body:** "Captain asks about <Decision|Merge> <task> | Chat ask <hash> from Quarterdeck: <question>", then the reply route ("Answer with `bin/fm-inbox.sh reply <this note id>` … or in the main chat naming the task id. This is a question, not an answer; nothing was decided."), then a ```` ```json fm-quarterdeck-thread ```` fence `{schema:"fm-quarterdeck-card-thread.v1", key, type, task?, ask?, question, requestId}` (backticks escaped). It never carries an `fm-bearings-answer` block, so it cannot reach keyed intake or the merge rule.
+- **Note body:** "Captain asks about <Decision|Merge|Landed> <task> | Chat ask <hash> from Quarterdeck: <question>", then the reply route ("Answer with `bin/fm-inbox.sh reply <this note id>` … or in the main chat naming the task id. This is a question, not an answer; nothing was decided."), then a ```` ```json fm-quarterdeck-thread ```` fence `{schema:"fm-quarterdeck-card-thread.v1", key, type, task?, ask?, question, requestId}` (backticks escaped). It never carries an `fm-bearings-answer` block, so it cannot reach keyed intake or the merge rule. A landed follow-up uses the same route with `type:"landed"` and the landed task id.
 - **`GET /api/bearings/thread?key=<card key>`** (host only): `{schema, key, task, entries[], omitted, transcript:{state, windowed}, checkedAt}`, oldest first, at most 80 entries (`omitted` counts older ones). Entries are `{kind, from, at, text, noteId?, state?}`, joined mechanically:
   - `ask`: inbox notes whose request id starts `quarterdeck-thread:` and whose fence names this key (or, without a fence, whose id prefix does), plus any other note carrying a `fm-quarterdeck-thread` fence for this exact key; `state` is waiting, received or replied;
   - `answer`: Captain's Call answer notes (`quarterdeck-call:` ids) whose `fm-bearings-answer` envelope has `channel:"quarterdeck"` and the same type and task (or `chat.<hash>` question);
@@ -344,7 +408,7 @@ Firstmate also asks the captain things in chat without filing a captain hold, so
   - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes).
 
   Hold closure records `resolvedBy:"answered"`, `resolutionSource:"data/backlog.md"|"bearings snapshot"`, task ids and recorded resolution modes. Unchecked captain holds override historical resolution prose; stale/omitted snapshots never prove disappearance. Resolved keys are tombstoned and never revived. On upgrading the matching rules, the scanner resets only cursors once and replays the bounded newest 4 MiB window to repair existing open cards; existing open reply extraction is refreshed, while dismissals and answer tombstones are preserved.
-- **Model:** `chat:{state, error, open, linked, omitted, behind, sources[{source, backfillOmittedBytes}], resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]}` is part of the content revision. `chatCheckedAt` is freshness only. Revision semantics are owned by [Model](#model-fm-quarterdeck-callv1).
+- **Model:** `chat:{state, error, open, linked, omitted, behind, sources[{source, backfillOmittedBytes}], resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]}` is part of the content revision. `chatCheckedAt` is freshness only. The model `rev` hashes the composed cards, coverage, omissions, chat coverage, and landed cards when any are present.
 - **Answers:** these use the same `POST /api/bearings/answer` checks. A chat card needs `chat.state` to be `ready`, not the snapshot. A chosen reply is relayed as the captain's own words (`selection:""`, `note:"<reply>[ - <note>]"`). The envelope has `type:"chat"` and `ask` (marker and text, at most 1 KiB) instead of `task`. The note's human line tells Firstmate that no hold was filed. Quarterdeck resolves the card once the note is accepted.
 - **`POST /api/bearings/dismiss`** (host only; 404 through a preview path) is same-origin JSON with no query and a body of at most 1 KiB. The body is exactly `{key, cardRev}` with a `chat:` key (otherwise 400), and the served revision must still match (409 `revision`). It returns `409 gone` when the key is not an open chat card, `409 changed` when the card rev differs, `503 unrecorded` when the state could not be saved, and otherwise `200 {state:"dismissed", key}`. Snapshot cards cannot be dismissed, because Firstmate owns holds.
 - **Dismiss UX:** **Review dismissal** opens a local confirmation explaining that nothing is sent to Firstmate; **Cancel** returns focus to Review dismissal. Only **Dismiss this ask** posts the reviewed `{key, cardRev}`. Pending clicks are ignored without disabling or dropping focus. A changed card invalidates the review; an unconfirmed save returns to review with a visible error and no automatic retry. On success, focus returns to the visible Overview tab (desktop or phone) only if it is still in the dismissed card, and any selection of that card is cleared. The ordinary engagement release applies; another engaged card is never forced to update. Unsent drafts remain as copyable stubs. Confirmation state is tab-memory only, pruned when the card leaves; reload never resumes or submits it. The Chat ask chip and double left border distinguish chat asks without relying on color.
@@ -365,4 +429,5 @@ The full `npm run test:browser` includes this pass. [Source-preview validation](
 
 Fixtures under `test/fixtures/bearings/` are synthetic `fm-bearings.v1` output; tests that run a snapshot use a temporary home with a fake `bin/fm-bearings-snapshot.sh`. Chat-ask tests write synthetic Claude and Pi transcripts into a temporary home.
 The browser pass sends a picked option through `POST /api/bearings/answer` and text with no option through `POST /api/bearings/thread`.
-It also checks that the Overview body is two columns on a desktop width and that the empty second column takes no space on a phone.
+It checks that Just landed sits beside Captain's Call on a desktop width and that a phone shows one Overview tab at a time.
+It also sends one landed follow-up and acknowledges one landing.

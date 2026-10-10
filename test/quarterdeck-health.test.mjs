@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,6 +110,37 @@ test('missing port and unavailable discovery fail closed', async t => {
   const f = await fixture(t);
   failure(await check(f, { FM_QUARTERDECK_HEALTH_PORT: '' }), /discovery unavailable/);
 });
+for (const mode of ['override', 'windows-fallback', 'native-first']) {
+  test(`Serve discovery uses ${mode} and accepts CRLF JSON`, async t => {
+    const f = await fixture(t);
+    const bin = join(f.state, 'discovery-bin');
+    await mkdir(bin);
+    // Isolate PATH from any installed Tailscale while retaining checker tools.
+    for (const command of ['bash', 'dirname', 'python3', 'timeout', 'flock']) {
+      await symlink(execFileSync('which', [command], { encoding: 'utf8' }).trim(), join(bin, command));
+    }
+    const routes = JSON.stringify({ Web: { '127.0.0.1:443': { Handlers: { '/': { Proxy: `http://127.0.0.1:${f.port}` } } } } }, null, 2);
+    const cli = '#!/usr/bin/env bash\n[[ "$*" == "serve status --json" ]] || exit 1\nprintf \'%s\\r\\n\' \'' + routes.replaceAll('\n', '\r\n') + '\'\n';
+    await writeFile(join(bin, 'tailscale.exe'), mode === 'native-first' ? '#!/usr/bin/env bash\nexit 1\n' : cli, { mode: 0o700 });
+    if (mode !== 'windows-fallback') {
+      await writeFile(join(bin, mode === 'override' ? 'custom-cli' : 'tailscale'), cli, { mode: 0o700 });
+    }
+    const result = await check(f, {
+      PATH: bin, TAILSCALE_BIN: mode === 'override' ? join(bin, 'custom-cli') : '',
+      FM_QUARTERDECK_HEALTH_PORT: '',
+    });
+    // Both local probes succeeded on the discovered port. The synthetic Serve
+    // origin has no HTTPS listener; this failure is after successful discovery.
+    failure(result, /endpoint unavailable/);
+    assert.doesNotMatch(result.stdout, /discovery unavailable/);
+    assert.equal(f.calls(), 2);
+    if (mode === 'windows-fallback') {
+      failure(await check(f, { PATH: bin, FM_QUARTERDECK_HEALTH_PORT: '',
+        FM_QUARTERDECK_HEALTH_FORCE: '1', TAILSCALE_BIN: join(bin, 'absent-explicit'),
+      }), /discovery unavailable/);
+    }
+  });
+}
 test('idle loading without a snapshot clock is healthy', async t => {
   const f = await fixture(t, { state: 'loading', generatedAt: null });
   assert.deepEqual(await check(f), { code: 0, stdout: '', stderr: '' });
@@ -136,6 +167,19 @@ test('overdue notes wake once, name ids and demand reply plus ack; fresh notes s
   failure(await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' }), /inbox notes overdue/);
   await notes(f, []);
   assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
+});
+test('handled and reply omissions do not hide pending coverage', async t => {
+  const f = await fixture(t);
+  const handled = { surface: 'handled notes omitted by bound: 118' };
+  await notes(f, [], { omitted: [handled] });
+  assert.deepEqual(await check(f), { code: 0, stdout: '', stderr: '' });
+  await notes(f, [{ id: noteId(30) }], { omitted: [handled,
+    { surface: 'replies omitted by bound: 42', reveal: 'pass --all-replies' },
+    { surface: 'malformed replies without a valid sequence: 1 (synthetic.json)' },
+  ] });
+  assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
+  await notes(f, [{ id: noteId(1000) }], { omitted: [handled] });
+  failure(await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' }), /inbox notes overdue/);
 });
 test('saved note alarm is reread on every forced run', async t => {
   const f = await fixture(t);
@@ -182,6 +226,9 @@ for (const [name, pending, extra] of [
   ['missing id', [{}], {}],
   ['wrong schema', [], { schema: 'unknown.v1' }],
   ['omitted receipts', [], { omitted: ['synthetic'] }],
+  ['pending omissions', [], { omitted: [{ surface: 'pending notes omitted by bound: 1' }] }],
+  ['mixed pending omissions', [], { omitted: [{ surface: 'handled notes omitted by bound: 118' }, { surface: 'pending notes omitted by bound: 1' }] }],
+  ['invalid omission list', [], { omitted: {} }],
 ]) {
   test(`inbox ${name} fails closed without printing data`, async t => {
     const f = await fixture(t);
@@ -194,14 +241,14 @@ for (const value of [0, -1, 1441, 1.5, '1', true, null]) {
     const f = await fixture(t);
     await notes(f, [{ id: noteId(100) }]);
     await writeFile(join(f.state, 'quarterdeck-preferences.json'), JSON.stringify({ awayCheckInMinutes: value, openNoteAlarmMinutes: value }));
-    await writeFile(join(f.state, 'quarterdeck-health.stamp'), String(Date.now() / 1000 - 120));
+    await writeFile(join(f.state, 'fm-quarterdeck-health.stamp'), String(Date.now() / 1000 - 120));
     assert.equal((await check(f)).stdout, ''); assert.equal(f.calls(), 0);
     assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
   });
 }
 test('saved away interval changes apply even while previously throttled', async t => {
   const f = await fixture(t);
-  await writeFile(join(f.state, 'quarterdeck-health.stamp'), String(Date.now() / 1000 - 120));
+  await writeFile(join(f.state, 'fm-quarterdeck-health.stamp'), String(Date.now() / 1000 - 120));
   await writeFile(join(f.state, 'quarterdeck-preferences.json'), JSON.stringify({ awayCheckInMinutes: 3, openNoteAlarmMinutes: 15 }));
   assert.equal((await check(f)).stdout, ''); assert.equal(f.calls(), 0);
   await writeFile(join(f.state, 'quarterdeck-preferences.json'), JSON.stringify({ awayCheckInMinutes: 1, openNoteAlarmMinutes: 15 }));

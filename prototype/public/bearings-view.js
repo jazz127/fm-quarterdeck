@@ -60,21 +60,32 @@ window.bearingsView = (() => {
     }
     return null;
   }
-  function headlineHtml(id, text, card) {
-    const extras = RECORDED.map(([field]) => card[field]);
-    const shown = fullest(text, extras);
-    if (!sourceShortened(shown)) return `<h3 id="call-decide-${id}">${escape(shown)}</h3>`;
-    const others = RECORDED.filter(([field]) => typeof card[field] === "string" && collapsed(card[field]) && collapsed(card[field]) !== collapsed(shown));
+  function disclosureHtml(headingId, panelId, text, card, fields) {
+    const shown = fullest(text, fields.map(([field]) => card[field]));
+    if (!sourceShortened(shown)) return `<h3 id="${headingId}">${escape(shown)}</h3>`;
+    const others = fields.filter(([field]) => typeof card[field] === "string" && collapsed(card[field]) && collapsed(card[field]) !== collapsed(shown));
     const body = others.length
       ? others.map(([field, label]) => `<p><span class="call-meta">${escape(label)}</span><br>${escape(card[field])}</p>`).join("")
       : `<p>This is the full text Quarterdeck received.</p>`;
-    return `<h3 id="call-decide-${id}" data-call-truncated><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="call-full-${id}">${escape(shown)}</button></h3><div class="call-full" id="call-full-${id}" data-call-full hidden>${body}</div>`;
+    return `<h3 id="${headingId}" data-call-truncated><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="${panelId}">${escape(shown)}</button></h3><div class="call-full" id="${panelId}" data-call-full hidden>${body}</div>`;
+  }
+  function headlineHtml(id, text, card) {
+    return disclosureHtml(`call-decide-${id}`, `call-full-${id}`, text, card, RECORDED);
+  }
+  // Just landed uses the same continuation rule. The backlog title replaces a
+  // shortened snapshot "what" only when it continues that cut.
+  function landedHeadlineHtml(card) {
+    const id = idFor(card.key || card.task || "landed");
+    return disclosureHtml(`landed-what-${id}`, `landed-full-${id}`, card.what || "Landing not recorded", card, [["backlogTitle", "Backlog title"]]);
   }
   function lifecycleBadgeHtml() {
     return `<span class="call-lifecycle-dot" data-call-lifecycle-badge data-call-lifecycle="active" role="img" aria-label="Active" title="Active"></span>`;
   }
   function sentLabelHtml() {
-    return `<p class="call-sent-label" data-call-sent-label hidden>Sent - waiting for Firstmate</p>`;
+    return `<p class="call-sent-label" data-call-sent-label hidden>Sent - waiting for Firstmate to read</p>`;
+  }
+  function replyBannerHtml() {
+    return `<p class="call-reply-banner" data-fm-reply hidden></p>`;
   }
   // Filled by the answer controller from the sent-answer state. Hidden until that phase.
   function yourAnswerHtml() {
@@ -149,6 +160,7 @@ window.bearingsView = (() => {
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
     const summary = card.summary || "Ask text not recorded";
     return `<div class="call-chrome"><header class="call-head"><span class="state-chip call-chat-chip">${label} · Chat ask</span>${lifecycleBadgeHtml()}<div class="call-head-actions"><button type="button" class="call-head-pill call-head-dismiss" data-call-dismiss>Review dismissal</button>${procrastinateHtml(id)}</div><span class="call-age" data-call-clock="${escape(card.clock?.at || "")}" data-call-clock-label="${escape(card.clock?.label || "Asked")}">${escape(clockText(card.clock))}</span></header>
+      ${replyBannerHtml()}
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
       ${headlineHtml(id, summary, card)}
@@ -177,6 +189,7 @@ window.bearingsView = (() => {
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
     const about = [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
     return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${label}</span>${lifecycleBadgeHtml()}<div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${procrastinateHtml(id)}</div><span class="call-age" data-call-clock="${escape(card.clock?.at || "")}" data-call-clock-label="${escape(card.clock?.label || "Created / updated")}">${escape(clockText(card.clock))}</span></header>
+      ${replyBannerHtml()}
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
       ${headlineHtml(id, decide, card)}
@@ -188,25 +201,41 @@ window.bearingsView = (() => {
       ${answerHtml(card, `${label} ${card.task || ""}`.trim(), threadHistoryHtml(id))}`;
   }
   // Open or closed full-text panels are memory for this tab only.
-  function createTextController({ list } = {}) {
+  // Each toggle keeps its own panel, so a landing title and a landing link expand separately.
+  function createTextController({ list, keyAttribute = "data-call-key" } = {}) {
     const open = new Map();
-    const keyOf = (node) => node?.getAttribute?.("data-call-key") || null;
+    const keyOf = (node) => node?.getAttribute?.(keyAttribute) || null;
+    const panelIdOf = (toggle) => toggle.getAttribute("aria-controls") || "text";
+    function panelFor(node, toggle, toggles) {
+      const panelId = panelIdOf(toggle);
+      const found = panelId !== "text" ? node.querySelector(`[id="${panelId}"]`) : null;
+      return found || (toggles.length === 1 ? node.querySelector("[data-call-full]") : null);
+    }
     function render(node) {
-      const toggle = node?.querySelector?.("[data-call-text-toggle]");
-      const panel = node?.querySelector?.("[data-call-full]");
-      if (!toggle || !panel) return;
-      const shown = Boolean(open.get(keyOf(node)));
-      toggle.setAttribute("aria-expanded", String(shown));
-      panel.hidden = !shown;
+      if (!node?.querySelectorAll) return;
+      const key = keyOf(node);
+      const toggles = [...node.querySelectorAll("[data-call-text-toggle]")];
+      for (const toggle of toggles) {
+        const panel = panelFor(node, toggle, toggles);
+        if (!panel) continue;
+        const shown = Boolean(key && open.get(key)?.has(panelIdOf(toggle)));
+        toggle.setAttribute("aria-expanded", String(shown));
+        panel.hidden = !shown;
+      }
     }
     const onClick = (event) => {
       const toggle = event.target?.closest?.("[data-call-text-toggle]");
-      if (!toggle) return;
-      const key = keyOf(toggle.closest("[data-call-key]"));
+      if (!toggle || !list.contains(toggle)) return;
+      const node = toggle.closest(`[${keyAttribute}]`);
+      const key = keyOf(node);
       if (!key) return;
-      open.set(key, !open.get(key));
-      const node = [...list.querySelectorAll("[data-call-key]")].find((item) => keyOf(item) === key);
-      if (node) render(node);
+      const panelId = panelIdOf(toggle);
+      const set = open.get(key) || new Set();
+      if (set.has(panelId)) set.delete(panelId);
+      else set.add(panelId);
+      if (set.size) open.set(key, set);
+      else open.delete(key);
+      render(node);
     };
     list.addEventListener("click", onClick);
     return {
@@ -241,5 +270,5 @@ window.bearingsView = (() => {
   }
   const heldText = (change) => `Call ${change} — updates when you're done`;
   const stubHtml = () => '<div class="call-chrome"><h3>Resolved by Firstmate — your unsent text</h3><p class="call-meta">This text was not sent. Copy it before dismissing.</p></div><pre data-call-stub-text></pre><div class="call-stub-actions"><button type="button" data-call-stub-copy>Copy</button><button type="button" data-call-stub-dismiss>Dismiss</button></div>';
-  return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, createTextController };
+  return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, landedHeadlineHtml, createTextController };
 })();

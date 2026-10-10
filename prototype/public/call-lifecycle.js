@@ -1,5 +1,7 @@
 // Captain's Call lifecycle (BEARINGS.md "Lifecycle"). One state per open card, from data
 // the page already has. Procrastinated wins, then Sent, then Queued, then Active.
+// Sent is only while the latest captain note is pending or acknowledged.
+// A recorded reply returns the open card to Active.
 window.callLifecycle = (() => {
   const FILTERS = ["active", "queued", "sent", "procrastinated", "all"];
   const STORAGE_KEY = "fm-quarterdeck-call-lifecycle.v1";
@@ -18,24 +20,102 @@ window.callLifecycle = (() => {
     return QUEUED_PHASES.has(answer?.phase);
   }
 
-  // A sent answer is the local sent phase or the durable inbox classification on the card.
-  function answerSent(card, answer) {
-    return Boolean(card?.answered || answer?.phase === "sent");
+  function entryPosture(entry) {
+    if (entry?.state === "replied") return "replied";
+    if (entry?.state === "received") return "acknowledged";
+    return "pending";
   }
 
-  // A sent thread note is a captain ask or answer already in the card history, or the
-  // sending tab's receipt before that history reload includes it.
-  function threadSent(thread) {
-    if (!thread) return false;
-    const entries = Array.isArray(thread.entries) ? thread.entries : [];
-    if (entries.some((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer"))) return true;
-    return thread.captainAsked === true;
+  function receiptPosture(state) {
+    if (state === "replied") return "replied";
+    if (state === "received") return "acknowledged";
+    return "pending";
+  }
+
+  const POSTURE_RANK = { pending: 0, acknowledged: 1, replied: 2 };
+
+  function replyText(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  // The reply joined to this captain note, else the latest reply text when the note is replied.
+  function replyFor(entry, entries) {
+    if (!entry || !Array.isArray(entries)) return "";
+    const matched = entries.find((item) => item && item.kind === "reply" && item.noteId && entry.noteId && item.noteId === entry.noteId && replyText(item.text));
+    if (matched) return replyText(matched.text);
+    if (entry.state !== "replied") return "";
+    const replies = entries.filter((item) => item && item.kind === "reply" && replyText(item.text));
+    return replies.length ? replyText(replies[replies.length - 1].text) : "";
+  }
+
+  function cardPosture(card) {
+    if (card?.sentReceipt === "pending" || card?.sentReceipt === "acknowledged" || card?.sentReceipt === "replied") return card.sentReceipt;
+    if (card?.answered) return "pending";
+    return null;
+  }
+
+  // Latest captain note from receipts the page already holds.
+  // Pending: still unread. Acknowledged: read, no reply. Replied: the call is the captain's again.
+  function delivery({ card = null, answer = null, thread = null } = {}) {
+    const entries = Array.isArray(thread?.entries) ? thread.entries : null;
+    const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer")) : [];
+    const latest = captain.length ? captain[captain.length - 1] : null;
+    let posture = latest ? entryPosture(latest) : null;
+    let reply = posture === "replied" ? replyFor(latest, entries) : "";
+
+    if (answer?.phase === "sent") {
+      const local = receiptPosture(answer.receipt?.state);
+      const localReply = local === "replied" ? replyText(answer.receipt?.reply) : "";
+      const answerIsLatest = !latest || latest.kind === "answer";
+      const answerIsNewer = Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
+      if (answerIsLatest || answerIsNewer) {
+        if (!posture || POSTURE_RANK[local] >= POSTURE_RANK[posture] || answerIsNewer) {
+          posture = local;
+          reply = local === "replied" ? (localReply || reply) : "";
+        }
+      }
+    }
+
+    const held = answer?.heldReply != null && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
+    if (held && answer.heldAt && latest?.at && String(answer.heldAt) > String(latest.at)) {
+      posture = "replied";
+      reply = replyText(answer.heldReply);
+    } else if (held && posture !== "pending" && posture !== "acknowledged") {
+      posture = "replied";
+      reply = reply || replyText(answer.heldReply);
+    }
+
+    // A thread send the history does not list yet is newer than the reply already on the card.
+    if (thread?.captainAsked === true) {
+      posture = "pending";
+      reply = "";
+    }
+
+    if (!posture) {
+      const fallback = cardPosture(card);
+      if (fallback) {
+        posture = fallback;
+        reply = fallback === "replied" ? replyText(card?.sentReply) : "";
+      }
+    }
+
+    return { posture, reply: posture === "replied" ? reply : "" };
+  }
+
+  function sentLabel(posture) {
+    return posture === "acknowledged" ? "Firstmate is on it" : "Sent - waiting for Firstmate to read";
+  }
+
+  function replyBanner(reply) {
+    const text = replyText(reply);
+    return text ? `Firstmate replied: ${text}` : "Firstmate replied";
   }
 
   function cardState({ card = null, answer = null, thread = null, procrastinated = false } = {}) {
+    const posture = delivery({ card, answer, thread }).posture;
     return derive({
       procrastinated: Boolean(procrastinated),
-      sent: answerSent(card, answer) || threadSent(thread),
+      sent: posture === "pending" || posture === "acknowledged",
       queued: answerQueued(answer),
     });
   }
@@ -107,5 +187,5 @@ window.callLifecycle = (() => {
     if (button.getAttribute("aria-label") !== view.label) button.setAttribute("aria-label", view.label);
   }
 
-  return { FILTERS, STORAGE_KEY, LABELS, derive, cardState, counts, readFilter, writeFilter, visible, emptyText, paintToggle, sendQueuedControl, paintSendQueued, answerQueued, answerSent, threadSent };
+  return { FILTERS, STORAGE_KEY, LABELS, derive, cardState, delivery, sentLabel, replyBanner, counts, readFilter, writeFilter, visible, emptyText, paintToggle, sendQueuedControl, paintSendQueued, answerQueued };
 })();

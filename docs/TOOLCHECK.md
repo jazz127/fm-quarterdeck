@@ -2,11 +2,34 @@
 
 `skills/fm-toolcheck/` is the canonical source of this private Firstmate-specific skill. It is **not** an upstream Kunchenguid Firstmate skill, a prototype UI feature, or the general watched-tools poll. No Firstmate checkout changes are needed. The command reads the installed Firstmate `bin/fm-bootstrap.sh` install arms at invocation, never sources them, and joins npm names only to installed manifests claiming an exact `github.com/kunchenguid/<name>` repository. The two bootstrap Kunchenguid install URLs prove scope for treehouse and no-mistakes. An npm dependency with no matching installed ownership evidence is explicitly excluded, rather than guessed. General tools (Pi, runtimes, shell, OS, package managers, Git/gh, tmux, ShellCheck, actionlint, Tailscale, Orca and watched tools) are outside scope.
 
-## Reviewable activation (not performed by this repository)
+## Reviewable activation
 
-Primary Firstmate can discover user-global private skills in `~/.agents/skills/`. After reviewing a Quarterdeck revision, the operator may create **one symlink**, not a copied implementation: `ln -s /absolute/path/to/fm-quarterdeck/skills/fm-toolcheck "$HOME/.agents/skills/fm-toolcheck"`. Do not overwrite an existing entry. Prefer a stable approved Quarterdeck checkout (not a disposable worktree); review `readlink -f "$HOME/.agents/skills/fm-toolcheck"` and `git -C /absolute/path/to/fm-quarterdeck rev-parse HEAD` to audit projected source/version before invocation. Firstmate's own discovery policy must be verified by the operator. Activation is not automatic and is not performed by this repository. Repinning a user-global projection requires separate review of the exact canonical revision and existing target. Any duplicate draft or legacy installation must be reconciled privately under separate retention/removal authority; source presence does not activate it. Remove only that symlink, after checking its target, to deactivate; the canonical Quarterdeck files remain intact.
+Use only the approved [unified integration installer](FIRSTMATE-INTEGRATIONS.md).
+It owns home-local skill links, tagging, inventory and uninstall; do not hand-edit
+Firstmate or create user-global projections. Historical user-global links require
+separate original-owner removal authority; the installer never adopts them.
+Source presence does not activate a skill or reload a harness.
 
 Manually run `node /absolute/path/to/fm-quarterdeck/skills/fm-toolcheck/audit.mjs --firstmate-root /absolute/path/to/installed/firstmate` for a local audit. `--releases` optionally queries a bounded GitHub latest-release endpoint; absence is not evidence of currentness. Run `node --test test/fm-toolcheck.test.mjs` for deterministic executable-interface tests.
+
+## Quarterdeck integration section
+
+The audit additionally invokes the reviewed skill source's integration `status`
+and `verify` interfaces, without locks, writes, health probes or installed-command
+execution. It reports exact pin/projection drift: hook, check/trust, skill links,
+owned captain preference block, private config and missing `fm-quarterdeck` tags.
+The installed revision is compared with **local main** at
+`<Firstmate-root>/projects/fm-quarterdeck`; `--quarterdeck-root /absolute/checkout`
+selects another explicit checkout. An installed immutable skill pin is not the
+current checkout. Missing main/ownership or dirty/non-main checkout is reported,
+not guessed. Main is local evidence only; no fetch or remote freshness claim.
+
+The report prints the exact uninstall-then-install command, including temporary
+preservation of private health config. It is **review-only**, never executed by
+toolcheck. Execution needs operator approval and a reviewed clean checkout at the
+reported main revision. Changed owned artifacts refuse blind removal; unjournaled
+legacy artifacts need their original owners, not a force flag. Use `inventory`
+for the integration's bounded tagged artifact list, including retained inert pins.
 
 ## Evidence and limits
 

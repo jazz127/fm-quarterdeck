@@ -24,6 +24,11 @@ alongside these rules; do not guess missing values or approvals. Explicit task
 and role constraints take precedence. On consequential conflicts, ask the owner
 rather than broadening authority.
 
+Prefer the approved unified integration installer to project one versioned
+soft-reference block and pinned home-local integrations; it never edits stock
+tracked Firstmate files. Do not hand-edit that installer-owned block. Legacy
+unmarked references require separately reviewed migration.
+
 Reading this file installs nothing. It does not edit preferences, enable hooks,
 register checks, restart services or grant standing release approval. Existing
 onboarding-owned preference blocks retain their byte/version ownership contract;
@@ -79,7 +84,8 @@ preference record; it does not recursively load this reference.
   state and next-action owner. A requested inventory or return brief may still
   show the complete outstanding set.
 - [Chat asks](docs/CHAT-ASKS.md) are parsed mechanically. The optional reviewed
-  Claude Stop hook enforces open-hold markers only in its documented scope;
+  Claude Stop hook enforces open-hold markers in its documented scope; the
+  unified installer also opts that hook into complete lane syntax validation.
   Pi does not gain that enforcement from this file. Free-form chat answers need
   their actual hold resolution recorded; closure comes from durable lifecycle
   evidence, not semantic guesses or disappearance from a partial view.

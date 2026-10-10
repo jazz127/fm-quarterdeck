@@ -95,6 +95,24 @@ test('CLI emits Claude Stop block/pass JSON and groups final assistant message p
   assert.equal((await f.check()).decision, 'block');
 });
 
+test('unified integration opt-in enforces complete lane syntax only in the selected primary', async t => {
+  const f = await fixture(t);
+  const check = () => checkStop(f.input, { home: f.home, configDir: f.configDir, enforceLanes: true });
+  await f.message('Unwrapped completion.');
+  assert.equal((await check()).decision, 'block');
+  assert.deepEqual(await f.check(), {}, 'legacy ask-only installation unchanged');
+  await f.message('[fm-lane General]\nDone.\n[end General]');
+  assert.deepEqual(await check(), {});
+  await f.message('[fm-lane General]\nACTION NEEDED: unfiled\n[end General]');
+  assert.match((await check()).reason, /captain hold/);
+  await f.message('[fm-lane General]\nACTION NEEDED: choose [task:hold-a]\n[end General]');
+  assert.deepEqual(await check(), {});
+  await f.message('Unwrapped.');
+  f.input.session_id = 'worker'; assert.deepEqual(await check(), {});
+  f.input.session_id = 'primary'; f.input.stop_hook_active = true;
+  assert.match((await check()).diagnostic, /already active/);
+});
+
 test('explicit installer preserves unrelated settings and uninstalls only exact pinned entry', async t => {
   const f = await fixture(t), file = path.join(f.root, 'settings.json');
   const existing = { permissions: { allow: ['Read'] }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other' }] }] } };
