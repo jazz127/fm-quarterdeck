@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/shell-panel.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-stage">Skip to content</a>
     <main id="lanes" class="workspace" data-view="overview" aria-label="Live Quarterdeck conversations">
       <button id="shell-panel-toggle" type="button" aria-controls="review-sidebar-region" aria-expanded="true" aria-label="Collapse navigation panel" hidden><span aria-hidden="true">☰</span><span class="sr-only">Collapse navigation panel</span></button>
       <aside id="review-sidebar-region" class="lane-list" aria-label="Conversation fleets">
@@ -70,7 +71,7 @@
       </aside>
       <div id="shell-panel-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="review-sidebar-region" aria-label="Resize navigation panel: drag left or right; use arrow keys for 20 pixel steps" title="Drag to resize navigation · arrow keys adjust by 20px" hidden></div>
 
-      <div class="main-stage">
+      <div class="main-stage" id="main-stage" tabindex="-1">
         <section id="conversations-view" class="conversation product-view" aria-label="Live conversation stream">
           <header class="conversation-head">
             <div class="conversation-header-controls">
@@ -135,7 +136,7 @@
               <div class="mobile-filter-tabs" role="tablist" aria-label="Conversation filters"><button id="mobile-lanes-tab" type="button" role="tab" aria-controls="lane-filter-controls" aria-selected="true" tabindex="0">Fleets</button><button id="mobile-kinds-tab" type="button" role="tab" aria-controls="kind-filter-menu" aria-selected="false" tabindex="-1">Message kinds</button></div>
               <button id="lane-filter-close" type="button" aria-label="Close fleet filters">×</button>
             </div>
-            <div class="lane-filter-heading"><span>Included fleets</span><button id="lane-filter-info" class="lane-info-toggle" type="button" aria-expanded="false" aria-controls="lane-filter-info-tip" title="About included fleets">i</button><button id="lane-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="lane-filter-controls" aria-expanded="true" aria-label="Collapse Included fleets panel" title="Collapse Included fleets panel">‹</button></div>
+            <div class="lane-filter-heading"><span>Included fleets</span><button id="lane-filter-info" class="lane-info-toggle" type="button" aria-expanded="false" aria-controls="lane-filter-info-tip" aria-label="About included fleets" title="About included fleets"><span aria-hidden="true">i</span></button><button id="lane-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="lane-filter-controls" aria-expanded="true" aria-label="Collapse Included fleets panel" title="Collapse Included fleets panel">‹</button></div>
             <div id="lane-collapsed-rail" class="lane-collapsed-rail" aria-label="Collapsed fleet filters" hidden></div>
             <div id="lane-filter-controls" class="lane-filter-controls">
             <div id="lane-filter-info-tip" class="lane-filter-info-tip" hidden role="note">Check fleets to include. Tap a name to solo that fleet. Fleet checks and status filter the feed together; closed history is separate.</div>

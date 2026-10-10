@@ -1203,13 +1203,13 @@ function renderExpenseRows() {
   $("#expense-sort-status").textContent = `Sorted by ${sortLabel} ${expenseSort.direction === "asc" ? "ascending" : "descending"}`;
   $("#expense-entries").innerHTML = sorted.length ? sorted.map((entry) => `
     <tr data-review-id="expense:${reviewId(entry.id || [entry.date, entry.projectId, entry.description].join(':'))}">
-      <td><time datetime="${escapeHtml(entry.date)}">${escapeHtml(entry.date)}</time></td>
-      <td><strong>${escapeHtml(entry.projectName)}</strong></td>
-      <td><span class="category-chip">${escapeHtml(entry.category)}</span></td>
-      <td class="numeric amount${entry.amount.startsWith("-") ? " credit" : ""}">${escapeHtml(entry.amount)}</td>
-      <td>${escapeHtml(entry.currency)}</td>
-      <td class="expense-description">${escapeHtml(entry.description)}</td>
-      <td>${entry.confidence ? `<span class="confidence-label">${escapeHtml(entry.confidence)}</span>` : '<span class="muted">—</span>'}</td>
+      <td data-label="Date"><span class="expense-cell-label">Date</span><time datetime="${escapeHtml(entry.date)}">${escapeHtml(entry.date)}</time></td>
+      <td data-label="Project"><span class="expense-cell-label">Project</span><strong>${escapeHtml(entry.projectName)}</strong></td>
+      <td data-label="Category"><span class="expense-cell-label">Category</span><span class="category-chip">${escapeHtml(entry.category)}</span></td>
+      <td class="numeric amount${entry.amount.startsWith("-") ? " credit" : ""}" data-label="Amount"><span class="expense-cell-label">Amount</span>${escapeHtml(entry.amount)}</td>
+      <td data-label="Currency"><span class="expense-cell-label">Currency</span>${escapeHtml(entry.currency)}</td>
+      <td class="expense-description" data-label="Description / note"><span class="expense-cell-label">Description / note</span>${escapeHtml(entry.description)}</td>
+      <td data-label="Confidence / basis"><span class="expense-cell-label">Confidence / basis</span>${entry.confidence ? `<span class="confidence-label">${escapeHtml(entry.confidence)}</span>` : '<span class="muted">—</span>'}</td>
     </tr>`).join("") : '<tr><td colspan="7" class="empty compact">No expenses recorded. Add entries to your selected private expense ledger.</td></tr>';
 }
 
@@ -2193,10 +2193,16 @@ function setMobileFilterTab(tab, focus = false) {
 for (const [name, id] of [["lanes", "#mobile-lanes-tab"], ["kinds", "#mobile-kinds-tab"]]) {
   $(id).addEventListener("click", () => setMobileFilterTab(name));
   $(id).addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const order = ["lanes", "kinds"];
+    if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      setMobileFilterTab(name === "lanes" ? "kinds" : "lanes", true);
+      setMobileFilterTab(event.key === "Home" ? order[0] : order.at(-1), true);
+      return;
     }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const index = order.indexOf(name);
+    setMobileFilterTab(order[(index + (event.key === "ArrowRight" ? 1 : -1) + order.length) % order.length], true);
   });
 }
 const desktopPanels = { lane: true, kind: true };

@@ -244,7 +244,7 @@
   #shell-panel-resize { display: none !important; }
 }
 @media (max-width: 720.005px) {
-  #shell-panel-toggle:not([hidden]), .workspace[data-shell-panel-collapsed="true"] #shell-panel-toggle { top: 2px; right: 8px; left: auto; width: 40px; height: 40px; min-height: 40px; z-index: 72; }
+  #shell-panel-toggle:not([hidden]), .workspace[data-shell-panel-collapsed="true"] #shell-panel-toggle { top: 2px; right: 8px; left: auto; width: 44px; height: 44px; min-height: 44px; z-index: 72; }
   .product-identity { padding-right: 56px; }
   .source-status { right: calc(52px + env(safe-area-inset-right, 0px)); }
   .workspace[data-shell-panel-collapsed="true"] .lane-list { top: 0; bottom: auto; height: 0; min-height: 0; border: 0; overflow: visible; }

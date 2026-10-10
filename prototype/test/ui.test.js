@@ -1341,7 +1341,7 @@ test("Phase 2.6 compact rows, bounded tools, and two-row mobile controls", async
   assert.match(mobile, /\.feed-pagination \{ width: 100%;/);
   assert.match(mobile, /\.kind-filter-popover \{ right: 0; left: auto;/);
   assert.doesNotMatch(mobile, /right: -48px/);
-  assert.match(mobile, /\.task-filter-chip button \{ width: 40px; height: 40px;/);
+  assert.match(mobile, /\.task-filter-chip button \{ width: 44px; height: 44px;/);
   assert.match(mobile, /\.lane-chats-row \{[^}]+grid-template-columns: minmax\(0, 1fr\) 48px 104px/s);
   assert.match(mobile, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
   assert.match(mobile, /\.primary-nav > \.primary-tab\[data-view="work"\] \{ grid-column: 2; grid-row: 2; \}/);
@@ -1410,7 +1410,7 @@ test("reading scale and offline font stack are explicit design constraints", () 
 
 test("desktop filtering belongs to Lane Chat columns, not the app shell", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const shell = html.slice(0, html.indexOf('<div class="main-stage">'));
+  const shell = html.slice(0, html.indexOf('<div class="main-stage"'));
   const chat = html.slice(html.indexOf('<section id="conversations-view"'), html.indexOf('<section id="overview-view"'));
   assert.doesNotMatch(shell, /id="lane-options"|id="lane-status"|id="message-type-filters"/);
   assert.match(chat, /class="conversation-body"[\s\S]*id="lane-options"[\s\S]*class="conversation-feed"[\s\S]*id="conversation-kind-panel"/);
@@ -2965,4 +2965,24 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
       assert.equal(surface.querySelector('[role="progressbar"]'), null);
     }
   }
+});
+
+test("phone fleet and kind tabs follow arrow, Home and End keys", () => {
+  const app = ui();
+  const lanes = app.node("#mobile-lanes-tab");
+  const kinds = app.node("#mobile-kinds-tab");
+  const press = (node, key) => node.dispatchEvent({ type: "keydown", key, preventDefault() {} });
+  press(lanes, "End");
+  assert.equal(kinds.getAttribute("aria-selected"), "true");
+  assert.equal(lanes.getAttribute("aria-selected"), "false");
+  assert.equal(kinds.tabIndex, 0);
+  assert.equal(lanes.tabIndex, -1);
+  assert.equal(app.run("document.activeElement"), kinds);
+  press(kinds, "ArrowLeft");
+  assert.equal(lanes.getAttribute("aria-selected"), "true");
+  press(lanes, "ArrowRight");
+  assert.equal(kinds.getAttribute("aria-selected"), "true");
+  press(kinds, "Home");
+  assert.equal(lanes.getAttribute("aria-selected"), "true");
+  assert.equal(app.run("document.activeElement"), lanes);
 });

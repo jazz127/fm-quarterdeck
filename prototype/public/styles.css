@@ -467,6 +467,10 @@ input[type="search"]::-webkit-search-results-decoration {
 .empty-action { display: inline-block; min-height: 28px; margin-left: var(--space-2); padding: 2px 10px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--accent); font-size: var(--text-small); font-weight: 600; cursor: pointer; }
 .empty-action:hover { background: var(--surface-soft); }
 mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2px; font-weight: 550; }
+.skip-link { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.skip-link:focus { position: fixed; z-index: 200; top: 8px; left: 8px; width: auto; height: auto; margin: 0; clip: auto; overflow: visible; display: inline-flex; align-items: center; min-height: 44px; padding: 8px 12px; border-radius: 8px; background: var(--surface); color: var(--text); font-size: var(--text-ui); font-weight: 700; text-decoration: none; outline: 3px solid var(--focus); outline-offset: 2px; }
+#main-stage:focus { outline: none; }
+#main-stage:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .transcript-controls { flex-shrink: 0; padding: 4px var(--space-4); font-size: var(--text-small); color: var(--muted); display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--line); }
 .transcript-controls label { min-width: 0; flex: 1 1 180px; }
@@ -1226,7 +1230,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   .lane-chats-row .primary-tab { min-height: 64px; justify-content: center; }
   .lane-filter-toggle { min-width: 28px; min-height: 64px; }
   .task-filter-chip { padding: 0 2px 0 10px; }
-  .task-filter-chip button { width: 40px; height: 40px; min-height: 40px; }
+  .task-filter-chip button { width: 44px; height: 44px; min-height: 44px; }
   .lane-select-all { display: none; }
   .lane-filter { position: fixed; z-index: 75; left: var(--space-2); right: var(--space-2); bottom: 72px; max-height: calc(100dvh - 88px); overflow-y: auto; box-shadow: 0 -8px 24px rgba(0,0,0,.16); }
   #lane-filter-rows { max-height: calc(100dvh - 230px); }
@@ -1385,7 +1389,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   .lane-filter { margin: 0; padding: 12px; background: var(--surface); bottom: 104px; max-height: calc(100dvh - 216px); overflow-y: auto; }
   .conversation-body > .lane-filter { bottom: 104px; max-height: calc(100dvh - 216px); padding: 12px; }
   .conversation-body #lane-filter-rows { max-height: calc(100dvh - 270px); }
-  .lane-filter-heading > button { min-width: 40px; min-height: 40px; }
+  .lane-filter-heading > button { min-width: 44px; min-height: 44px; }
   #lane-filter-rows { max-height: calc(100dvh - 270px); }
   .main-stage { height: calc(100dvh - 96px); padding-top: 48px; padding-bottom: 0; }
   .workspace:has(.preview-control) .main-stage { padding-top: calc(48px + 33px); }
@@ -1690,7 +1694,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   .conversation-body > .lane-filter .bulk-clear { display: none !important; }
   .conversation-body > .lane-filter .bulk-toggle { display: inline-flex; align-items: center; justify-content: center; flex: 1 1 0; min-width: 0; min-height: 44px; }
   .conversation-body > .lane-filter .lane-status-control { gap: 2px; padding: 0 0 6px; font-size: 11px; }
-  .conversation-body > .lane-filter .lane-status-control select { min-height: 40px; }
+  .conversation-body > .lane-filter .lane-status-control select { min-height: 44px; }
   /* M3.3 — denser lane rows */
   .conversation-body > .lane-filter .lane-option { min-height: 44px; padding: 6px 10px; gap: 8px; margin: 0; border-radius: 8px; }
   .conversation-body > .lane-filter .lane-option + .lane-option { margin-top: 0; }
@@ -2391,7 +2395,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 }
 
 .work-slice button[data-ack-task] {
-  min-height: 32px;
+  min-height: 44px;
   padding: 4px 12px;
   font-size: 12px;
   font-weight: 600;
@@ -2544,7 +2548,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .review-copy-target { min-height: 32px; font-size: 12px; padding: 4px 8px; }
 .review-compact-count { color: var(--accent); padding-left: 6px; font: 12px Georgia, serif; }
 @media screen and (max-width: 720px) {
-  .review-meta > summary { box-sizing: border-box; width: 32px; height: 32px; background: radial-gradient(circle, var(--accent-soft) 8px, transparent 9px); border: 0; }
+  .review-meta > summary { box-sizing: border-box; width: 44px; height: 44px; background: radial-gradient(circle, var(--accent-soft) 8px, transparent 9px); border: 0; }
   .review-meta-card { width: 100%; box-sizing: border-box; }
   .review-meta > summary { margin-left: auto; }
 }
@@ -2985,5 +2989,46 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
     background: var(--surface);
     border-color: var(--line-strong);
     box-shadow: 2px 2px 0 var(--line-strong);
+  }
+}
+
+/* Narrow and touch layouts. Phone width covers device-mode fine pointers; coarse covers a wide tablet. */
+.expense-cell-label { display: none; }
+@media (max-width: 720.005px) {
+  .search-clear { box-sizing: border-box; width: 44px; min-width: 44px; min-height: 44px; right: 0; bottom: 0; }
+  .feed-actions input[type="search"], .transcript-controls input[type="search"] { padding-right: 48px; }
+  .status-filter-btn, .scan-controls select, .scan-controls button, .work-inspection summary, .empty-action,
+  .quota-controls button, .quota-more > summary, .quota-summary-tile a, #quota-details-toggle { min-height: 44px; }
+  .status-filter-btn, .scan-controls select, .scan-controls button { height: 44px; }
+  .source-status .review-gesture-help { box-sizing: border-box; width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex-basis: 44px; }
+  .expense-table-wrap { overflow-x: visible; }
+  .expense-table { display: block; min-width: 0; }
+  .expense-table thead, .expense-table tbody, .expense-table tr { display: block; }
+  .expense-table thead tr { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
+  .expense-table th { flex: 1 1 auto; border: 0; background: transparent; }
+  .expense-table th button { width: auto; min-height: 44px; padding: 8px 10px; border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); text-align: center; }
+  .expense-table tbody tr { padding: 8px 12px 10px; border-bottom: 1px solid var(--line); }
+  .expense-table tbody tr:last-child { border-bottom: 0; }
+  .expense-table td { display: grid; grid-template-columns: minmax(7.5rem, 38%) minmax(0, 1fr); gap: 4px 10px; align-items: start; padding: 4px 0; border: 0; }
+  .expense-table td[colspan] { display: block; }
+  .expense-cell-label { display: block; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .expense-table td.numeric, .expense-table th.numeric button { text-align: left; }
+  .expense-table .expense-description { min-width: 0; max-width: none; }
+}
+@media (max-width: 390px) {
+  #overview-view .overview-section-tabs button, #overview-view .call-lifecycle-filter button { font-size: 12px; line-height: 1.15; padding-inline: 6px; overflow-wrap: anywhere; }
+  #overview-view .metric-card h3, #overview-view .metric-card p, #overview-view .metric-card strong { overflow-wrap: anywhere; }
+}
+@media (pointer: coarse) {
+  .search-clear, .status-filter-btn, .scan-controls select, .scan-controls button, .work-inspection summary, .empty-action,
+  .quota-controls button, .quota-more > summary, .quota-summary-tile a, #quota-details-toggle, .source-status .review-gesture-help { min-width: 44px; min-height: 44px; }
+  .status-filter-btn, .scan-controls select, .scan-controls button { height: 44px; }
+  .source-status .review-gesture-help { width: 44px; height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quota-badge, .closed-lane-card, .quota-accordion-summary, .quota-accordion-summary::after, .status-filter-btn,
+  .taxonomy-node, .taxonomy-node > summary::before, .work-slice, .work-slice button[data-ack-task], .jump-to-latest {
+    transition: none;
+    animation: none;
   }
 }
