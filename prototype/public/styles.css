@@ -2858,3 +2858,132 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   #overview-view .call-send-queued:not(:disabled) { outline: 2px solid CanvasText; }
   #overview-view .call-send-queued:disabled { color: GrayText; border-color: GrayText; }
 }
+
+/* ====== Auto UX Polish ====== */
+/* 1. Spacing, alignment, and hover affordances */
+.call-card { 
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.2s cubic-bezier(0.2, 0, 0, 1), border-color 0.2s ease; 
+}
+.call-card:hover { 
+  transform: translateY(-2px); 
+  box-shadow: 4px 4px 0 var(--text); 
+}
+.call-card:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+.call-empty, #call-lifecycle-empty { 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  justify-content: center; 
+  min-height: 120px; 
+  padding: 32px 24px; 
+  border: 2px dashed var(--line-strong); 
+  border-radius: var(--radius); 
+  background: var(--surface-soft); 
+  color: var(--muted); 
+  text-align: center; 
+  font-weight: 500;
+  transition: background 0.2s ease;
+}
+.call-empty:hover, #call-lifecycle-empty:hover {
+  background: var(--surface);
+}
+.call-empty p, #call-lifecycle-empty p { margin: 0; }
+
+/* 2. Review Panel & Chat spacing/alignment */
+.review-panel {
+  box-shadow: 0 12px 40px rgba(0,0,0,0.12);
+}
+.review-batch {
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.review-batch:hover {
+  background: var(--surface-soft);
+  border-color: var(--text);
+}
+.preview-chat {
+  box-shadow: 0 12px 40px rgba(0,0,0,0.15);
+  border-radius: 12px;
+}
+
+/* 3. Dark Mode Parity */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #0b1114;
+    --surface: #121a1f;
+    --surface-soft: #19242b;
+    --text: #d7e6ee;
+    --muted: #8b9ca6;
+    --line: #213540;
+    --line-strong: #2f4857;
+    --control-line: #3d5a6c;
+    --accent: #0a8f7c;
+    --accent-soft: #084d43;
+    --blue: #64a3f2;
+    --amber: #e09e48;
+    --danger: #e26372;
+    --focus: #64a3f2;
+    --sidebar: #061117;
+  }
+
+  body { background: var(--canvas); color: var(--text); }
+  
+  .call-card { 
+    border-color: var(--line-strong); 
+    box-shadow: 3px 3px 0 var(--line-strong); 
+    background: var(--surface); 
+  }
+  .call-card:hover { 
+    box-shadow: 4px 4px 0 var(--line-strong); 
+    border-color: var(--accent); 
+  }
+  
+  .call-card .call-head-pill { 
+    border-color: var(--line-strong); 
+    box-shadow: 2px 2px 0 var(--line-strong); 
+    background: var(--surface); 
+  }
+  .call-card .state-chip { 
+    border-color: var(--line-strong); 
+    box-shadow: 2px 2px 0 var(--line-strong); 
+    color: #fff;
+  }
+  
+  .review-panel, #review-annotation, .preview-chat { 
+    background: var(--surface); 
+    border-color: var(--line-strong); 
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6); 
+  }
+  
+  .primary-tab.active, .lane-chats-row:has(.active) {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: inset 3px 0 var(--accent), 0 1px 4px rgba(0,0,0,0.5);
+  }
+  
+  .lane-list, .product-identity, .sidebar-quota, .source-status {
+    background: var(--sidebar);
+    border-color: var(--line-strong);
+  }
+  
+  .lane-chats-row {
+    background: var(--surface-soft);
+    border-color: var(--line-strong);
+  }
+  
+  .call-empty, #call-lifecycle-empty {
+    background: var(--surface-soft);
+    border-color: var(--line-strong);
+  }
+  .call-empty:hover, #call-lifecycle-empty:hover {
+    background: var(--surface);
+  }
+  
+  .call-reply-banner, .call-your-answer {
+    background: var(--surface);
+    border-color: var(--line-strong);
+    box-shadow: 2px 2px 0 var(--line-strong);
+  }
+}
