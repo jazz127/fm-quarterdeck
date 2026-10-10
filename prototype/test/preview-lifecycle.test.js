@@ -231,10 +231,11 @@ test("real fixed child proves health, exits on controller crash, and stale owner
   const registered = [{ ...entries[0], commit, remoteCheckpoint: commit }, { ...entries[1], commit, remoteCheckpoint: commit }];
   const options = { root, primary: "/primary", mainCommit: commit, portMin: port, portMax: port, idleMs: 300000 };
   const script = path.join(root, "owner.mjs");
+  // Ready can become healthy Idling before either startup poll observes it.
   await writeFile(script, `import {PreviewLifecycle} from ${JSON.stringify(new URL("../preview-lifecycle.js", import.meta.url).href)};
     const c = new PreviewLifecycle(${JSON.stringify(registered)}, ${JSON.stringify(options)});
     await c.ready; await c.select('dev-one');
-    const timer = setInterval(() => { if (c.status('dev-one').state === 'ready') { clearInterval(timer); process.send(c.owned.identity); } }, 10);`);
+    const timer = setInterval(() => { if (c.status('dev-one').health === 'running') { clearInterval(timer); process.send(c.owned.identity); } }, 10);`);
   const owner = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   let recovered;
   t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await recovered?.close(); await rm(root, { recursive: true, force: true }); });
@@ -254,7 +255,7 @@ test("real fixed child proves health, exits on controller crash, and stale owner
   recovered = new PreviewLifecycle(registered, options); await recovered.ready;
   assert.equal(recovered.problem, undefined); assert.equal(recovered.owned, null);
   assert.equal(recovered.status("main").state, "ready");
-  await recovered.select("dev-one"); await wait(() => recovered.status("dev-one").state === "ready");
+  await recovered.select("dev-one"); await wait(() => recovered.status("dev-one").health === "running");
   assert.notEqual(recovered.owned.generation, evidence.generation);
   assert.equal(git("status", "--porcelain"), "");
   assert.equal(await readFile(path.join(root, ".agentos-runtime/dev-one/home/runtime-marker"), "utf8"), "durable");
