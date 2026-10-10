@@ -127,7 +127,7 @@ export function createAnswerRelay({ home, note = noteWithRequestId, receipts = i
       const record = previous || (() => {
         const valid = validateAnswer(body, model);
         const envelope = answerEnvelope(valid, model.rev);
-        return { digest, key: valid.key, envelope, text: formatAnswerNote(envelope), at: new Date(now()).toISOString() };
+        return { digest, key: valid.key, display: displayAnswer(parsed.selection, parsed.note), envelope, text: formatAnswerNote(envelope), at: new Date(now()).toISOString() };
       })();
       // A failed acknowledgement can follow a saved note (for example a missing wake).
       // Freeze the original envelope before attempting delivery, so a same-id retry

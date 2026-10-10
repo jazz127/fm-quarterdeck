@@ -180,7 +180,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
-        return { digest, key: parsed.key, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
+        return { digest, key: parsed.key, display: parsed.text, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);
       let receipt;

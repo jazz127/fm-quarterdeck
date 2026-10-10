@@ -390,6 +390,7 @@ try {
   await browser('screenshot', path.join(proof, 'captain-thread-replied-390.png'));
   await browser('resize', '1280', '844');
   // Shared queue: alpha text is a thread note, and the merge option is an answer.
+  const queueWakeCount = (await readFile(path.join(home, 'wake-attempts'), 'utf8')).trim().split('\n').length;
   const queueAttempts = (await readFile(path.join(home, 'answer-attempts'), 'utf8')).trim().split('\n').length;
   const threadBefore = (await readFile(path.join(home, 'thread-attempts'), 'utf8')).trim().split('\n').filter(Boolean);
   await evaluate(`() => { window.reviewPosts=0; const original=window.fetch; window.fetch=(url,init)=>{ if(String(url).includes('/api/review')&&init?.method==='POST')window.reviewPosts++; return original(url,init); }; const alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); const field=alpha.querySelector('[data-call-answer-text]'); field.value='Queue rollout Tuesday'; field.dispatchEvent(new Event('input',{bubbles:true})); alpha.querySelector('.call-answer-queue').click(); const merge=document.querySelector('[data-call-key="merge:beta-merge"]'); const radio=merge.querySelector('input[value="merge"]'); radio.checked=true; radio.dispatchEvent(new Event('change',{bubbles:true})); merge.querySelector('.call-answer-queue').click(); if(window.quarterdeckCallQueue.list().length!==2)throw Error('two notes not queued'); return 'two queued'; }`);
@@ -523,6 +524,7 @@ try {
   await evaluate(`() => { const card=document.querySelector('[data-call-key="merge:beta-merge"]'); card.scrollIntoView({block:'center'}); const label=card.querySelector('[data-call-sent-label]'); const ink=getComputedStyle(card.querySelector('h3')).color; const option=card.querySelector('.call-opt'); const summary=card.querySelector('[data-call-answer-summary]'); if(label.hidden||!getComputedStyle(card).backgroundImage.includes('linear-gradient')||!option||!getComputedStyle(option).backgroundImage.includes('linear-gradient')||!summary||summary.hidden||getComputedStyle(summary).color==='rgba(0, 0, 0, 0)'||ink==='rgba(0, 0, 0, 0)'||document.documentElement.scrollWidth>innerWidth)throw Error('dark sent card'); return 'dark sent card'; }`);
   await browser('screenshot', path.join(proof, 'captain-sent-underway-dark-390.png'));
   await browser('emulate', '--color-scheme', 'light');
+  assert.equal((await readFile(path.join(home, 'wake-attempts'), 'utf8')).trim().split('\n').length - queueWakeCount, 1, 'mixed queued card submissions produce one inbox wake');
   const queueIds = (await readFile(path.join(home, 'answer-attempts'), 'utf8')).trim().split('\n').slice(queueAttempts);
   assert.equal(queueIds.length, 1, 'only the picked option is an answer');
   const queuedAnswer = JSON.parse(/```json fm-bearings-answer\n([\s\S]*?)\n```/.exec(await readFile(path.join(home, `answer-${queueIds[0]}.txt`), 'utf8'))[1]);

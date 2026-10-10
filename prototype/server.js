@@ -28,7 +28,7 @@ import { readHealthPreferences, saveHealthPreferences, validHealthPreferences } 
 import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
 import { createInboxBatcher } from "./inbox-batcher.js";
-import { announceReview, inboxReady, inboxReceipts, inboxReviewState, SAFE_NOTE_ID } from "./inbox.js";
+import { announceReview, inboxReady, inboxReviewState, SAFE_NOTE_ID } from "./inbox.js";
 import { VERIFIED_CAPTAIN, inboxInput, verifiedQuarterdeckNote } from "./authorship.js";
 import { lstat, open, readFile, readdir, stat } from "node:fs/promises";
 import os from "node:os";
@@ -62,6 +62,7 @@ const STATIC_FILES = new Map([
   ["/message-font-size.js", ["message-font-size.js", "text/javascript; charset=utf-8"]],
   ["/quota-view-model.js", ["quota-view-model.js", "text/javascript; charset=utf-8"]],
   ["/cost-view-model.js", ["cost-view-model.js", "text/javascript; charset=utf-8"]],
+  ["/inbox-pending.js", ["inbox-pending.js", "text/javascript; charset=utf-8"]],
   ["/review-target.js", ["review-target.js", "text/javascript; charset=utf-8"]],
   ["/review-client.js", ["review-client.js", "text/javascript; charset=utf-8"]],
   ["/panel-resize.js", ["panel-resize.js", "text/javascript; charset=utf-8"]],
@@ -1099,7 +1100,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/inbox-pending.js", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
   // Live Captain's Call streams (host only; previews poll /api/bearings?since).
   const streamOptions = { heartbeatMs: 20000, recycleMs: 600000, maxStreams: 16, ...bearingsStream };
   const streams = new Set();

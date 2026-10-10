@@ -101,7 +101,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       throw error;
     });
   }
-  async function note(_home, id, text, { record, immediate = false } = {}) {
+  async function note(_home, id, text, { record, display, immediate = false } = {}) {
     const result = await locked(async () => {
       await ready;
       let batch = find(id);
@@ -112,7 +112,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
         batch = state.batches.findLast((entry) => !entry.sealed && !entry.receipt && entry.items.length < 30 && Buffer.byteLength(body(entry)) + Buffer.byteLength(text) < 100000);
         if (!batch) { batch = { id, items: [], sealed: false, at: Date.now() }; state.batches.push(batch); }
         if (batch.items.length === 1) batch.id = `quarterdeck-batch:${randomUUID()}`;
-        batch.items.push({ id, text, record });
+        batch.items.push({ id, text, record, display });
       }
       await save();
       const pending = new Promise((resolve, reject) => { waiters.set(id, [...(waiters.get(id) || []), { resolve, reject }]); });
@@ -139,7 +139,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
     // Atomic snapshots are readable even when a writer holds an abandoned lock.
     const snapshot = await readState();
     return snapshot.batches.filter((batch) => !batch.receipt).flatMap((batch) => batch.items.map((item) => ({
-      requestId: item.id, text: item.text, key: item.record?.key || null,
+      requestId: item.id, text: item.display || item.record?.display || item.text, key: item.record?.key || null,
     })));
   }
   return { note, receipts, flush, pending, close() { closed = true; clearTimeout(timer); } };
