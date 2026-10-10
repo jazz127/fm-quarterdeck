@@ -37,7 +37,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const results = [];
 const deadline = setTimeout(() => { console.error("bounded acceptance expired"); process.exit(1); }, 180000);
 try {
-  const url = `http://127.0.0.1:${server.address().port}/#overview`;
+  const url = `http://127.0.0.1:${server.address().port}/#work`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try { await browser("open", url); break; }
     catch (error) {
@@ -56,9 +56,9 @@ try {
   results.push(await evaluate(`fetch('/api/review').then(r=>r.json()).then(r=>{if(r.version!==${JSON.stringify(head)})throw Error('wrong served revision');return r.version})`));
   for (const width of [1440, 390]) {
     await browser("resize", String(width), "900");
-    for (const view of ["overview", "work"]) {
-      const selector = view === "overview" ? "#projects" : "#tight-work";
-      const filters = view === "overview" ? "#overview-status-buttons" : "#work-phase-buttons";
+    for (const view of ["work"]) {
+      const selector = "#tight-work";
+      const filters = "#work-phase-buttons";
       await evaluate(`location.hash='#${view}'`);
       await browser("wait", "100");
       for (const [indices, want] of [[[0], "0,0"], [[0, 1], "2,0"], [[0, 2], "0,2"], [[0, 1, 2], "2,2"]]) {

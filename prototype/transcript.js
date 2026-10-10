@@ -45,7 +45,7 @@ function deduplicateMirroredTurns(messages) {
 // session headers whose cwd matches this home. Claude Code discovery is limited
 // to this home's encoded project directory under claudeConfigDir. Never scan
 // other session homes.
-export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
+export async function discoverTranscriptInventory(home, { reader = createHistoryReader(), claudeConfigDir = null } = {}) {
   const readFile = reader.text;
   const root = await realpath(home);
   const files = new Map();
@@ -132,6 +132,11 @@ export async function readConversationTranscript(home, publicMessage, { selected
     } catch (error) { if (error.code !== "ENOENT") warnings.push(`${pointer} cannot identify an active transcript.`); }
   }
   if (claudePrimary) active.add(claudePrimary.file);
+  return { inventory, active, warnings, claudePrimary, mainPiSessions };
+}
+
+export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
+  const { inventory, active, warnings, claudePrimary, mainPiSessions } = await discoverTranscriptInventory(home, { reader, claudeConfigDir });
   const requested = new Set(selectedIds.slice(0, 60));
   const visible = new Set(inventory.slice(0, 2 + Math.min(older, 20) * 2).map(({ source }) => source));
   for (const entry of inventory) if (active.has(entry.file) || requested.has(entry.source)) visible.add(entry.source);

@@ -22,6 +22,8 @@ jobs:
       - name: Install locked application package
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: prototype
+      - name: Install pinned browser CLI (CI only)
+        run: npm install --global --ignore-scripts --no-audit --no-fund chrome-devtools-axi@0.1.39
       - name: Select browser for all behavioral checks
         run: |
           # npm test also launches browsers; select stable Chrome before either suite.

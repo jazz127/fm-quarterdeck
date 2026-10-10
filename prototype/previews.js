@@ -92,7 +92,7 @@ export function proxyPreview(entry, pathname, search, request, response, onRead 
           // Review/chat writes remain on this host; the host, not the preview, signs provenance.
           const prefix = `/preview/${entry.id}`;
           body = Buffer.from(body.toString("utf8")
-            .replace(/(src|href)="\/(app\.js|quota-view-model\.js|review-client\.js|styles\.css|dev-reload\.js)"/g, `$1="${prefix}/$2"`)
+            .replace(/(src|href)="\/(app\.js|quota-view-model\.js|review-client\.js|bearings-patch\.js|bearings-view\.js|bearings-live\.js|styles\.css|dev-reload\.js)"/g, `$1="${prefix}/$2"`)
             .replace("</head>", `<script>window.FM_HOST_ID=${JSON.stringify(hostId)};window.FM_PREVIEW_ID=${JSON.stringify(entry.id)};window.FM_SERVED_COMMIT=${JSON.stringify(entry.commit)};const fmFetch=window.fetch.bind(window);window.fetch=(input,options)=>typeof input==="string"&&input.startsWith("/api/")&&!input.startsWith("/api/previews")?fmFetch(${JSON.stringify(prefix)}+input,options):fmFetch(input,options);</script><script defer src="/preview-selector.js"></script></head>`));
         }
         response.writeHead(result.statusCode, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff" });

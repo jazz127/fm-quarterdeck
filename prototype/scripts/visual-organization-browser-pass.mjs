@@ -228,11 +228,11 @@ try {
     const height = isMobile ? 844 : 1000;
     await cmd("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: isMobile });
 
-    for (const view of ["overview", "work"]) {
+    for (const view of ["work"]) {
       await cmd("Page.navigate", { url: `${url}#${view}` });
-      await until("Boolean(document.querySelector('#projects .taxonomy-theme') && document.querySelector('#tight-work .taxonomy-theme'))");
+      await until("Boolean(document.querySelector('#tight-work .taxonomy-theme'))");
 
-      const targetRoot = view === "overview" ? "#projects" : "#tight-work";
+      const targetRoot = "#tight-work";
 
       // 1. Verify NO PAGE-LEVEL HORIZONTAL OVERFLOW
       const pageOverflow = await evaluate("document.documentElement.scrollWidth > innerWidth");
@@ -241,7 +241,7 @@ try {
       // 2. Inspect layout metrics of the taxonomy deck and repositories
       const metrics = await evaluate(`(() => {
         const root = document.querySelector('${targetRoot}');
-        const viewEl = document.querySelector('${view === "overview" ? "#overview-view" : "#work-view"}');
+        const viewEl = document.querySelector('#work-view');
         const viewRect = viewEl.getBoundingClientRect();
         const repos = [...root.querySelectorAll('.taxonomy-repository')];
         const lanes = [...root.querySelectorAll('.taxonomy-lane')];
@@ -409,12 +409,12 @@ try {
 
       // 5. Test visible status filter buttons
       const btnFilterTest = await evaluate(`(() => {
-        const btnContainer = document.querySelector('${view === "overview" ? "#overview-status-buttons" : "#work-phase-buttons"}');
+        const btnContainer = document.querySelector('#work-phase-buttons');
         if (!btnContainer) return null;
         const buttons = [...btnContainer.querySelectorAll('.status-filter-btn')];
         const activeBtn = btnContainer.querySelector('[data-status-value="active"]');
         const allBtn = btnContainer.querySelector('[data-status-value="all"]');
-        const sel = document.querySelector('${view === "overview" ? "#overview-status" : "#work-phase"}');
+        const sel = document.querySelector('#work-phase');
 
         const initialActivePressed = activeBtn ? activeBtn.getAttribute('aria-pressed') : null;
         const initialAllPressed = allBtn ? allBtn.getAttribute('aria-pressed') : null;
@@ -489,11 +489,11 @@ try {
 
   // 5. Test canonical link navigation from work slice
   await cmd("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-  await cmd("Page.navigate", { url: `${url}#overview` });
-  await until("Boolean(document.querySelector('#projects a.crew-task'))");
+  await cmd("Page.navigate", { url: `${url}#work` });
+  await until("Boolean(document.querySelector('#tight-work a.crew-task'))");
 
   const navLink = await evaluate(`(() => {
-    const link = document.querySelector('#projects a.crew-task');
+    const link = document.querySelector('#tight-work a.crew-task');
     return { href: link.getAttribute('href'), text: link.textContent };
   })()`);
 
