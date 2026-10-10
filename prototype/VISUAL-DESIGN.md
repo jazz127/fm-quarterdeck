@@ -28,8 +28,8 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - The same pill stays available on Sent cards and in the Procrastinated status.
 - Below the page header and the KPI summary, the Overview body is two equal columns with a 22px gap.
 - Captain's Call stays in the first column.
-- The second column is an empty reserved region (`#overview-secondary`) with no placeholder text.
-- On a phone the columns stack and the empty column takes no space.
+- The second column (`#overview-secondary`) contains the Second mates section; [work taxonomy](WORK-TAXONOMY.md#explicit-three-level-navigation) owns its sources and visibility.
+- On a phone the columns stack, with second mates after calls; an empty second column takes no space.
 - Chat asks keep a double left border at the same width as other cards, so the mark does not indent the card. Also asked in chat stacks on its own line and does not widen the context column.
 - A decision title is the filed hold's full reason when one is recorded. Also asked in chat is a smaller secondary line, and a `[task:...]` marker is omitted. Reply phrases from that ask are option choices under the reason.
 - Captain's Call answer forms separate source context from input with a quiet rule; option cards use native radios, a textual Recommended chip and visible keyboard focus. All call buttons and option targets are at least 44px high. Confirmation and receipt panels retain readable text (disabled fields use muted ink, not whole-form opacity), and phone actions wrap without overflow.
