@@ -562,13 +562,13 @@ async function readBacklog(home, reader = createHistoryReader()) {
       }
       const item = line.match(/^\s*-\s+\[([ xX])\]\s+([^\s]+)\s+-\s+(.+)$/);
       if (item) {
-        const repo = item[3].match(/\(repo:\s*([^)]+)\)/i)?.[1].trim() || null;
+        const repo = [...item[3].matchAll(/\(repo:\s*([^)]+)\)/gi)].at(-1)?.[1].trim() || null;
         const title = item[3].split(/\s+(?:blocked-by:|\((?:repo|epic|theme|kind|since|done|merged|hold|hold-kind|hold-until):|\((?:since|done|reported|merged)\s+\d{4}-\d{2}-\d{2}\))/i)[0].trim();
         const inFlight = section === "in flight";
         const done = item[1].toLowerCase() === "x" || /^(done|completed|closed)\b/.test(section);
         // Only structured backlog fields identify an epic/theme; task prose and titles do not.
-        const group = item[3].match(/\((epic|theme):\s*([^)]+)\)/i);
-        currentTask = { id: item[2], projectName: repo ? path.basename(repo) : null, repositoryPath: repo, workGroup: group?.[2].trim() ? { kind: group[1].toLowerCase(), name: group[2].trim() } : null, inFlight, state: done ? "done" : "active", title, bodyFirstLine: "", body: "", section, metadata: item[3], doneDate: item[3].match(/\((?:done|reported|merged)\s+(\d{4}-\d{2}-\d{2})\)/i)?.[1] || null };
+        const group = [...item[3].matchAll(/\((epic|theme):\s*([^)]+)\)/gi)].at(-1);
+        currentTask = { id: item[2], projectName: repo ? path.basename(repo) : null, repositoryPath: repo, workGroup: group?.[2].trim() ? { kind: group[1].toLowerCase(), name: group[2].trim() } : null, inFlight, state: done ? "done" : "active", title, bodyFirstLine: "", body: "", section, metadata: item[3], doneDate: [...item[3].matchAll(/\((?:done|reported|merged)\s+(\d{4}-\d{2}-\d{2})\)/gi)].at(-1)?.[1] || null };
         Object.assign(currentTask, parseTaskHold(item[3], done));
         tasks.set(item[2], currentTask);
         continue;
@@ -578,6 +578,9 @@ async function readBacklog(home, reader = createHistoryReader()) {
         if (!currentTask.bodyFirstLine) currentTask.bodyFirstLine = shortIntent(body, 150);
         currentTask.body += `${body}\n`;
       }
+    }
+    for (const task of tasks.values()) {
+      task.activeBlockers = task.holdOpen ? task.blockers.filter((id) => tasks.has(id) && tasks.get(id).state !== "done") : [];
     }
     return tasks;
   } catch (error) {
@@ -604,7 +607,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
       latest = foldStatusLines(text.trim().split(/\r?\n/).filter(Boolean), { kind: metaById.has(task.id) ? metaById.get(task.id).kind || "ship" : "unknown" }).latest;
     }
     const notedWait = notes.match(/(?:^|\n)\s*(?:waiting (?:on|for)|blocked by)\s*:?\s*([^\n.]+)/i)?.[1];
-    const waitingOn = hold || (latest && ["blocked", "needs-decision", "paused", "waiting"].includes(latest.state) ? latest.text : null)
+    const waitingOn = hold || (latest && ["blocked", "needs-decision", "paused", "waiting", "captain-held"].includes(latest.state) ? latest.text : null)
       || (notedWait ? shortIntent(notedWait, 150) : null);
     const name = safeWorkNote(task.title);
     // A task meta's project path is the durable repository identity for running work;
@@ -619,7 +622,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     if (isLarge) {
       const notedStage = notes.match(/(?:^|\n)\s*stage:\s*([^\n]+)/i)?.[1];
       const stage = task.state === "done" ? "Landed" : notedStage ? shortIntent(notedStage, 100) : task.section === "queued" ? "Backlog"
-        : latest && ["blocked", "needs-decision", "paused"].includes(latest.state) ? stateLabelForWork(latest.state) : "In progress";
+        : latest && ["blocked", "needs-decision", "paused", "waiting", "captain-held"].includes(latest.state) ? stateLabelForWork(latest.state) : "In progress";
       large.push({ ...identity, phase, stage: safeWorkNote(stage), waitingOn: safeWorkNote(waitingOn || "Nothing recorded") });
     } else if (task.state === "done") {
       // A historical done item is not automatically a recent landing.
@@ -645,7 +648,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const endpointLive = shouldProbeLiveness(state, inFlight) ? await probeLiveness(() => endpointIsLive(meta)) : null;
     return { id, name: task?.title || id, repositoryPath, state, pendingIssues: folded.pendingIssues,
       holdKind: task?.holdKind, holdReason: task?.holdReason, holdUntil: task?.holdUntil, holdOpen: task?.holdOpen,
-      holdActive: task?.holdActive, holdDeferred: task?.holdDeferred, blockers: task?.blockers || [],
+      holdActive: task?.holdActive, holdDeferred: task?.holdDeferred, blockers: task?.blockers || [], activeBlockers: task?.activeBlockers || [],
       inFlight: Boolean(task?.inFlight), queued: task?.section === "queued", endpointLive, reviewRun: isReviewRun(meta),
       endpointEvidence: endpointLive === true ? hasProcessIdentity(meta) ? "live process incarnation" : "live terminal pane (weaker evidence; worker process unverified)" : endpointLive === false ? "endpoint not live" : "liveness unknown",
       executionFingerprint: executionFingerprint(meta, endpointLive),
@@ -656,7 +659,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
       // A task-level head is not bound to this exact outcome. Quarterdeck completionRecords
       // supplies an explicit source-fingerprint binding; never migrate an old head blindly.
       commit: null, pullRequest: null, unboundCommit: Boolean(meta.completion_commit),
-      large: large.some((entry) => entry.id === id), waitingOn: holdWaitingOn(task || { blockers: [] }) || folded.pendingIssues.at(-1)?.text || recordedWork?.waitingOn || null };
+      large: large.some((entry) => entry.id === id), waitingOn: holdWaitingOn(task || {}) || (latest?.state === "captain-held" ? latest.text : null) || folded.pendingIssues.at(-1)?.text || recordedWork?.waitingOn || null };
   }));
   const model = await projectWork(records, agentState, { durability, acknowledgementsAvailable, repositoryPaths });
   return { tight: Object.fromEntries(Object.entries(tight).map(([key, items]) => [key, { count: items.length, items }])), large: { count: large.length, projects: large }, ...model };

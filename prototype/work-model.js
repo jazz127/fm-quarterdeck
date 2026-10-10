@@ -92,20 +92,22 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
       } else if (["resolved", "captain-held"].includes(event.state)) close(event.key);
     }
   }
-  const actionable = events.filter((event) => !["resolved", "captain-held", "update"].includes(event.state) && !resolved.has(event.index)
+  const latestEvent = events.filter((event) => event.state !== "update").at(-1);
+  const actionable = events.filter((event) => !["resolved", "update"].includes(event.state) && !resolved.has(event.index)
+    && (event.state !== "captain-held" || (event === latestEvent && event.transitionAllowed))
     && (!waitingStates.includes(event.state) || event.transitionAllowed));
   return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1),
     pendingIssues: [...open.values()].map(({ key, state, text }) => ({ key, state, text })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, blockers = [] }) {
-  if (holdOpen && (holdDeferred || blockers.length)) return "waiting";
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, activeBlockers = [] }) {
+  if (holdOpen && (holdDeferred || activeBlockers.length)) return "waiting";
   if (holdOpen && holdKind === "captain") return "captain-action";
   if (holdActive) return "waiting";
   if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
   if (pendingIssues.length) return "waiting";
   if (state === "needs-decision") return "captain-action";
-  if (["blocked", "paused", "waiting"].includes(state)) return "waiting";
+  if (["blocked", "paused", "waiting", "captain-held"].includes(state)) return "waiting";
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";
   if (state === "done") return "newly-done";
   if (queued && !inFlight) return "backlog";
@@ -318,14 +320,14 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     }
     const completionAttention = completionFingerprint ? evidence.length ? "previously-done" : acknowledgementsAvailable ? "newly-done" : "unknown" : null;
     if (status === "newly-done") status = completionAttention;
-    if (record.reviewRun && status !== "captain-action" && record.state !== "needs-decision" && !(record.holdOpen && (record.holdActive || record.holdDeferred || record.blockers?.length))) status = "review";
+    if (record.reviewRun && status !== "captain-action" && !["needs-decision", "captain-held"].includes(record.state) && !(record.holdOpen && (record.holdActive || record.holdDeferred || record.activeBlockers?.length))) status = "review";
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
       lane, theme, status, isLive, sourceState: record.state,
       endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
       retained: Boolean(record.retained), pendingIssues: (record.pendingIssues || []).map((issue) => ({ ...issue, ...(issue.text ? { text: safeWorkNote(issue.text) } : {}) })),
       holdKind: record.holdKind ? safeWorkNote(record.holdKind) : null, holdReason: record.holdReason ? safeWorkNote(record.holdReason) : null, holdUntil: record.holdUntil || null,
-      blockers: record.blockers || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
+      blockers: record.blockers || [], activeBlockers: record.activeBlockers || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
       unboundCommit: Boolean(record.unboundCommit && !bound),
       delivery: completionFingerprint ? evidence.some((entry) => entry.tier === "production") ? "Live production" : evidence.some((entry) => entry.tier === "uat") ? "Live UAT · ready for review" : "Ready for review · deployment unknown" : "Not completed",

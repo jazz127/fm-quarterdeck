@@ -23,14 +23,19 @@ export function decodeHoldReason(value) {
   catch { return value; }
 }
 
-export function parseTaskHold(metadata, closed, today = new Date().toISOString().slice(0, 10)) {
-  const field = (name) => metadata.match(new RegExp(`\\(${name}:\\s*([^)]*)\\)`, "i"))?.[1].trim() || null;
+function currentLocalDate() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function parseTaskHold(metadata, closed, today = currentLocalDate()) {
+  const field = (name) => [...metadata.matchAll(new RegExp(`\\(${name}:\\s*([^)]*)\\)`, "gi"))].at(-1)?.[1].trim() || null;
   const holdReason = decodeHoldReason(field("hold"));
   const holdKind = field("hold-kind");
   const date = field("hold-until");
   const dateValue = Date.parse(`${date}T00:00:00Z`);
   const holdUntil = /^\d{4}-\d{2}-\d{2}$/.test(date || "") && Number.isFinite(dateValue) && new Date(dateValue).toISOString().slice(0, 10) === date ? date : null;
-  const blockers = [...new Set((metadata.match(/\bblocked-by:\s*([^\s(]+)/i)?.[1] || "").split(",").filter((id) => /^[A-Za-z0-9._-]+$/.test(id)))];
+  const blockers = [...new Set([...metadata.matchAll(/\bblocked-by:\s*([^\s(]+)/gi)].flatMap((match) => match[1].split(",")).filter((id) => /^[A-Za-z0-9._-]+$/.test(id)))];
   // Expired captain annotations still own an open call; a closed backlog row
   // keeps its historical fields without creating current captain pressure.
   return { holdKind, holdReason, holdUntil, blockers, holdOpen: !closed,
@@ -44,6 +49,6 @@ export function holdWaitingOn(hold) {
   if (hold.holdDeferred) notes.push(`Deferred until ${hold.holdUntil}`);
   else if (hold.holdKind === "captain") notes.push("Captain");
   if (hold.holdActive && hold.holdReason) notes.push(hold.holdReason);
-  if (hold.blockers.length) notes.push(`Dependency: ${hold.blockers.join(", ")}`);
+  if (hold.activeBlockers?.length) notes.push(`Dependency: ${hold.activeBlockers.join(", ")}`);
   return notes.join(" · ") || null;
 }

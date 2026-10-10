@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { foldStatusLines } from "../work-model.js";
+import { foldStatusLines, projectWork } from "../work-model.js";
+import { readSecondmates } from "../secondmates.js";
 import { loadFirstmateHome, dashboardData } from "../server.js";
 import { emptyAgentState } from "../agent-state.js";
 import { parseStatusLine, parseTaskHold, decodeHoldReason } from "../firstmate-records.js";
@@ -79,7 +80,7 @@ for (const large of [false, true]) {
   test(`encoded captain holds retain reasons, dates and blockers for ${large ? "large" : "ordinary"} work`, async (t) => {
     const reason = "Choose (A or B)\nThen confirm café rollout";
     const body = large ? "  Large project\n" : "";
-    const home = await fixture(t, `## Queued\n- [ ] undated - Synthetic choice (repo: product) ${hold(reason)}\n${body}- [ ] deferred - Synthetic deferral blocked-by: dependency-a,dependency-b (repo: product) ${hold(reason)} (hold-until: 2099-11-01)\n${body}- [ ] blocked - Synthetic blocker blocked-by: dependency-a (repo: product)\n${body}- [ ] expired - Synthetic expired (repo: product) ${hold(reason)} (hold-until: 2020-01-01)\n${body}## Done\n- [x] closed - Synthetic closed (repo: product) ${hold(reason)}\n${body}`);
+    const home = await fixture(t, `## Queued\n- [ ] undated - Synthetic choice (repo: product) ${hold(reason)}\n${body}- [ ] deferred - Synthetic deferral blocked-by: dependency-a,dependency-b (repo: product) ${hold(reason)} (hold-until: 2099-11-01)\n${body}- [ ] blocked - Synthetic blocker blocked-by: dependency-a (repo: product)\n${body}- [ ] expired - Synthetic expired (repo: product) ${hold(reason)} (hold-until: 2020-01-01)\n${body}- [ ] dependency-a - Synthetic prerequisite (repo: product)\n- [ ] dependency-b - Synthetic prerequisite (repo: product)\n## Done\n- [x] closed - Synthetic closed (repo: product) ${hold(reason)}\n${body}`);
     await writeFile(path.join(home, "state/deferred.status"), "done [corr=0123456789abcdef] [at=1791635123]: Worker candidate ready\n");
     const split = (await read(home)).workSplit;
     const items = Object.fromEntries(split.items.map((item) => [item.id, item]));
@@ -128,4 +129,127 @@ test("structured review promotion remains available while backlog gates retain p
   const items = Object.fromEntries((await read(home)).workSplit.items.map((item) => [item.id, item]));
   assert.equal(items.held.status, "waiting");
   assert.equal(items.review.status, "review");
+});
+
+test("repeated canonical hold fields retain every edge and use producer scalar precedence", () => {
+  const reason = "Choose the final route";
+  const metadata = `(hold: Old reason) (hold-kind: external) (hold-until: 2020-01-01) ${hold(reason)} (hold-until: 2099-11-01) blocked-by: a blocked-by: b,c blocked-by: a`;
+  const parsed = parseTaskHold(metadata, false, "2026-11-01");
+  assert.deepEqual(parsed.blockers, ["a", "b", "c"]);
+  assert.equal(parsed.holdReason, reason);
+  assert.equal(parsed.holdKind, "captain");
+  assert.equal(parsed.holdUntil, "2099-11-01");
+  assert.equal(parsed.holdDeferred, true);
+});
+
+test("default hold clock expires at local midnight on both sides of UTC", (t) => {
+  const previousTimezone = process.env.TZ;
+  t.after(() => {
+    if (previousTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+  });
+  const metadata = "(hold: Waiting) (hold-kind: external) (hold-until: 2026-11-01)";
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-31T13:59:00Z") });
+  for (const [timezone, before, after] of [
+    ["Australia/Brisbane", "2026-10-31T13:59:00Z", "2026-10-31T14:30:00Z"],
+    ["America/Los_Angeles", "2026-11-01T06:59:00Z", "2026-11-01T07:30:00Z"],
+  ]) {
+    process.env.TZ = timezone;
+    t.mock.timers.setTime(Date.parse(before));
+    assert.equal(parseTaskHold(metadata, false).holdDeferred, true, timezone);
+    assert.equal(parseTaskHold(metadata, false).holdActive, true, timezone);
+    t.mock.timers.setTime(Date.parse(after));
+    assert.equal(parseTaskHold(metadata, false).holdDeferred, false, timezone);
+    assert.equal(parseTaskHold(metadata, false).holdActive, false, timezone);
+    assert.equal(parseTaskHold(metadata.replace("external", "captain"), false).holdActive, true, timezone);
+  }
+});
+
+for (const large of [false, true]) {
+  test(`complete backlog resolves dependencies for ${large ? "large" : "ordinary"} work`, async (t) => {
+    const body = large ? "  Large project\n" : "";
+    const backlog = (finishedA, finishedB) => `## Queued\n- [ ] dependent - Synthetic dependent blocked-by: a blocked-by: b blocked-by: missing (repo: obsolete) (repo: product)\n${body}- [ ] review - Synthetic review blocked-by: a blocked-by: b (repo: product)\n${body}- [ ] dangling - Synthetic legacy edge blocked-by: missing (repo: product)\n${body}${finishedA ? "" : "- [ ] a - Synthetic prerequisite (repo: product)\n"}## In flight\n${finishedB ? "" : "- [ ] b - Synthetic prerequisite (repo: product)\n"}## Done\n${finishedA ? "- [x] a - Synthetic prerequisite (repo: product)\n" : ""}${finishedB ? "- [x] b - Synthetic prerequisite (repo: product)\n" : ""}- [x] closed - Synthetic closed blocked-by: a (repo: product) (theme: Old) (theme: Final) (done 2020-01-01) (reported 2020-02-01)\n${body}`;
+    const home = await fixture(t, backlog(false, false));
+    await mkdir(path.join(home, "projects/product"), { recursive: true });
+    await writeFile(path.join(home, "state/review.meta"), "project=product\nvalidation_state=running\n");
+    await writeFile(path.join(home, "state/review.status"), "paused: Review gate\n");
+    for (const [finishedA, finishedB, activeBlockers] of [[false, false, ["a", "b"]], [true, false, ["b"]], [true, true, []], [false, false, ["a", "b"]]]) {
+      await writeFile(path.join(home, "data/backlog.md"), backlog(finishedA, finishedB));
+      const split = (await read(home)).workSplit;
+      const items = Object.fromEntries(split.items.map((item) => [item.id, item]));
+      assert.deepEqual(items.dependent.blockers, ["a", "b", "missing"]);
+      assert.deepEqual(items.dependent.activeBlockers, activeBlockers);
+      assert.equal(items.dependent.repository, "product");
+      assert.equal(items.dependent.status, activeBlockers.length ? "waiting" : "backlog");
+      assert.equal(items.review.status, activeBlockers.length ? "waiting" : "review");
+      assert.equal(items.dangling.status, "backlog");
+      assert.deepEqual(items.dangling.blockers, ["missing"]);
+      assert.deepEqual(items.dangling.activeBlockers, []);
+      assert.equal(items.closed.status, "newly-done");
+      assert.equal(items.closed.theme.name, "Final");
+      assert.equal(items.closed.completionAt, "2020-02-01");
+      assert.deepEqual(items.closed.activeBlockers, []);
+      assert.equal(items.closed.waitingOn, large ? "Nothing recorded" : null);
+      const displayed = large ? split.large.projects.find((item) => item.id === "dependent") : split.tight.backlog.items.find((item) => item.id === "dependent");
+      for (const waitingOn of [items.dependent.waitingOn, displayed.waitingOn]) {
+        if (!activeBlockers.length) assert.doesNotMatch(String(waitingOn), /Dependency:/);
+        else assert.equal(waitingOn, finishedA ? "Dependency: b" : "Dependency: a, b");
+      }
+    }
+  });
+
+  test(`captain-held transfers retain current wait for ${large ? "large" : "ordinary"} work`, async (t) => {
+    const home = await fixture(t, `## In flight\n- [ ] worker - Synthetic worker (repo: product)\n${large ? "  Large project\n" : ""}`);
+    const prefix = "working: Implementing\nneeds-decision [at=1] [key=route]: Choose\n";
+    const transfer = "captain-held [key=route] [at=2]: Tracked by captain choice\n";
+    await writeFile(path.join(home, "state/worker.meta"), "project=product\nvalidation_state=running\n");
+    await writeFile(path.join(home, "state/worker.status"), prefix + transfer);
+    const split = (await read(home)).workSplit;
+    const item = split.items[0];
+    assert.equal(item.status, "waiting");
+    assert.equal(item.sourceState, "captain-held");
+    assert.equal(item.waitingOn, "Tracked by captain choice");
+    assert.deepEqual(item.pendingIssues, []);
+    assert.equal(split.activeWorkerCount, 0);
+    const displayed = large ? split.large.projects[0] : split.tight.inProgress.items[0];
+    assert.equal(displayed.waitingOn, "Tracked by captain choice");
+    if (large) assert.equal(displayed.stage, "captain held");
+    for (const kind of ["ship", "scout", "secondmate", "unknown"]) {
+      const folded = foldStatusLines((prefix + transfer).trim().split("\n"), { kind });
+      const verified = await projectWork([{ id: "worker", state: folded.latest.state, pendingIssues: folded.pendingIssues,
+        inFlight: true, endpointLive: true, endpointEvidence: "live process incarnation", reviewRun: true }], emptyAgentState());
+      assert.equal(verified.items[0].status, "waiting");
+      assert.equal(verified.items[0].isLive, false);
+      assert.equal(verified.activeWorkerCount, 0);
+    }
+    await writeFile(path.join(home, "state/worker.status"), prefix + transfer + "working [at=3]: Resumed\nresolved [key=other] [at=4]: Unrelated answer\n");
+    const resumed = (await read(home)).workSplit.items[0];
+    assert.equal(resumed.sourceState, "working");
+    assert.equal(resumed.status, "review");
+    assert.equal(resumed.waitingOn, large ? "Nothing recorded" : null);
+  });
+}
+
+test("captain-held closes only its exact decision and remains current only until the next event", () => {
+  const prefix = ["working: Implementing", "needs-decision [key=route]: Choose", "needs-decision [key=other]: Another choice"];
+  const transfer = "captain-held [key=route]: Tracked by captain choice";
+  const folded = foldStatusLines([...prefix, transfer, "Continuation prose"]);
+  assert.equal(folded.latest.state, "captain-held");
+  assert.deepEqual(folded.pendingIssues.map((issue) => issue.key), ["other"]);
+  assert.equal(foldStatusLines(["working: Implementing", "needs-decision [key=route]: Choose", transfer, "resolved [key=other]: Answered"]).latest.state, "working");
+  assert.equal(foldStatusLines([...prefix, transfer, "done: Delivered"], { kind: "ship" }).pendingIssues.length, 0);
+});
+
+test("captain-held second mates display idle and stay separate from task work", async (t) => {
+  const home = await fixture(t, "## In flight\n- [ ] mate - Synthetic supervisor (repo: product)\n- [ ] task - Synthetic task (repo: product)\n");
+  await writeFile(path.join(home, "state/mate.meta"), "kind=secondmate\n");
+  const prefix = "working: Reviewing\nneeds-decision [key=route]: Choose\n";
+  await writeFile(path.join(home, "state/mate.status"), prefix + "captain-held [key=route]: Tracked by captain choice\n");
+  const options = { reader: { text: (file) => readFile(file, "utf8") }, parseMeta: (text) => Object.fromEntries(text.trim().split("\n").map((line) => line.split("="))), probe: async () => true };
+  const held = await readSecondmates(home, ["mate.meta", "mate.status"], options);
+  assert.equal(held.view.items[0].state, "idle");
+  assert.deepEqual((await read(home)).workSplit.items.map((item) => item.id), ["task"]);
+  await writeFile(path.join(home, "state/mate.status"), prefix + "captain-held [key=route]: Tracked by captain choice\nworking: Resumed\n");
+  const resumed = await readSecondmates(home, ["mate.meta", "mate.status"], options);
+  assert.equal(resumed.view.items[0].state, "live");
 });
