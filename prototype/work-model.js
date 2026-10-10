@@ -71,12 +71,18 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
   const events = lines.map((line, index) => ({ ...parseStatusLine(line), line, index }));
   const open = new Map();
   const resolved = new Set();
+  const decisionStates = ["blocked", "needs-decision"];
   const waitingStates = ["blocked", "paused", "needs-decision", "waiting"];
   const waitingEvents = new Map();
-  const close = (key) => {
+  const close = (key, phaseKey) => {
     open.delete(key);
-    for (const index of waitingEvents.get(key) || []) resolved.add(index);
-    waitingEvents.delete(key);
+    const remaining = (waitingEvents.get(key) || []).filter((index) => {
+      if (phaseKey !== undefined && !decisionStates.includes(events[index].state) && events[index].phaseKey !== phaseKey) return true;
+      resolved.add(index);
+      return false;
+    });
+    if (remaining.length) waitingEvents.set(key, remaining);
+    else waitingEvents.delete(key);
   };
   for (const event of events) {
     if (waitingStates.includes(event.state) && event.transitionAllowed) {
@@ -86,10 +92,10 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
     if (["done", "failed"].includes(event.state) && ["ship", "scout"].includes(kind)) {
       for (const key of open.keys()) close(key);
     } else if (event.transitionAllowed) {
-      if (["blocked", "needs-decision"].includes(event.state)) {
+      if (decisionStates.includes(event.state)) {
         open.delete(event.key);
         open.set(event.key, event);
-      } else if (["resolved", "captain-held"].includes(event.state)) close(event.key);
+      } else if (["resolved", "captain-held"].includes(event.state)) close(event.key, event.phaseKey);
     }
   }
   const latestEvent = events.filter((event) => event.state !== "update").at(-1);
