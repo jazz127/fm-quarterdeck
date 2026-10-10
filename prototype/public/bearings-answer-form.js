@@ -195,7 +195,7 @@ window.bearingsAnswerForm = (() => {
         // aria-disabled, not disabled: a disabled button would drop the captain's focus.
         send.setAttribute("aria-disabled", String(phase === "sending"));
         send.setAttribute("aria-busy", String(phase === "sending"));
-        send.textContent = phase === "sending" ? "Pending · batching…" : phase === "failed" ? "Retry send" : "Send";
+        send.textContent = phase === "sending" ? "Pending…" : phase === "failed" ? "Retry send" : "Send";
       }
       const edit = part(form, "edit");
       if (edit) { edit.hidden = !queuedLock; edit.setAttribute("aria-disabled", String(phase === "sending")); }
