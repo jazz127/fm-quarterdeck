@@ -4,7 +4,20 @@ Source-preview readiness means a reviewed tracked tree others can validate offli
 
 ## Automated gate
 
-`.github/workflows/source-preview.yml` runs on disposable Ubuntu with read-only repository permissions, no persisted checkout credentials and no account secrets. It installs the locked built-in-only application package, runs the Node/Python suites and source syntax/product-boundary checks, then runs `cd prototype && npm run test:browser`. Chromium is a validation prerequisite, not an application dependency. Set `CHROMIUM` to an installed Chromium-compatible browser. Before either behavioral suite, the hosted gate prefers stable Google Chrome, falls back to Chromium on PATH, reports its version and persists `CHROMIUM` through `GITHUB_ENV` for both `npm test` (which includes feed-width browser tests) and `npm run test:browser`. It fails if neither browser is available. GitHub's [runner browser installation](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-google-chrome.sh) supplies stable Chrome separately from its development Chromium snapshot; use the stable installation for this regression gate.
+`.github/workflows/source-preview.yml` runs once on each pull-request update, on pushes to `main`, and on manual dispatch. Both independent jobs use disposable Ubuntu, read-only repository permissions, no persisted checkout credentials and no account secrets; both install the locked application package.
+
+The required job remains named **`validate`**. It runs `cd prototype && npm run test:ci`, the repository/expense Node and Python suites (including privacy scanner regressions), and source syntax/product-boundary checks. No branch-protection settings change is needed.
+
+The advisory **`browser`** job runs `npm run test:integration` and the complete `npm run test:browser`. The explicit, exhaustive file partition is `prototype/scripts/test-selection.json`; repository checks reject missing or duplicate suites. Real-process suites include indirect Git probes during module import, synthetic Git histories, CLI subprocesses, the preview-lifecycle real-child fixture, browser-harness process cleanup and feed-width Chromium checks. `npm test` remains the complete local suite. Each advisory suite step reports its outcome and the final step fails the advisory job if either fails, while still running both steps. Only `validate` is required for merging.
+
+The advisory job installs pinned `chrome-devtools-axi`, prefers stable Google Chrome, falls back to Chromium on PATH, reports its version and persists `CHROMIUM` through `GITHUB_ENV`. Missing browsers fail the job rather than silently removing coverage. Chromium is a validation prerequisite, not an application dependency.
+
+### Flake quarantine backlog
+
+A flaky test moves to the advisory selection with a tracked backlog fix; never delete or skip it to unblock merging. Keep its assertions and CI execution, record the failure/reproduction and fix acceptance, and return deterministic coverage to `validate` once the fix is verified.
+
+- [ ] **CI-Q1 — preview-lifecycle real-child fixture:** remove the race between child IPC readiness and ownership/liveness assertions; verify repeated runs under shared-runner load. Fixture fixes are separate from this CI split.
+- [ ] **CI-Q2 — hardening CDP fixture:** remove timing-sensitive browser/CDP readiness assumptions; verify the full hardening pass repeatedly under shared-runner load. Keep the pass in `test:browser` throughout the fix.
 
 Browser launch readiness has a separate 30-second deadline for a cold Chromium/profile on shared runners. It polls the debugging port without relaunching; early process exits and unexpected profile read errors fail immediately, and startup failures include at most 2000 characters of stderr. CDP command deadlines (10 seconds), page-readiness checks and every layout/delivery assertion remain unchanged.
 

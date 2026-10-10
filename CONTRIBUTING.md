@@ -49,7 +49,7 @@ The server requires a clean committed checkout and pins its startup revision. Co
 - Keep private runtime files, generated profiles, logs, credentials, local Git metadata and task scratch out of the diff. Use `git diff --check` and inspect both staged and unstaged changes.
 - List commands actually run and results. Mark unavailable real-environment checks explicitly; never equate synthetic acceptance with live Firstmate integration or production readiness.
 
-The **Source preview checks** workflow runs the Node, Python, source-boundary and Chromium checks on pull requests. Documentation-only changes should still pass the repository checks; state when product tests were not rerun. CI has no deployment or publishing step.
+The **Source preview checks** workflow runs once per pull-request update and on pushes to `main`. Its required `validate` job runs deterministic application tests plus repository, expense, source-boundary and privacy checks. The separate advisory `browser` job runs real-process suites and Chromium checks. See the [CI split and tracked flake quarantine rule](docs/SOURCE-PREVIEW-VALIDATION.md#flake-quarantine-backlog); every suite remains in CI. Documentation-only changes should still pass the repository checks; state when product tests were not rerun. CI has no deployment or publishing step.
 
 ## Review and integration
 
