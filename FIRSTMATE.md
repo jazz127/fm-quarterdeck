@@ -105,9 +105,9 @@ preference record; it does not recursively load this reference.
   Re-list to confirm closure. Retry failed reply/ack without repeating an action
   already performed. Reading, a watcher acknowledgement or a receipt alone is
   not handling the note.
-- Each Captain's Call has **one text box**. A selected option is the explicit
-  answer relayed mechanically after confirmation. Text with no selected option
-  is a card thread note: Firstmate determines whether it answers, asks a question
+- Interpret Captain's Call submissions according to the
+  [answer and thread contract](prototype/BEARINGS.md#answers).
+  For a card thread note, Firstmate determines whether it answers, asks a question
   or changes the plan, and always replies in that card's thread explaining how
   it was taken. Record an actual answer in the captain's own words through the
   installed `fm-captain-hold.sh answer` owner; use its release mode for gated

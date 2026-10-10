@@ -15,8 +15,8 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Queue is accent-filled with an ink border; a merge Queue uses the amber mix.
 - Held cards keep their update notice at full strength, with no dimmed or outdated treatment.
 - Long titles, options, links and ids wrap so the full text stays readable on desktop and on a phone.
-- Thread history stays collapsed. A card with two or more entries shows an expand control with the entry count; one entry does not.
-- Each card has one text box, with Queue, Send and Edit beside it, and the hint "Pick an option to answer, or just type - Firstmate replies in the thread."
+- Thread disclosure follows the [card-thread contract](BEARINGS.md#card-threads).
+- Composer availability and controls follow the [answer contract](BEARINGS.md#answers).
 - Opening a thread shows the latest exchange above that box, the count of earlier messages, and a control that expands the same history.
 - Each card carries a small coloured dot beside the type chip, one colour per state: Active green, Queued amber, Sent blue, Procrastinated muted.
 - Both Sent labels, waiting for Firstmate to read and Firstmate is on it, use the Sent blue dot.

@@ -9,7 +9,7 @@ import { landedAckKey } from "./landed-ack.js";
 // Card threads (BEARINGS.md "Card threads"). Text in a Captain's Call card's one box, with
 // no option selected, sends the captain's note to Firstmate through the same guarded,
 // idempotent inbox note the answers and review notes use, under a request id that names
-// the card key. Firstmate answers with `fm-inbox.sh reply <note id>`, or in the main chat.
+// the card key. Firstmate answers with `fm-inbox.sh reply <note id>`, or for local cards in the main chat.
 // The thread view is a
 // read-only, mechanical join of the card's inbox notes, their replies, and Firstmate's own
 // primary-transcript messages that mention the card's task id. No model, no writes under
@@ -173,8 +173,9 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
     while (sent.size > MAX_REMEMBERED) sent.delete(sent.keys().next().value);
   };
   return {
-    // A question may be asked about any open card, answerable or not. A retry of the same
-    // request id resends the identical note (idempotent in Firstmate) even after the card left.
+    // A question may be asked about an interactive open card, answerable or not.
+    // A retry of the same request id resends the identical note (idempotent in Firstmate)
+    // even after the card left.
     async submit(body, model) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
