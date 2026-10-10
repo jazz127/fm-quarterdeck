@@ -89,7 +89,7 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
       if (!waitingEvents.has(event.key)) waitingEvents.set(event.key, []);
       waitingEvents.get(event.key).push(event.index);
     }
-    if (["done", "failed"].includes(event.state) && ["ship", "scout"].includes(kind)) {
+    if (event.hasSeparator && ["done", "failed"].includes(event.state) && ["ship", "scout"].includes(kind)) {
       for (const key of open.keys()) close(key);
     } else if (event.transitionAllowed) {
       if (decisionStates.includes(event.state)) {

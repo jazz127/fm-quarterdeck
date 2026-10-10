@@ -140,6 +140,40 @@ test("ship terminal declarations clear decisions while unknown kinds preserve th
   }
 });
 
+for (const kind of ["ship", "scout", "unknown"]) {
+  for (const terminal of ["done", "failed"]) {
+    for (const separator of [false, true]) {
+      for (const timeTag of ["", " [at=10:30]"]) {
+        const line = `${terminal} [key=other]${timeTag}${separator ? ": Worker outcome" : ""}`;
+        test(`${kind} decision fold after ${line}`, () => {
+          assert.equal(parseStatusLine(line).hasSeparator, separator);
+          const folded = foldStatusLines(["working: Implementing", "needs-decision [key=route]: Choose route", line], { kind });
+          const clearsDecision = separator && ["ship", "scout"].includes(kind);
+          assert.deepEqual(folded.pendingIssues, clearsDecision ? [] : [{ key: "route", state: "needs-decision", text: "Choose route" }]);
+          if (!clearsDecision) {
+            assert.equal(classifyCurrent({ state: folded.latest.state, pendingIssues: folded.pendingIssues }), "captain-action");
+          }
+        });
+      }
+    }
+  }
+}
+
+test("colonless keyed decisions and resolutions retain their separate transition grammar", () => {
+  for (const kind of ["ship", "scout", "unknown"]) {
+    for (const timeTag of ["", " [at=10:30]"]) {
+      for (const decision of ["needs-decision", "blocked"]) {
+        const opener = `${decision} [key=route]${timeTag}`;
+        const folded = foldStatusLines([opener, `resolved [key=other]${timeTag}`], { kind });
+        assert.deepEqual(folded.pendingIssues, [{ key: "route", state: decision, text: opener }]);
+        for (const closer of ["resolved", "captain-held"]) {
+          assert.deepEqual(foldStatusLines([opener, `${closer} [key=route]${timeTag}`], { kind }).pendingIssues, []);
+        }
+      }
+    }
+  }
+});
+
 test("home adapter and dashboard count a multi-field decision and close only its matching key", async (t) => {
   const home = await fixture(t, "## In flight\n- [ ] route - Synthetic work (repo: product)\n");
   const status = "working: Implementing\nneeds-decision [at=1791635123] [key=route-choice]: Choose a route\n";

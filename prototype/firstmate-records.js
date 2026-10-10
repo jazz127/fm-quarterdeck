@@ -2,17 +2,18 @@
 // tokens; fm-hold-reason-lib.sh owns the reversible reason encoding.
 export function parseStatusLine(line) {
   const match = line.match(/^\s*([a-z-]+)((?:\s+corr=[a-f0-9]{16})*)(\s*(?:\[[^\]]*\]\s*)*)(?::\s*(.*))?$/i);
-  if (!match) return { state: "update", text: line, fields: [], key: null, phaseKey: null, transitionAllowed: false };
+  if (!match) return { state: "update", text: line, fields: [], key: null, phaseKey: null, transitionAllowed: false, hasSeparator: false };
   const fields = [...match[3].matchAll(/\[([^=\]]+)=([^\]]*)\]/g)].map(([, name, value]) => ({ name, value }));
   const stated = fields.find((field) => field.name === "key");
   const noteKey = !stated && match[4]?.match(/^\[key=([^\]]*)\]\s*/);
   const key = stated ? stated.value : noteKey ? noteKey[1] : "default";
   const validKey = /^[A-Za-z0-9._-]+$/.test(key);
-  const declared = match[4] !== undefined || Boolean(stated);
+  const hasSeparator = match[4] !== undefined;
+  const declared = hasSeparator || Boolean(stated);
   const text = noteKey && validKey ? match[4].slice(noteKey[0].length) : match[4] ?? line;
   const transitionAllowed = declared && validKey && (!key.startsWith("pending-reply-") || /^pending-reply-[^:]*:/.test(text));
   return { state: declared ? match[1].toLowerCase() : "update", text, fields, key: validKey ? key : null,
-    phaseKey: validKey && (stated || noteKey) ? key : null, transitionAllowed };
+    phaseKey: validKey && (stated || noteKey) ? key : null, transitionAllowed, hasSeparator };
 }
 
 export function decodeHoldReason(value) {
