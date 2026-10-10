@@ -7,7 +7,7 @@ import { configuredStatePath } from "./agent-state.js";
 // Quarterdeck-only viewing state for Just landed cards. This file lives beside
 // FM_QUARTERDECK_STATE_PATH and is never a Firstmate record or an answer.
 export const LANDED_ACK_SCHEMA = "fm-quarterdeck-landed-ack.v1";
-const KEY = /^landed:[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+const KEY = /^landed:[A-Za-z0-9][A-Za-z0-9._-]{0,159}(?::[0-9a-f]{16})?$/;
 const REV = /^[0-9a-f]{16}$/;
 const CAP = 200;
 

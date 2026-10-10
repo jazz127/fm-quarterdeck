@@ -62,7 +62,7 @@ window.bearingsLanded = (() => {
       return histories.get(key);
     };
     const cards = () => Array.isArray(model.landed) ? model.landed : [];
-    const acknowledged = (card) => acks[card.key] === card.rev;
+    const acknowledged = (card) => (acks[card.key] ?? acks[`landed:${card.task}`]) === card.rev;
     const newCount = () => cards().filter((card) => !acknowledged(card)).length;
     const nodeOf = (key) => [...list.querySelectorAll("[data-landed-key]")].find((node) => node.getAttribute("data-landed-key") === key) || null;
 

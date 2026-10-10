@@ -489,9 +489,10 @@ function landedSection(raw) {
   for (const row of raw.landed) {
     const id = object(row) && typeof row.id === "string" && TASK_ID.test(row.id) ? row.id : null;
     const what = id ? publicText(row.what, Infinity) : null;
-    if (!id || !what || seen.has(id)) { landedInvalid += 1; continue; }
-    seen.add(id);
-    const owner = token(row.owner);
+    const owner = id ? token(row.owner) : null;
+    const key = `landed:${id}${owner && owner !== "(main)" ? `:${shortHash(owner)}` : ""}`;
+    if (!id || !what || seen.has(key)) { landedInvalid += 1; continue; }
+    seen.add(key);
     let { url, artifact } = landedArtifact(row.artifact);
     const backlogTitle = owner === "(main)" ? publicText(row.backlogTitle, Infinity) : null;
     if (!url && owner === "(main)") {
@@ -500,7 +501,10 @@ function landedSection(raw) {
     }
     const repo = repoName(row.repo) || (owner === "(main)" ? repoName(row.backlogRepo) : null);
     const at = owner === "(main)" ? newerAt(durableDate(row.landedAt), durableDate(row.backlogLandedAt)) : null;
-    landed.push(withRev({ key: `landed:${id}`, type: "landed", task: id, what, ...(backlogTitle ? { backlogTitle } : {}), repo, owner, url, artifact, clock: { label: "Landed", at } }));
+    // Retain the legacy revision (which already includes owner) so existing
+    // acknowledgements still match only the exact landing they recorded.
+    const card = withRev({ key: `landed:${id}`, type: "landed", task: id, what, ...(backlogTitle ? { backlogTitle } : {}), repo, owner, url, artifact, clock: { label: "Landed", at } });
+    landed.push({ ...card, key });
   }
   return { landed, landedInvalid };
 }

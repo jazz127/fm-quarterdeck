@@ -4,6 +4,7 @@ import { displayAnswer } from "./bearings-answer.js";
 import { discoverPrimarySources, mentionsTask, recordTurns } from "./chat-asks.js";
 import { createHistoryReader } from "./history-reader.js";
 import { inboxReceipts, noteWithRequestId } from "./inbox.js";
+import { landedAckKey } from "./landed-ack.js";
 
 // Card threads (BEARINGS.md "Card threads"). Text in a Captain's Call card's one box, with
 // no option selected, sends the captain's note to Firstmate through the same guarded,
@@ -33,7 +34,7 @@ export class ThreadRefused extends Error {
 const refuse = (status, code, message) => { throw new ThreadRefused(status, code, message); };
 const bytes = (text) => Buffer.byteLength(text, "utf8");
 
-export const validCardKey = (key) => typeof key === "string" && CARD_KEY.test(key);
+export const validCardKey = (key) => typeof key === "string" && (CARD_KEY.test(key) || landedAckKey(key));
 // The card key is embedded verbatim when it fits the inbox id grammar; a longer key is
 // replaced by its hash, and the note's tagged fence still names the exact key.
 export const threadKeyPart = (key) => INBOX_ID.test(`${PREFIX}${key}:${"0".repeat(36)}`) ? key : `h-${shortHash(key)}`;

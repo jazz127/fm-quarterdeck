@@ -24,9 +24,9 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 - `cards[]`, in snapshot order:
   - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
   - `merge:<task>` for each `contributions.captain` row without a live decision for the same task: `{key, type:"merge", task, kind, url, reason, owner, repo, checkedAt, answer, rev}`. `url` is `https:` only, otherwise `null`.
-  - `landed:<task>` for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
+  - `landed:<task>` (main/unknown owner) or `landed:<task>:<owner hash>` (remote owner) for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
   - `answer` is `null` (answer in chat) or `{question, options[{value,label,hint}], recommend, close, freeform:true}`; see Answers.
-  - `rev` is a 16-hex sha256 of the card's canonical JSON; an unchanged card keeps its `rev`.
+  - `rev` is a 16-hex sha256 of the card's canonical JSON; landed cards use their legacy `landed:<task>` key in that calculation for acknowledgement compatibility. An unchanged card keeps its `rev`.
 - `coverage`: `{known, checked, complete, provenClear, captainOmitted, unmeasuredHomes}`. Say "Nothing needs your action right now" only when `provenClear`; otherwise "No decision is recorded · checked X of Y".
 - `omitted[]`: `{kind:"deferred-holds", count}` (blocked, dated or aged holds not shown), `{kind:"decisions-bound", shown, total}`, `{kind:"invalid-rows", count}`, and `{kind:"invalid-landed", count}` when a landed row is dropped.
 - Model `rev` hashes `cards`, `coverage`, `omitted`, and `landed` when any landed card is present. It never hashes the snapshot clock, so an unchanged Captain's Call is never pushed again. An empty landed list leaves the hash unchanged.
@@ -313,7 +313,8 @@ A desktop width keeps both columns, with the same 22px gap, and does not show th
 The source is the same guarded snapshot.
 There is no board builder and no read of another home.
 Each row supplies `id`, `what`, `artifact` and `owner`.
-The card key is `landed:<id>`.
+The card key is `landed:<id>` for `(main)` or an unknown owner, and `landed:<id>:<owner hash>` for a remote owner. The owner hash is the 16-hex `shortHash` of the owner label; identities stay stable when other homes appear, disappear or reorder.
+Duplicate detection uses this owner/task identity, so same-named tasks in different homes remain distinct.
 `what` stays the snapshot text, path-redacted, and is the card's identity.
 For a `(main)` landing, the selected home's checked backlog line supplies `backlogTitle`, using the same title split as an unchecked decision title.
 An unchecked line does not supply a landed title.
@@ -332,6 +333,7 @@ A missing `landed` array yields an empty column and does not make Captain's Call
 Acknowledge is Quarterdeck viewing state in `quarterdeck-landed-acknowledgements.json`, beside `FM_QUARTERDECK_STATE_PATH` and outside `FM_HOME`.
 `POST /api/bearings/landed/ack` with exactly `{key}` records the open card's current `rev`.
 The card stays hidden while that rev matches.
+Existing `landed:<id>` acknowledgements remain valid for the exact owner-specific revision they recorded. Landed revisions retain their legacy calculation, which includes the owner; an old acknowledgement cannot hide another home's landing.
 A later landing with a different rev shows again.
 `GET /api/bearings/landed/acks` returns `{schema:"fm-quarterdeck-landed-ack.v1", acks}`.
 **Acknowledged (N)** shows the hidden cards and does not clear the record.
@@ -341,7 +343,7 @@ Nothing is written under `FM_HOME`.
 The model must be `ready` or `stale`, and the key must be a landed card still on that model, or the post is 409.
 The body is at most 1 KiB, same-origin JSON, with no query.
 The text box is a follow-up, not an answer and not Procrastinate.
-Queue, then Send, posts `POST /api/bearings/thread` with `{requestId, key, text}` where `key` is `landed:<task id>`.
+Queue, then Send, posts `POST /api/bearings/thread` with `{requestId, key, text}` where `key` is the landing's owner/task card key.
 Firstmate replies in that thread.
 The note says nothing was decided.
 There is no Procrastinate control on these cards.
@@ -350,7 +352,7 @@ The model rev includes landed cards when any are present.
 ## Card threads
 
 The one text box opens a thread scoped to one card when no option is selected.
-Its stable id is the card key (`decision:<task>`, `merge:<task>`, `chat:<16 hex>`, `landed:<task>`).
+Its stable id is the card key (`decision:<task>`, `merge:<task>`, `chat:<16 hex>`, `landed:<task>` or `landed:<task>:<owner hash>`).
 There is no model call: Quarterdeck relays the captain's note and joins existing records; Firstmate answers.
 
 - **Asking** (`public/bearings-answer-form.js` sends; `public/bearings-thread-panel.js` shows the history): text with no option selected is the thread note.

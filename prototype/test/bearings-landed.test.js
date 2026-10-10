@@ -3,14 +3,125 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { backlogLandedEvidence, contentRevision, createSnapshotRunner, normalizeSnapshot } from "../bearings.js";
 import { createThreadRelay, taggedEnvelope } from "../bearings-thread.js";
 import { createLandedAckStore, landedAckPath } from "../landed-ack.js";
 import { createServer } from "../server.js";
+import { callDom, fakeTimers } from "./helpers/call-dom.js";
 
 const fixture = JSON.parse(await readFile(new URL("./fixtures/bearings/two-calls.json", import.meta.url), "utf8"));
 const REV = "a".repeat(16);
 const uuid = "00000000-0000-4000-8000-000000000009";
+
+test("native same-named landings retain independent identities and legacy acknowledgements", async (context) => {
+  // Oracle: round-two native fm-bearings.v1 output from unmodified Firstmate,
+  // backed by two home-summary caches. Both checked items must appear, while
+  // the legacy acknowledgement must hide only the owner/revision it recorded.
+  const raw = JSON.parse(await readFile(new URL("./fixtures/bearings/landings-native.json", import.meta.url), "utf8"));
+  const content = normalizeSnapshot(raw);
+  assert.deepEqual(content.landed.map(card => [card.task, card.owner, card.what]), [
+    ["cached-landed", "landings-mate", "Remote cached release notes"],
+    ["cached-landed", "landings-other", "Independent other release notes"],
+  ]);
+  assert.equal(new Set(content.landed.map(card => card.key)).size, 2);
+  assert.deepEqual(content.omitted, []);
+  const [first, second] = content.landed;
+  const reversed = normalizeSnapshot({ ...raw, landed: [...raw.landed].reverse() });
+  assert.deepEqual(reversed.landed, [...content.landed].reverse(), "keys and revisions do not depend on row order");
+  assert.deepEqual(normalizeSnapshot({ ...raw, landed: [raw.landed[1]] }).landed, [second], "keys survive another home's removal");
+  const duplicate = normalizeSnapshot({ ...raw, landed: [...raw.landed, raw.landed[0]] });
+  assert.deepEqual(duplicate.landed, content.landed);
+  assert.deepEqual(duplicate.omitted, [{ kind: "invalid-landed", count: 1 }]);
+  const main = normalizeSnapshot({ ...raw, landed: [{ ...raw.landed[0], owner: "(main)" }, ...raw.landed] });
+  assert.equal(main.landed.length, 3);
+  assert.equal(main.landed[0].key, "landed:cached-landed", "main-home persisted keys stay compatible");
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "qd-landed-collision-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const env = { FM_QUARTERDECK_STATE_PATH: path.join(root, "presentation.json") };
+  // This is the exact legacy revision captured before the identity fix, not a
+  // revision recomputed with the new key rule.
+  await writeFile(landedAckPath(env), JSON.stringify({ schema: "fm-quarterdeck-landed-ack.v1", acks: { "landed:cached-landed": "9de0c12bdf23034c" } }));
+  const revision = "c".repeat(40);
+  const server = createServer(env, {
+    revisionResolver: { initial: revision, snapshot: async () => revision },
+    bearingsSource: { current: () => ({ ...content, state: "ready" }), touch() {}, freshness: () => ({ state: "ready" }), close() {} },
+    quotaReader: async () => ({ providers: [] }),
+    costReader: async () => ({}),
+    lanesReader: async () => ({ lanes: [] }),
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const response = await fetch(`${base}/api/bearings`);
+  assert.equal(response.status, 200);
+  const model = await response.json();
+  assert.deepEqual(model.landed, content.landed);
+
+  const dom = callDom();
+  const window = {};
+  for (const name of ["bearings-view.js", "bearings-landed.js"]) {
+    vm.runInNewContext(await readFile(new URL(`../public/${name}`, import.meta.url), "utf8"), { window, URL, TextEncoder });
+  }
+  const list = dom.document.createElement("div");
+  dom.document.body.append(list);
+  let loaded;
+  const loading = new Promise(resolve => { loaded = resolve; });
+  const board = window.bearingsLanded.createController({
+    list, doc: dom.document, timers: fakeTimers(),
+    fetchImpl: async (url, options) => {
+      const result = await fetch(`${base}${url}`, options);
+      if (url === "/api/bearings/landed/acks") {
+        const body = await result.json();
+        loaded();
+        return { ok: result.ok, json: async () => body };
+      }
+      return result;
+    },
+  });
+  context.after(() => board.destroy());
+  await loading;
+  await new Promise(resolve => setImmediate(resolve));
+  board.update(model);
+  const nodes = [...list.querySelectorAll("[data-landed-key]")];
+  assert.equal(nodes.length, 2);
+  assert.match(nodes[0].textContent, /Remote cached release notes/);
+  assert.match(nodes[1].textContent, /Independent other release notes/);
+  assert.equal(nodes[0].hidden, true, "the existing owner-specific acknowledgement survives");
+  assert.equal(nodes[1].hidden, false, "another home's completion stays visible");
+  assert.equal(board.newCount(), 1);
+  const post = key => fetch(`${base}/api/bearings/landed/ack`, {
+    method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ key }),
+  });
+  const saved = await post(second.key);
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).acks[second.key], second.rev);
+  const persisted = await createLandedAckStore(env).read();
+  assert.equal(persisted.acks[second.key], second.rev, "scoped keys survive store reload");
+  assert.equal(persisted.acks["landed:cached-landed"], "9de0c12bdf23034c");
+  board.update({ ...model, landed: [] });
+  board.update({ ...model, landed: [{ ...first, rev: "b".repeat(16) }, second] });
+  assert.equal(list.querySelector(`[data-landed-key="${first.key}"]`).hidden, false, "a changed landing reappears");
+});
+
+test("native same-named landings relay independent follow-up threads", async () => {
+  const raw = JSON.parse(await readFile(new URL("./fixtures/bearings/landings-native.json", import.meta.url), "utf8"));
+  const model = normalizeSnapshot(raw);
+  assert.equal(model.landed.length, 2);
+  const notes = [];
+  const relay = createThreadRelay({ home: "/synthetic/home", receipts: async () => ({ pending: [], handled: [], replies: [] }),
+    transcript: async () => ({ turns: [], omitted: false }),
+    note: async (_home, id, text) => { notes.push({ id, text }); return { id: `note-${notes.length}`, outcome: "created" }; },
+  });
+  for (const [index, card] of model.landed.entries()) {
+    const requestId = index ? "00000000-0000-4000-8000-000000000010" : uuid;
+    const accepted = await relay.submit({ requestId, key: card.key, text: `Follow up with ${card.owner}` }, model);
+    assert.equal(accepted.key, card.key);
+  }
+  assert.notEqual(notes[0].id, notes[1].id, "distinct cards have independent deliveries");
+  assert.deepEqual(notes.map(note => taggedEnvelope(note.text, "fm-quarterdeck-thread").key), model.landed.map(card => card.key));
+});
 
 test("landed rows become cards with a full link or local main, and only main gets a clock", () => {
   const raw = { ...fixture, landed: [

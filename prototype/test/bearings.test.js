@@ -476,9 +476,10 @@ test("cached native decisions reach the bearings API and Overview alongside thei
     "decision:cached-mate/cached-decision", "cached-mate/cached-decision", "cached-mate",
     "Choose the cached remote rollout: Choose blue or green",
   ]]);
-  assert.deepEqual(model.landed.map(card => [card.key, card.owner, card.what]), [[
-    "landed:cached-landed", "cached-mate", "Remote cached release notes",
+  assert.deepEqual(model.landed.map(card => [card.task, card.owner, card.what]), [[
+    "cached-landed", "cached-mate", "Remote cached release notes",
   ]]);
+  assert.match(model.landed[0].key, /^landed:cached-landed:[0-9a-f]{16}$/);
   assert.deepEqual(model.omitted, []);
   const window = {};
   vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
