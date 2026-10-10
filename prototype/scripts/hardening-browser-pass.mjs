@@ -46,10 +46,12 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   browser = await openBrowser();
   const { command, evaluate, until } = browser;
+  let interception;
   const reload = async () => {
     // Page.reload acknowledges the command before replacing the document.
     // Otherwise a readiness predicate can match the previous page's state.
     await evaluate("window.syntheticReloadPending = true");
+    await interception?.beforeNavigation();
     await command("Page.reload");
     await until("!window.syntheticReloadPending && document.readyState === 'complete'");
   };
@@ -227,7 +229,7 @@ try {
       holdConfig = true; armConfig = false;
     }
   });
-  const interception = fetchFixture(browser, (paused, act, stale) => {
+  interception = fetchFixture(browser, (paused, act, stale) => {
     const { request } = paused;
     if (stale) return;
     if (request.method === "GET" && serverDown) {

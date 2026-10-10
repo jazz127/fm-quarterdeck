@@ -32,6 +32,23 @@ test('interception shutdown drains issued actions and leaves later pauses to Fet
   assert.deepEqual(f.commands.map(c => c.method), ['Fetch.continueRequest', 'Fetch.disable']);
 });
 
+test('navigation drains in-flight fulfill and skips outgoing pauses until replacement commits', async () => {
+  const response = Promise.withResolvers();
+  const f = fixture(method => method === 'Fetch.fulfillRequest' ? response.promise : Promise.resolve(),
+    (_request, act) => act('Fetch.fulfillRequest', { responseCode: 200 }));
+  f.pause('first');
+  let drained = false;
+  const navigation = f.interception.beforeNavigation().then(() => { drained = true; });
+  f.pause('outgoing');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false, 'reload must wait for the outstanding fulfill');
+  assert.equal(f.commands.length, 1, 'outgoing pauses cannot start commands during navigation');
+  response.resolve(); await navigation;
+  f.navigate('new'); f.pause('current', 'new');
+  await f.interception.stop();
+  assert.deepEqual(f.commands.map(c => c.method), ['Fetch.fulfillRequest', 'Fetch.fulfillRequest', 'Fetch.disable']);
+});
+
 test('held config from a replaced document is excluded while current config still continues', async () => {
   const held = [];
   const f = fixture(() => Promise.resolve(), request => held.push(request));
