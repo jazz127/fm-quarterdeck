@@ -113,6 +113,44 @@ test('unified integration opt-in enforces complete lane syntax only in the selec
   assert.match((await check()).diagnostic, /already active/);
 });
 
+test('Stop input final reply takes precedence over an unwrapped interim transcript message', async t => {
+  const f = await fixture(t);
+  await f.message('Checking the current state.');
+  f.input.last_assistant_message = '[fm-lane General]\nAll done.\n[end General]';
+  assert.deepEqual(await checkStop(f.input, { home: f.home, configDir: f.configDir, enforceLanes: true }), {});
+});
+
+test('Stop input unwrapped final reply blocks even when the transcript is wrapped', async t => {
+  const f = await fixture(t);
+  await f.message('[fm-lane General]\nChecking the current state.\n[end General]');
+  f.input.last_assistant_message = 'All done.';
+  assert.match((await checkStop(f.input, { home: f.home, configDir: f.configDir, enforceLanes: true })).reason, /Wrap the complete/);
+});
+
+test('Stop input without a final reply retains transcript fallback behavior', async t => {
+  const f = await fixture(t);
+  const check = () => checkStop(f.input, { home: f.home, configDir: f.configDir, enforceLanes: true });
+  await f.message('All done.');
+  assert.equal((await check()).decision, 'block');
+  await f.message('[fm-lane General]\nAll done.\n[end General]');
+  assert.deepEqual(await check(), {});
+});
+
+test('Stop input final reply still enforces holds and primary-session confinement', async t => {
+  const f = await fixture(t);
+  await f.message('All done.');
+  f.input.last_assistant_message = 'ACTION NEEDED: unfiled';
+  assert.match((await f.check()).reason, /captain hold/);
+  f.input.last_assistant_message = 'ACTION NEEDED: choose [task:hold-a]';
+  assert.deepEqual(await f.check(), {});
+  f.input.last_assistant_message = 'ACTION NEEDED: unfiled';
+  f.input.cwd = f.root;
+  assert.match((await f.check()).diagnostic, /cwd differs/);
+  f.input.cwd = f.home;
+  f.input.transcript_path = path.join(f.root, 'other.jsonl');
+  assert.match((await f.check()).diagnostic, /not confined/);
+});
+
 test('explicit installer preserves unrelated settings and uninstalls only exact pinned entry', async t => {
   const f = await fixture(t), file = path.join(f.root, 'settings.json');
   const existing = { permissions: { allow: ['Read'] }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other' }] }] } };
