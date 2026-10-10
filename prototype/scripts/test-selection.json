@@ -16,7 +16,7 @@
     "test/enumerated-options.test.js",
     "test/filter-view.test.js",
     "test/firstmate-activity.test.js",
-    "test/fm-lanes-ownership.test.js",
+    "test/fmqd-lanes-ownership.test.js",
     "test/health-preferences-ui.test.js",
     "test/history-reader.test.js",
     "test/inbox-batcher.test.js",
