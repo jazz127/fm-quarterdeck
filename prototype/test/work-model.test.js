@@ -20,7 +20,7 @@ test("explicit taxonomy validation refuses dangling assignments, duplicates and 
 test("ordinary current-state classification preserves existing status precedence", () => {
   const input = { inFlight: true, endpointLive: true, state: "working" };
   assert.equal(classifyCurrent(input), "active");
-  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "needs-decision", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", retained: true }, "cleanup"], [{ state: "working", pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
+  for (const [extras, expected] of [[{ state: "done" }, "newly-done"], [{ state: "paused" }, "waiting"], [{ state: "blocked" }, "waiting"], [{ state: "needs-decision" }, "captain-action"], [{ retained: true }, "cleanup"], [{ endpointLive: false }, "unknown"], [{ endpointLive: null }, "unknown"], [{ inFlight: false }, "unknown"], [{ queued: true, inFlight: false }, "backlog"], [{ state: "needs-decision", pendingIssues: [{ state: "paused" }] }, "captain-action"], [{ state: "done", pendingIssues: [{ state: "paused" }] }, "waiting"], [{ state: "done", retained: true }, "cleanup"], [{ state: "working", pendingIssues: [{ state: "needs-decision" }] }, "captain-action"]]) assert.equal(classifyCurrent({ ...input, ...extras }), expected);
 });
 
 test("review run signal classifies current task records and contributes hierarchy counts", async (context) => {
@@ -110,19 +110,21 @@ test("structured review run state governs promotion independently of step prose"
   }
 });
 
-test("review promotion preserves ordinary pending-wait precedence and captain decisions", async (context) => {
+test("review promotion preserves producer decision folding and captain precedence", async (context) => {
   const home = await temporary(context); await mkdir(path.join(home, "data")); await mkdir(path.join(home, "state"));
   await writeFile(path.join(home, "data/projects.md"), "- Product - Product work\n");
   await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] review-task - Work (repo: /synthetic/product)\n");
   const owner = createAgentStateOwner(path.join(home, "quarterdeck-state.json"));
   const vmContext = { window: {} }; vm.runInNewContext(await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8"), vmContext);
   for (const [lines, ordinary, reviewing, completion] of [
-    [["paused [key=gate]: waiting", "needs-decision: choose a route"], "waiting", "waiting", null],
+    [["paused [key=gate]: waiting", "needs-decision: choose a route"], "captain-action", "captain-action", null],
     [["paused [key=gate]: waiting", "needs-decision [key=choice]: choose a route"], "captain-action", "captain-action", null],
     [["needs-decision: choose a route"], "captain-action", "captain-action", null],
-    [["needs-decision [key=choice]: choose a route", "done: candidate ready"], "captain-action", "captain-action", "newly-done"],
+    // Metadata with no kind is a ship; its terminal declaration supersedes
+    // status decisions under Firstmate's fold contract.
+    [["needs-decision [key=choice]: choose a route", "done: candidate ready"], "newly-done", "review", "newly-done"],
     [["paused [key=gate]: waiting", "blocked: waiting at review gate"], "waiting", "review", null],
-    [["paused [key=gate]: waiting", "done: candidate ready"], "waiting", "review", "newly-done"],
+    [["paused [key=gate]: waiting", "done: candidate ready"], "newly-done", "review", "newly-done"],
     [["done: candidate ready"], "newly-done", "review", "newly-done"],
   ]) {
     await writeFile(path.join(home, "state/review-task.status"), `${lines.join("\n")}\n`);
