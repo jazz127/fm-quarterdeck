@@ -1396,6 +1396,12 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         openBearingsStream(request, response);
         return;
       }
+      if (url.pathname === "/api/inbox/pending" && request.method === "GET") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        try { await sendJson(request, response, 200, { items: await inboxBatcher.pending() }); }
+        catch { await sendJson(request, response, 503, { error: "Pending inbox state unavailable; saved items retained" }); }
+        return;
+      }
       if (url.pathname === "/api/inbox/send-now" && request.method === "POST") {
         if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }

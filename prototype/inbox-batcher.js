@@ -45,7 +45,9 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
     await mkdir(path.dirname(file), { recursive: true });
     const temporary = `${file}.${randomUUID()}.tmp`;
     const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify(state)); await handle.sync(); } finally { await handle.close(); }
+    const serialized = JSON.stringify(state);
+    if (Buffer.byteLength(serialized) > 64 * 1024 * 1024) { await handle.close(); await unlink(temporary); throw new Error("Quarterdeck outbox full; delivery refused, retain client draft"); }
+    try { await handle.writeFile(serialized); await handle.sync(); } finally { await handle.close(); }
     await rename(temporary, file);
     const directory = await open(path.dirname(file), "r");
     try { await directory.sync(); } finally { await directory.close(); }
@@ -91,6 +93,11 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
           throw error;
         }
       }
+    }).catch((error) => {
+      // A failed earlier batch or disk/lock operation must also release later HTTP
+      // callers. Their payloads stay saved; each client can retry visibly.
+      for (const batch of state.batches.filter((entry) => !entry.receipt)) settle(batch, error);
+      throw error;
     });
   }
   async function note(_home, id, text, { record, immediate = false } = {}) {
@@ -126,5 +133,13 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   }
   // Recovery is independent of the submitting page's lifetime. A restart resumes saved work.
   if (home) void ready.then(schedule).catch(() => {});
-  return { note, receipts, flush, close() { closed = true; clearTimeout(timer); } };
+  async function pending() {
+    await ready;
+    // Atomic snapshots are readable even when a writer holds an abandoned lock.
+    await load();
+    return state.batches.filter((batch) => !batch.receipt).flatMap((batch) => batch.items.map((item) => ({
+      requestId: item.id, text: item.text, key: item.record?.key || null,
+    })));
+  }
+  return { note, receipts, flush, pending, close() { closed = true; clearTimeout(timer); } };
 }
