@@ -2967,6 +2967,15 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
   }
 });
 
+test("skip link focuses the main stage without changing the route", () => {
+  const app = ui();
+  let prevented = false;
+  app.node(".skip-link").dispatchEvent({ type: "click", preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(app.run("document.activeElement"), app.node("#main-stage"));
+  assert.equal(app.run("window.location.hash"), "#lanes");
+});
+
 test("phone fleet and kind tabs follow arrow, Home and End keys", () => {
   const app = ui();
   const lanes = app.node("#mobile-lanes-tab");

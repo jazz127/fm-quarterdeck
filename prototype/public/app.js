@@ -2190,6 +2190,11 @@ function setMobileFilterTab(tab, focus = false) {
     }
   }
 }
+$(".skip-link").addEventListener("click", (event) => {
+  // The hash router reads every fragment as a view. Following #main-stage would leave the current page.
+  event.preventDefault();
+  $("#main-stage").focus();
+});
 for (const [name, id] of [["lanes", "#mobile-lanes-tab"], ["kinds", "#mobile-kinds-tab"]]) {
   $(id).addEventListener("click", () => setMobileFilterTab(name));
   $(id).addEventListener("keydown", (event) => {
