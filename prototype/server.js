@@ -10,6 +10,7 @@ import { projectWork, endpointIsLive, executionFingerprint, hasProcessIdentity, 
 import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
+import { readSecondmateMessages } from "./secondmate-messages.js";
 import { readConversationTranscript } from "./transcript.js";
 import { readFirstmateActivity } from "./firstmate-activity.js";
 import { compactLanes } from "./lane-payload.js";
@@ -757,7 +758,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
   if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
   try {
-    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision, inboxReplies] = await Promise.all([
+    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision, inboxReplies, secondmates] = await Promise.all([
       readFile(path.join(resolvedHome, "data", "projects.md"), "utf8"),
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
@@ -766,6 +767,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
       includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
       includeHistory ? readInboxReplies(resolvedHome, reader) : [],
+      includeHistory ? readSecondmateMessages(resolvedHome, publicMessage, { reader, windowBytes }) : { messages: [], sources: [], warnings: [] },
     ]);
     const projects = parseProjects(registry);
     const repositoryPaths = await repositoryPathsForHome(resolvedHome, projects);
@@ -796,7 +798,8 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       if (!projectName) return null;
 
       let statusEvents = [];
-      if (stateNames.includes(statusName)) {
+      // Registered parent-channel files are projected once by the mate adapter.
+      if (stateNames.includes(statusName) && !secondmates.sources.some(({ id }) => id === taskId)) {
         const statusPath = path.join(resolvedHome, "state", statusName);
         const [statusText, statusStat] = await Promise.all([readFile(statusPath, "utf8"), stat(statusPath)]);
         const lines = statusText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -891,7 +894,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }] : []) || [];
     };
     const generalMessages = [...allCaptainMessages.flatMap((message) => markedReplies.get(message)
-      ? projectedBlocks(message, "general") : [message]), ...unroutedOutbox, ...supervision.messages];
+      ? projectedBlocks(message, "general") : [message]), ...unroutedOutbox, ...supervision.messages, ...secondmates.messages];
 
     const registeredGeneral = projects.find((project) => project.id === "general");
     const lanes = projects.filter((project) => project.id !== "general").map((project) => {
@@ -907,7 +910,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
           || (message.transcriptSessionId && projectTerms.some((term) => term.length > 2 && slug(message.text).includes(term))) ? [message] : [];
       });
       const routedSupervision = supervision.messages.filter((message) => message.taskId && projectTaskIds.has(message.taskId));
-      const messages = publicTimeline([...projectTasks.filter((task) => visibleTasks.has(task.id)).flatMap((task) => task.events), ...sharedMessages.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedCaptainNotes.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedOutbox.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedSupervision.filter((message) => !message.taskId || visibleTasks.has(message.taskId))]);
+      const messages = publicTimeline([...projectTasks.filter((task) => visibleTasks.has(task.id)).flatMap((task) => task.events), ...sharedMessages.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedCaptainNotes.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedOutbox.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedSupervision.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...secondmates.messages.filter((message) => message.secondmateProjects.some((name) => name === project.id || name === project.name))]);
       // Flat transcript history follows source completion, never a presentation acknowledgement.
       const closed = projectTasks.length > 0 && projectTasks.every((task) => task.state === "done" && ["newly-done", "previously-done"].includes(task.classification?.status));
       const status = closed ? "closed" : laneStatus(projectTasks);
@@ -951,7 +954,9 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     return {
       lanes,
       source: "Firstmate home",
-      transcript: { ...transcript.coverage, outcomeSources: supervision.sources },
+      transcript: { ...transcript.coverage, outcomeSources: supervision.sources, secondmateSources: secondmates.sources,
+        warnings: [...(transcript.coverage.warnings || []), ...secondmates.warnings],
+        expandable: transcript.coverage.expandable || (windowBytes !== null && windowBytes < 8 * 1024 * 1024 && secondmates.sources.some((source) => source.omittedBytes > 0)) },
       workSplit: split,
       summary: {
         workCounts: split.counts,

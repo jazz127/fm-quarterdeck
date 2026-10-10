@@ -64,7 +64,7 @@ let lastViewedHighlightTimer = null;
 function readingScope() {
   const selection = laneSelection();
   return JSON.stringify([selection.all ? "all" : selection.checked.map(({ id }) => id).sort(), laneStatusFilter, feedLaneOverrideId,
-    [...selectedMessageTypes].sort(), selectedSessionId, selectedTranscriptSession, transcriptQuery.trim().toLocaleLowerCase()]);
+    [...selectedMessageTypes].sort(), selectedSessionId, selectedTranscriptSession, selectedSecondmate, transcriptQuery.trim().toLocaleLowerCase()]);
 }
 function captureLastViewed() {
   if (!renderedReadingScope || !$("#conversations-view").classList.contains("active")) return;
@@ -369,6 +369,7 @@ const ACTIVE_AGENT_STATES = new Set(["active", "working", "in-progress"]);
 const agentStatusGroup = (state) => ACTIVE_AGENT_STATES.has(state) ? "active" : state;
 let transcriptCoverage = { sessions: [], warnings: [], note: "" };
 let selectedTranscriptSession = "";
+let selectedSecondmate = "";
 let transcriptPage = null;
 let previousPageCount = null;
 let transcriptSelection = "";
@@ -559,6 +560,7 @@ function messagesForSelection() {
       if (!selectedMessageTypes.has(messageTypeId(message))) continue;
       if (selectedSessionId && message.taskId !== selectedSessionId) continue;
       if (selectedTranscriptSession && message.transcriptSessionId !== selectedTranscriptSession) continue;
+      if (selectedSecondmate && message.secondmateId !== selectedSecondmate) continue;
       // Without a source record ID, preserve repeated identical events within one lane.
       // An ordinal is only a rendering/deduplication key, never a claimed record ID.
       const fingerprint = [message.occurredAt, message.source, message.author, message.text].join("\n");
@@ -759,7 +761,7 @@ function renderFeed() {
       fleetRecordIndices.get(id).push(index);
     }
   });
-  const feedSelection = JSON.stringify([visibleLanes.map((lane) => lane.id), [...selectedMessageTypes], selectedSessionId, selectedTranscriptSession]);
+  const feedSelection = JSON.stringify([visibleLanes.map((lane) => lane.id), [...selectedMessageTypes], selectedSessionId, selectedTranscriptSession, selectedSecondmate]);
   const selectionChanged = feedSelection !== transcriptSelection;
   if (selectionChanged) transcriptPage = null;
   transcriptSelection = feedSelection;
@@ -925,6 +927,11 @@ function renderLanes(data) {
   } catch { /* Preferences are optional. */ }
   transcriptCoverage = data.transcript || { sessions: [], warnings: [], note: "Transcript coverage unavailable." };
   const sources = transcriptCoverage.sessions;
+  const mateSources = transcriptCoverage.secondmateSources || [];
+  // Retain a selected unavailable mate honestly until the user returns to All.
+  const mateOptions = mateSources.some(({ id }) => id === selectedSecondmate) || !selectedSecondmate ? mateSources : [...mateSources, { id: selectedSecondmate, loaded: false }];
+  $("#secondmate-filter").innerHTML = '<option value="">All messages</option>' + mateOptions.map(({ id, loaded }) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}${loaded ? "" : " · source unavailable"}</option>`).join("");
+  $("#secondmate-filter").value = selectedSecondmate;
   const windowButton = $("#transcript-load-more");
   $("#transcript-window-status").hidden = !transcriptCoverage.expandable;
   windowButton.disabled = false;
@@ -939,7 +946,7 @@ function renderLanes(data) {
     infoTrigger.setAttribute("aria-label", `Transcript coverage: ${summaryText}`);
   }
   $("#transcript-note").textContent = [transcriptCoverage.note, ...transcriptCoverage.warnings].join(" ");
-  $("#transcript-sources").innerHTML = [...sources, ...(transcriptCoverage.outcomeSources || [])].map((session) => `<li>${escapeHtml(session.source)} · ${session.loaded ? `${session.messageCount} messages` : "not loaded"}${session.omittedBytes ? " · newest records only; older history not loaded" : ""}${session.skippedRecords ? ` · ${session.skippedRecords} malformed/undated records skipped` : ""}</li>`).join("");
+  $("#transcript-sources").innerHTML = [...sources, ...(transcriptCoverage.outcomeSources || []), ...mateSources].map((session) => `<li>${escapeHtml(session.source)} · ${session.loaded ? `${session.messageCount} messages` : "not loaded"}${session.omittedBytes ? " · newest records only; older history not loaded" : ""}${session.skippedRecords ? ` · ${session.skippedRecords} malformed/undated records skipped` : ""}</li>`).join("");
   $("#transcript-session").innerHTML = '<option value="">Loaded transcript files</option>' + sources.map((session) => `<option value="${escapeHtml(session.id)}" ${session.id === selectedTranscriptSession ? "selected" : ""}>${escapeHtml(session.source)}${session.loaded ? "" : " · load on selection"}</option>`).join("");
   if (!lanes.length) {
     renderLanesError("No projects are registered in FM_HOME/data/projects.md.");
@@ -2480,6 +2487,10 @@ $("#message-type-filters").addEventListener("change", (event) => {
   else selectedMessageTypes.delete(input.value);
   savePreference(MESSAGE_TYPES_KEY, [...selectedMessageTypes]);
   renderMessageTypeFilters();
+  renderFeed();
+});
+$("#secondmate-filter").addEventListener("change", (event) => {
+  selectedSecondmate = event.target.value;
   renderFeed();
 });
 $("#transcript-session").addEventListener("change", (event) => {

@@ -2995,3 +2995,37 @@ test("phone fleet and kind tabs follow arrow, Home and End keys", () => {
   assert.equal(lanes.getAttribute("aria-selected"), "true");
   assert.equal(app.run("document.activeElement"), lanes);
 });
+
+test("second-mate selector composes with existing filters and preserves All order and routing", () => {
+  const app = ui();
+  const messages = [
+    record({ recordId: 'primary', text: 'Firstmate mentions mate-alpha', occurredAt: '2030-01-01T00:00:00Z' }),
+    record({ recordId: 'alpha-1', secondmateId: 'mate-alpha', kind: 'supervision', text: 'Example first', occurredAt: '2030-01-01T00:00:01Z' }),
+    record({ recordId: 'beta-1', secondmateId: 'mate-beta', kind: 'supervision', text: 'Example mentions mate-alpha', occurredAt: '2030-01-01T00:00:02Z' }),
+    record({ recordId: 'alpha-2', secondmateId: 'mate-alpha', kind: 'supervision', taskId: 'example-task', text: 'Example last', occurredAt: '2030-01-01T00:00:03Z' }),
+  ];
+  seed(app, [lane('example-app', messages), lane('acme', [messages[2]])]);
+  const ids = () => app.run("messagesForSelection().map(message => message.recordId).join(',')");
+  assert.equal(ids(), 'primary,alpha-1,beta-1,alpha-2');
+  const choose = value => app.node('#secondmate-filter').dispatchEvent({ type: 'change', target: { value } });
+  choose('mate-alpha');
+  assert.equal(ids(), 'alpha-1,alpha-2');
+  app.run("transcriptQuery = 'last'");
+  assert.equal(ids(), 'alpha-2');
+  app.run("transcriptQuery = ''; selectedMessageTypes.delete('supervision')");
+  assert.equal(ids(), '');
+  app.run("selectedMessageTypes.add('supervision'); selectedSessionId = 'example-task'");
+  assert.equal(ids(), 'alpha-2');
+  choose('mate-beta');
+  assert.equal(ids(), '', 'mate selection retains task filter');
+  app.run("selectedSessionId = ''; selectedTranscriptSession = 'missing-source'");
+  assert.equal(ids(), '');
+  app.run("selectedTranscriptSession = ''; selectedLaneIds = new Set(['acme']); allLanesSelected = false");
+  assert.equal(ids(), 'beta-1');
+  choose('mate-alpha');
+  assert.equal(ids(), '', 'mate selection retains lane filter');
+  app.run("selectedLaneIds = new Set(['example-app', 'acme']); allLanesSelected = true");
+  choose('');
+  assert.equal(ids(), 'primary,alpha-1,beta-1,alpha-2');
+  assert.equal(app.run("selectedSessionId"), '');
+});
