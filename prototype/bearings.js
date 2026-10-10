@@ -474,7 +474,8 @@ function landedArtifact(value) {
   return { url: null, artifact: publicText(trimmed) };
 }
 // Snapshot landed rows only. Invalid rows are counted, never a failed snapshot.
-// Another home's ledger is never read, so its repository and time stay unknown.
+// Another home's ledger is never read; only snapshot evidence supplies its repository.
+// Its landed time stays unknown.
 function landedSection(raw) {
   if (!Array.isArray(raw.landed)) return { landed: [], landedInvalid: 0 };
   let landedInvalid = 0;

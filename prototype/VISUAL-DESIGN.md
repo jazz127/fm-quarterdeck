@@ -32,7 +32,7 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Captain's Call stays in the first column.
 - Just landed fills the second column (`#overview-secondary`) with the same poster cards: a Landed chip, the repository, the clock, the full landing title, and a full pull-request link or the label local main.
 - Each landed card has an Acknowledge control and one follow-up box. It has no Procrastinate control.
-- The Just landed heading shows the new, unacknowledged count in the Captain's Call count badge. The badge hides when that count is 0.
+- The Just landed heading uses the same badge style as Captain's Call; [Just landed](BEARINGS.md#just-landed) owns its count and acknowledgement behavior.
 - Acknowledge and Acknowledged (N) are at least 44px high.
 - On a phone the two Overview sections are tabs, Captain's Call (N) and Just landed (N). Just landed N is the same new count, and the chosen tab is remembered for that viewer.
 - Second mates occupy a separate section below the columns, outside both phone tab panels, so they stay visible on either tab. [Work taxonomy](WORK-TAXONOMY.md#explicit-three-level-navigation) owns their sources and visibility.

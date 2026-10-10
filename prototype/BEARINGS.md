@@ -24,9 +24,9 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 - `cards[]`, in snapshot order:
   - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
   - `merge:<task>` for each `contributions.captain` row without a live decision for the same task: `{key, type:"merge", task, kind, url, reason, owner, repo, checkedAt, answer, rev}`. `url` is `https:` only, otherwise `null`.
-  - `landed:<task>` for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
   - `answer` is `null` (answer in chat) or `{question, options[{value,label,hint}], recommend, close, freeform:true}`; see Answers.
   - `rev` is a 16-hex sha256 of the card's canonical JSON; an unchanged card keeps its `rev`.
+- `landed[]`, separately from `cards[]`, in snapshot order: `landed:<task>` for each valid snapshot `landed` row, with `{key, type:"landed", task, what, backlogTitle?, repo, owner, url, artifact, clock, rev}`. See Just landed.
 - `coverage`: `{known, checked, complete, provenClear, captainOmitted, unmeasuredHomes}`. Say "Nothing needs your action right now" only when `provenClear`; otherwise "No decision is recorded · checked X of Y".
 - `omitted[]`: `{kind:"deferred-holds", count}` (blocked, dated or aged holds not shown), `{kind:"decisions-bound", shown, total}`, `{kind:"invalid-rows", count}`, and `{kind:"invalid-landed", count}` when a landed row is dropped.
 - The snapshot hub hashes call content, coverage, omissions, nonempty ledger hold evidence and nonempty landed cards via `contentRevision` in `bearings.js`, never the snapshot clock. The served model also includes chat coverage and receipt-derived answered flags in its revision, so unchanged content is not pushed again; see Chat asks and Lifecycle. An empty landed list leaves the hash unchanged.
@@ -301,7 +301,7 @@ Overview's second column shows the snapshot's `landed` rows as poster cards in t
 At the phone one-column breakpoint, the Overview body starts with two tabs, Captain's Call (N) and Just landed (N), and shows one section at a time.
 Captain's Call N counts every open card, including filtered cards.
 Just landed N counts landings whose current rev is not the acknowledged rev.
-The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
+The Just landed heading shows that same count in its own badge and hides the badge when it is 0.
 The phone tab still shows Just landed (0) when none are new, the same way Captain's Call (0) stays visible.
 The chosen tab is remembered for that viewer in localStorage under `fm-quarterdeck-overview-tab.v1`.
 A desktop width keeps both columns, with the same 22px gap, and does not show the tabs.
@@ -318,9 +318,9 @@ A shortened `https://` artifact is completed only by the Long text continuation 
 The exact text `local main` is a label, not a link.
 Other artifact text is path-redacted and is not a URL.
 `-` and an empty artifact are not recorded.
-`repo` and the landed clock come from the selected home's checked backlog line only when `owner` is `(main)`: `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`.
+`repo` uses the snapshot's repository name when present, reduced to its final segment. For a `(main)` landing, a missing repository and the landed clock are supplemented from the selected home's checked backlog line: `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`.
 A `(main)` snapshot `landedAt` may also supply that clock, and the newer of the two is kept.
-Another home's ledger is never read, so its repository and time stay unknown.
+Another home's ledger is never read; without snapshot repository evidence its repository stays unknown, and its landed time stays unknown.
 A date-only clock says time unknown.
 Duplicate or invalid rows are withheld as omitted kind `invalid-landed`.
 A missing `landed` array yields an empty column and does not make Captain's Call unavailable.

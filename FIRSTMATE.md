@@ -24,10 +24,9 @@ alongside these rules; do not guess missing values or approvals. Explicit task
 and role constraints take precedence. On consequential conflicts, ask the owner
 rather than broadening authority.
 
-Prefer the approved unified integration installer to project one versioned
-soft-reference block and pinned home-local integrations; it never edits stock
-tracked Firstmate files. Do not hand-edit that installer-owned block. Legacy
-unmarked references require separately reviewed migration.
+Use the approved [unified integration installer](docs/FIRSTMATE-INTEGRATIONS.md#unified-mechanical-installation)
+for the policy reference and home-local integrations. Its ownership contract
+governs removal and legacy migration; do not hand-edit its owned block.
 
 Reading this file installs nothing. It does not edit preferences, enable hooks,
 register checks, restart services or grant standing release approval. Existing

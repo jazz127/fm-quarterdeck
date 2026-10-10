@@ -265,8 +265,8 @@ window.bearingsAnswerForm = (() => {
         // The words now live in Firstmate's inbox; an unsent-text stub would be wrong.
         clearDraft(key);
         if (thread) {
-          // Stay in compose so the one box can ask again. onAsked records the thread receipt,
-          // which keeps the card Sent until that note is acknowledged or Firstmate replies.
+          // Stay in compose so the one box can ask again. onAsked retains the accepted
+          // note identity until matching history arrives.
           onAsked(key, body?.noteId);
           update(key, null, focus ? "text" : null);
           return true;
