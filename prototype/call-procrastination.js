@@ -13,7 +13,7 @@ export const PROCRASTINATE_MS = Object.freeze({
   "1d": 24 * 60 * 60 * 1000,
   "3d": 3 * 24 * 60 * 60 * 1000,
 });
-const KEY = /^(?:(?:decision|merge):[A-Za-z0-9][A-Za-z0-9._-]{0,159}|chat:[0-9a-f]{16})$/;
+const KEY = /^(?:decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})?|merge:[A-Za-z0-9][A-Za-z0-9._-]{0,159}|chat:[0-9a-f]{16})$/;
 export const procrastinationKey = (value) => typeof value === "string" && KEY.test(value);
 export const procrastinationPath = (env = {}) => path.join(path.dirname(configuredStatePath(env)), "quarterdeck-call-procrastination.json");
 export const emptyProcrastination = () => ({ schema: PROCRASTINATION_SCHEMA, until: {} });

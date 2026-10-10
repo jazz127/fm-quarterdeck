@@ -1348,7 +1348,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         const current = bearingsSource.current?.() || {};
         const openKeys = current.state === "ready" || current.state === "stale"
-          ? new Set((current.cards || []).map((card) => card.key)) : null;
+          ? new Set((current.cards || []).filter((card) => !card.readOnly).map((card) => card.key)) : null;
         try { await sendJson(request, response, 200, await procrastination.view(openKeys)); }
         catch { await sendJson(request, response, 503, { error: "Procrastination state unavailable" }); }
         return;
@@ -1368,6 +1368,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         const card = (bearingsSource.current()?.cards || []).find((entry) => entry.key === body.key);
         if (!card) { await sendJson(request, response, 409, { error: "This call is no longer open", code: "gone" }); return; }
+        if (card.readOnly) { await sendJson(request, response, 409, { error: "This call is answered in its own home", code: "read-only" }); return; }
         try {
           const next = durationOk ? await procrastination.set(body.key, body.duration) : await procrastination.clear(body.key);
           await sendJson(request, response, 200, next);

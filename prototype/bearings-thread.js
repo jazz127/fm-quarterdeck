@@ -19,7 +19,7 @@ export const THREAD_NOTE_TAG = "fm-quarterdeck-thread";
 export const MAX_THREAD_BODY_BYTES = 4096;
 export const MAX_QUESTION_BYTES = 2000;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CARD_KEY = /^(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}$/;
+const CARD_KEY = /^(?:decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})?|(?:merge|chat|landed):[A-Za-z0-9._-]{1,160})$/;
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const PREFIX = "quarterdeck-thread:";
@@ -79,11 +79,14 @@ function parseBody(body) {
 // escaped so the captain's text can never close the fence.
 export function formatThreadNote({ key, card, text, requestId }) {
   const task = cardTask(card, key);
-  const envelope = { schema: THREAD_SCHEMA, key, type: card?.type || key.split(":")[0], ...(task ? { task } : {}),
+  const remote = card?.owner && card.owner !== "(main)";
+  const envelope = { schema: THREAD_SCHEMA, key, type: card?.type || key.split(":")[0], ...(task ? { task } : {}), ...(remote ? { owner: card.owner } : {}),
     ...(card?.type === "chat" ? { ask: threadText(`${card.marker}: ${card.summary}`, 1024) } : {}), question: text, requestId };
   return [
     `Captain asks about ${cardLabel(card, key)} from Quarterdeck: ${text.replace(/\s+/g, " ")}`,
-    "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread) or in the main chat naming the task id. This is a question, not an answer; nothing was decided.",
+    remote
+      ? "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread). This is a question, not an answer; nothing was decided."
+      : "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread) or in the main chat naming the task id. This is a question, not an answer; nothing was decided.",
     "",
     `\`\`\`json ${THREAD_NOTE_TAG}`,
     JSON.stringify(envelope, null, 2).replaceAll("`", "\\u0060"),
@@ -181,6 +184,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
+        if (card.readOnly) refuse(409, "read-only", "This call is answered in its own home");
         return { digest, key: parsed.key, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);
@@ -210,7 +214,8 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       for (const ask of card?.chatAsks || []) entries.push({ kind: "chat-ask", from: "firstmate", at: ask.clock?.at || null, text: threadText(`${ask.kind ? `${ask.kind.toUpperCase()} NEEDED: ` : ""}${ask.summary}`) });
       const task = cardTask(card, key);
       let transcriptState = "ready", omitted = false;
-      if (task) {
+      const localTranscript = (!card?.owner || card.owner === "(main)") && !/^landed:[^:]+:/.test(key) && !card?.readOnly;
+      if (task && localTranscript) {
         try {
           const found = await transcript();
           omitted = found.omitted;

@@ -188,7 +188,7 @@ window.bearingsView = (() => {
     const shortened = sourceShortened(shown);
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
     const about = [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
-    return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${label}</span>${lifecycleBadgeHtml()}<div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${procrastinateHtml(id)}</div><span class="call-age" data-call-clock="${escape(card.clock?.at || "")}" data-call-clock-label="${escape(card.clock?.label || "Created / updated")}">${escape(clockText(card.clock))}</span></header>
+    return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${label}</span>${lifecycleBadgeHtml()}<div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${card.readOnly ? "" : procrastinateHtml(id)}</div><span class="call-age" data-call-clock="${escape(card.clock?.at || "")}" data-call-clock-label="${escape(card.clock?.label || "Created / updated")}">${escape(clockText(card.clock))}</span></header>
       ${replyBannerHtml()}
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
@@ -198,7 +198,7 @@ window.bearingsView = (() => {
       ${shortened ? `<p class="call-shortened">Firstmate's snapshot shortened this ${merge ? "reason" : "ask"}; Quarterdeck shows everything it received. Ask Firstmate in chat for the full text of task <code>${escape(card.task || "unknown")}</code>.</p>` : ""}
       ${url ? `<a class="call-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(url)}</a>` : merge ? '<p class="call-meta">Merge link unavailable</p>' : ""}
       ${card.answer ? "" : `<p class="call-source-gap">Options, hints and recommendation are not structured in the snapshot; any recorded choices remain in the full ${merge ? "reason" : "ask"} above.</p>`}</div>
-      ${answerHtml(card, `${label} ${card.task || ""}`.trim(), threadHistoryHtml(id))}`;
+      ${card.readOnly ? '<p class="call-meta">This call is answered in its own home.</p>' : answerHtml(card, `${label} ${card.task || ""}`.trim(), threadHistoryHtml(id))}`;
   }
   // Open or closed full-text panels are memory for this tab only.
   // Each toggle keeps its own panel, so a landing title and a landing link expand separately.
