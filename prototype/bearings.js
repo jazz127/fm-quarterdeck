@@ -21,6 +21,12 @@ export class BearingsUnavailable extends Error {}
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+// Cached remote decisions use <home>/<task>; retain the scope as card identity.
+const decisionId = (value) => {
+  if (typeof value !== "string") return null;
+  const parts = value.split("/");
+  return parts.length <= 2 && parts.every(part => TASK_ID.test(part)) ? value : null;
+};
 const TOKEN = /^[A-Za-z0-9()][A-Za-z0-9 ()._:-]{0,79}$/;
 const token = (value) => typeof value === "string" && TOKEN.test(value) ? value : null;
 const isoDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT/.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
@@ -426,7 +432,7 @@ function callSection(raw) {
   const cards = [];
   const decided = new Set();
   for (const row of raw.decisions_open) {
-    const id = object(row) && typeof row.id === "string" && TASK_ID.test(row.id) ? row.id : null;
+    const id = object(row) ? decisionId(row.id) : null;
     // Keep the complete ask: choices and recommendations may exist only in this text.
     const summary = id && publicText(row.summary, Infinity);
     if (!id || !summary || decided.has(id)) { invalid += 1; continue; }
