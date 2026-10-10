@@ -235,9 +235,9 @@ test("desktop control and persistent review footer keep gesture and action order
   assert.match(css, /#desktop-review-footer \{ display: contents; \}/);
 });
 
-test("annotation composer has one three-column action row with unchanged button identities", async () => {
+test("annotation composer exposes the urgent send alongside queue, batch and end actions", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send batch<\/button><button id="review-end" type="button" data-hint="Then end chat">Send &amp; End<\/button><\/div><\/form>/);
+  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send batch<\/button><button id="review-send-now" type="button">Send now<\/button><button id="review-end" type="button" data-hint="Then end chat">Send &amp; End<\/button><\/div><\/form>/);
   assert.match(css, /\.review-actions \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.review-actions button \{ min-width: 0;/);
 });

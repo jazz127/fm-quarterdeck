@@ -78,3 +78,45 @@ test("batch provenance refuses mismatched identities and nested batches", async 
   envelope.items[0].requestId = id;
   assert.equal(quarterdeckSendMatches(id, format()), false);
 });
+test("independent gateway instances preserve membership and a pending snapshot never clobbers a receipt", async (t) => {
+  let complete, started;
+  const inFlight = new Promise((resolve) => { started = resolve; });
+  const f = await fixture(t, { delayMs: 10000, deliver: async (home, id) => {
+    started(); await new Promise((resolve) => { complete = resolve; });
+    return { id: "2000000000-note", request_id: id };
+  } });
+  const other = createInboxBatcher(f.setup);
+  t.after(() => other.close());
+  const one = f.batcher.note(f.setup.home, "quarterdeck-call:" + uuid(1), "One");
+  await f.batcher.note.lookup("quarterdeck-call:" + uuid(1));
+  const two = other.note(f.setup.home, "quarterdeck-call:" + uuid(2), "Two");
+  await other.note.lookup("quarterdeck-call:" + uuid(2));
+  assert.equal((await f.batcher.pending()).length, 2);
+  const flushing = f.batcher.flush();
+  await inFlight;
+  assert.equal((await f.batcher.pending()).length, 2, "lock-free status is safe during delivery");
+  complete();
+  await flushing;
+  await one;
+  await other.flush();
+  await two;
+  assert.deepEqual(await f.batcher.pending(), []);
+});
+test("failure of an earlier sealed batch releases later callers and keeps all pending items", async (t) => {
+  let fail = true;
+  const f = await fixture(t, { delayMs: 10000, deliver: async () => { if (fail) throw Error("offline"); return { id: "2000000000-note" }; } });
+  const first = f.batcher.note(f.setup.home, "quarterdeck-call:" + uuid(1), "First");
+  const firstFailure = assert.rejects(first, /offline/);
+  await f.batcher.note.lookup("quarterdeck-call:" + uuid(1));
+  await assert.rejects(f.batcher.flush(), /offline/);
+  await firstFailure;
+  const second = f.batcher.note(f.setup.home, "quarterdeck-call:" + uuid(2), "Second");
+  const secondFailure = assert.rejects(second, /offline/);
+  await f.batcher.note.lookup("quarterdeck-call:" + uuid(2));
+  await assert.rejects(f.batcher.flush(), /offline/);
+  await secondFailure;
+  assert.equal((await f.batcher.pending()).length, 2);
+  fail = false;
+  await f.batcher.flush();
+  assert.deepEqual(await f.batcher.pending(), []);
+});

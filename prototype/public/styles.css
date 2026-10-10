@@ -119,6 +119,7 @@ input[type="search"]::-webkit-search-results-decoration {
 .review-panel { position: fixed; z-index: 42; overflow: auto; padding: 16px; border: 1px solid var(--line-strong); background: var(--surface); box-shadow: 0 12px 40px #202e2938; }
 .review-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 0 0 auto; min-width: 0; }
 .review-panel header strong { min-width: 0; overflow-wrap: anywhere; }
+#review-form .review-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .review-panel header button { min-height: 44px; flex-shrink: 0; padding: 4px 12px; }
 .review-thread article { padding: 8px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }

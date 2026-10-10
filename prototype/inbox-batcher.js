@@ -10,7 +10,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   const file = `${statePath}.inbox-${scope}.json`;
   let state = { schema: "fm-quarterdeck-outbox.v1", batches: [] }, serial = Promise.resolve(), timer, closed = false;
   const waiters = new Map();
-  const load = async () => {
+  const readState = async () => {
     try {
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024 * 1024) throw new Error("Invalid Quarterdeck outbox file");
@@ -18,9 +18,10 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       if (saved.schema !== state.schema || !Array.isArray(saved.batches) || saved.batches.some((batch) =>
         typeof batch.id !== "string" || !Array.isArray(batch.items) || !batch.items.length || batch.items.length > 30 ||
         batch.items.some((item) => typeof item.id !== "string" || typeof item.text !== "string"))) throw new Error("Invalid Quarterdeck outbox");
-      state = saved;
-    } catch (error) { if (error.code !== "ENOENT") throw error; }
+      return saved;
+    } catch (error) { if (error.code !== "ENOENT") throw error; return { schema: "fm-quarterdeck-outbox.v1", batches: [] }; }
   };
+  const load = async () => { state = await readState(); };
   // Serialize across gateway processes as well as HTTP requests. Never steal an
   // uncertain writer's lock; retained pending items remain retryable after repair.
   const locked = (fn) => {
@@ -136,8 +137,8 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   async function pending() {
     await ready;
     // Atomic snapshots are readable even when a writer holds an abandoned lock.
-    await load();
-    return state.batches.filter((batch) => !batch.receipt).flatMap((batch) => batch.items.map((item) => ({
+    const snapshot = await readState();
+    return snapshot.batches.filter((batch) => !batch.receipt).flatMap((batch) => batch.items.map((item) => ({
       requestId: item.id, text: item.text, key: item.record?.key || null,
     })));
   }
