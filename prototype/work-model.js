@@ -101,12 +101,11 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
 }
 
 export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, activeBlockers = [] }) {
+  if (state === "needs-decision" || pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
   if (holdOpen && (holdDeferred || activeBlockers.length)) return "waiting";
   if (holdOpen && holdKind === "captain") return "captain-action";
   if (holdActive) return "waiting";
-  if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
   if (pendingIssues.length) return "waiting";
-  if (state === "needs-decision") return "captain-action";
   if (["blocked", "paused", "waiting", "captain-held"].includes(state)) return "waiting";
   if (retained || ["cleanup", "preserved", "retained"].includes(state)) return "cleanup";
   if (state === "done") return "newly-done";
@@ -327,6 +326,7 @@ export async function projectWork(records, state, { durability = verifyDurabilit
       endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
       retained: Boolean(record.retained), pendingIssues: (record.pendingIssues || []).map((issue) => ({ ...issue, ...(issue.text ? { text: safeWorkNote(issue.text) } : {}) })),
       holdKind: record.holdKind ? safeWorkNote(record.holdKind) : null, holdReason: record.holdReason ? safeWorkNote(record.holdReason) : null, holdUntil: record.holdUntil || null,
+      holdOpen: Boolean(record.holdOpen), holdActive: Boolean(record.holdActive), holdDeferred: Boolean(record.holdDeferred),
       blockers: record.blockers || [], activeBlockers: record.activeBlockers || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
       unboundCommit: Boolean(record.unboundCommit && !bound),

@@ -28,17 +28,38 @@ function currentLocalDate() {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-export function parseTaskHold(metadata, closed, today = currentLocalDate()) {
-  const field = (name) => [...metadata.matchAll(new RegExp(`\\(${name}:\\s*([^)]*)\\)`, "gi"))].at(-1)?.[1].trim() || null;
+const TASK_TAIL_FIELDS = [
+  /\s*(blocked-by|parent|discovered-from):\s*([A-Za-z0-9][A-Za-z0-9._-]*(?:,[A-Za-z0-9][A-Za-z0-9._-]*)*)(?:\s+-\s+((?:(?!\s+(?:blocked-by|parent|discovered-from):\s).)+?))?\s*$/i,
+  /\s*\((?:[^()]*\+\s*)?(repo):\s*([^()]+)\)\s*$/i,
+  /\s*\((kind|epic|theme|hold):\s*([^()]+)\)\s*$/i,
+  /\s*\((hold-kind):\s*(captain|external|load|parked|future)\)\s*$/i,
+  /\s*\((hold-until):\s*(\d{4}-\d{2}-\d{2})\)\s*$/i,
+  /\s*\((priority):\s*([0-4])\)\s*$/i,
+  /\s*\((since|done|reported|merged|closed)\s+(\d{4}-\d{2}-\d{2})\)\s*$/i,
+];
+
+export function parseBacklogTask(prose, closed, today = currentLocalDate()) {
+  const fields = [];
+  let title = prose;
+  while (true) {
+    const match = TASK_TAIL_FIELDS.map((pattern) => title.match(pattern)).find(Boolean);
+    if (!match) break;
+    fields.unshift({ name: match[1].toLowerCase(), value: match[2].trim() });
+    title = title.slice(0, match.index);
+  }
+  const field = (name) => fields.findLast((entry) => entry.name === name)?.value || null;
+  const group = fields.findLast((entry) => ["epic", "theme"].includes(entry.name));
+  const doneDate = fields.findLast((entry) => ["done", "reported", "merged", "closed"].includes(entry.name))?.value || null;
   const holdReason = decodeHoldReason(field("hold"));
   const holdKind = field("hold-kind");
   const date = field("hold-until");
   const dateValue = Date.parse(`${date}T00:00:00Z`);
   const holdUntil = /^\d{4}-\d{2}-\d{2}$/.test(date || "") && Number.isFinite(dateValue) && new Date(dateValue).toISOString().slice(0, 10) === date ? date : null;
-  const blockers = [...new Set([...metadata.matchAll(/\bblocked-by:\s*([^\s(]+)/gi)].flatMap((match) => match[1].split(",")).filter((id) => /^[A-Za-z0-9._-]+$/.test(id)))];
+  const blockers = [...new Set(fields.filter((entry) => entry.name === "blocked-by").flatMap((entry) => entry.value.split(",")))];
   // Expired captain annotations still own an open call; a closed backlog row
   // keeps its historical fields without creating current captain pressure.
-  return { holdKind, holdReason, holdUntil, blockers, holdOpen: !closed,
+  return { title: title.trim(), repositoryPath: field("repo"), workGroup: group ? { kind: group.name, name: group.value } : null, doneDate,
+    holdKind, holdReason, holdUntil, blockers, holdOpen: !closed,
     holdDeferred: !closed && Boolean(holdUntil && holdUntil > today),
     holdActive: !closed && Boolean(holdKind || holdReason) && (!holdUntil || holdUntil > today || holdKind === "captain") };
 }

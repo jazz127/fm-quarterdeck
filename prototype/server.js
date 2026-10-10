@@ -8,7 +8,7 @@ import { validChatView } from "./chat-view.js";
 import { createAgentStateOwner, configuredStatePath, emptyAgentState, fingerprint } from "./agent-state.js";
 import { projectWork, endpointIsLive, executionFingerprint, hasProcessIdentity, shouldProbeLiveness, createConcurrencyLimiter, verifyDurability, resolveRepositoryIdentity, foldStatusLines, safeWorkNote } from "./work-model.js";
 import { readSecondmates } from "./secondmates.js";
-import { parseStatusLine, parseTaskHold, holdWaitingOn } from "./firstmate-records.js";
+import { parseStatusLine, parseBacklogTask, holdWaitingOn } from "./firstmate-records.js";
 import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
@@ -562,14 +562,11 @@ async function readBacklog(home, reader = createHistoryReader()) {
       }
       const item = line.match(/^\s*-\s+\[([ xX])\]\s+([^\s]+)\s+-\s+(.+)$/);
       if (item) {
-        const repo = [...item[3].matchAll(/\(repo:\s*([^)]+)\)/gi)].at(-1)?.[1].trim() || null;
-        const title = item[3].split(/\s+(?:blocked-by:|\((?:repo|epic|theme|kind|since|done|merged|hold|hold-kind|hold-until):|\((?:since|done|reported|merged)\s+\d{4}-\d{2}-\d{2}\))/i)[0].trim();
         const inFlight = section === "in flight";
         const done = item[1].toLowerCase() === "x" || /^(done|completed|closed)\b/.test(section);
-        // Only structured backlog fields identify an epic/theme; task prose and titles do not.
-        const group = [...item[3].matchAll(/\((epic|theme):\s*([^)]+)\)/gi)].at(-1);
-        currentTask = { id: item[2], projectName: repo ? path.basename(repo) : null, repositoryPath: repo, workGroup: group?.[2].trim() ? { kind: group[1].toLowerCase(), name: group[2].trim() } : null, inFlight, state: done ? "done" : "active", title, bodyFirstLine: "", body: "", section, metadata: item[3], doneDate: [...item[3].matchAll(/\((?:done|reported|merged)\s+(\d{4}-\d{2}-\d{2})\)/gi)].at(-1)?.[1] || null };
-        Object.assign(currentTask, parseTaskHold(item[3], done));
+        const parsed = parseBacklogTask(item[3], done);
+        currentTask = { ...parsed, id: item[2], projectName: parsed.repositoryPath ? path.basename(parsed.repositoryPath) : null,
+          inFlight, state: done ? "done" : "active", bodyFirstLine: "", body: "", section };
         tasks.set(item[2], currentTask);
         continue;
       }
@@ -602,12 +599,15 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const isLarge = /\blarge project\b/i.test(notes);
     const hold = holdWaitingOn(task);
     let latest = null;
+    let decision = null;
     if (stateNames.includes(`${task.id}.status`)) {
       const text = await readFile(path.join(home, "state", `${task.id}.status`), "utf8");
-      latest = foldStatusLines(text.trim().split(/\r?\n/).filter(Boolean), { kind: metaById.has(task.id) ? metaById.get(task.id).kind || "ship" : "unknown" }).latest;
+      const folded = foldStatusLines(text.trim().split(/\r?\n/).filter(Boolean), { kind: metaById.has(task.id) ? metaById.get(task.id).kind || "ship" : "unknown" });
+      latest = folded.latest;
+      decision = folded.pendingIssues.findLast((issue) => issue.state === "needs-decision");
     }
     const notedWait = notes.match(/(?:^|\n)\s*(?:waiting (?:on|for)|blocked by)\s*:?\s*([^\n.]+)/i)?.[1];
-    const waitingOn = hold || (latest && ["blocked", "needs-decision", "paused", "waiting", "captain-held"].includes(latest.state) ? latest.text : null)
+    const waitingOn = decision?.text || hold || (latest && ["blocked", "needs-decision", "paused", "waiting", "captain-held"].includes(latest.state) ? latest.text : null)
       || (notedWait ? shortIntent(notedWait, 150) : null);
     const name = safeWorkNote(task.title);
     // A task meta's project path is the durable repository identity for running work;
@@ -638,6 +638,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
     const lines = stateNames.includes(`${id}.status`) ? (await readFile(path.join(home, "state", `${id}.status`), "utf8")).split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
     const folded = foldStatusLines(lines, { kind: metaById.has(id) ? meta.kind || "ship" : "unknown" });
     const latest = folded.latest;
+    const decision = folded.pendingIssues.findLast((issue) => issue.state === "needs-decision");
     let state = latest?.state || task?.state || "unknown";
     if (task?.state === "done" && !task.inFlight && ["working", "active", "update"].includes(state)) state = "done";
     const repositoryPath = meta.project || task?.repositoryPath || null;
@@ -659,7 +660,7 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
       // A task-level head is not bound to this exact outcome. Quarterdeck completionRecords
       // supplies an explicit source-fingerprint binding; never migrate an old head blindly.
       commit: null, pullRequest: null, unboundCommit: Boolean(meta.completion_commit),
-      large: large.some((entry) => entry.id === id), waitingOn: holdWaitingOn(task || {}) || (latest?.state === "captain-held" ? latest.text : null) || folded.pendingIssues.at(-1)?.text || recordedWork?.waitingOn || null };
+      large: large.some((entry) => entry.id === id), waitingOn: decision?.text || holdWaitingOn(task || {}) || (latest?.state === "captain-held" ? latest.text : null) || folded.pendingIssues.at(-1)?.text || recordedWork?.waitingOn || null };
   }));
   const model = await projectWork(records, agentState, { durability, acknowledgementsAvailable, repositoryPaths });
   return { tight: Object.fromEntries(Object.entries(tight).map(([key, items]) => [key, { count: items.length, items }])), large: { count: large.length, projects: large }, ...model };

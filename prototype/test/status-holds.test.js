@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { foldStatusLines, projectWork } from "../work-model.js";
+import { foldStatusLines, projectWork, classifyCurrent } from "../work-model.js";
 import { readSecondmates } from "../secondmates.js";
 import { loadFirstmateHome, dashboardData } from "../server.js";
 import { emptyAgentState } from "../agent-state.js";
-import { parseStatusLine, parseTaskHold, decodeHoldReason } from "../firstmate-records.js";
+import { parseStatusLine, parseBacklogTask, decodeHoldReason } from "../firstmate-records.js";
 
 const owner = { read: async () => emptyAgentState() };
 async function fixture(t, backlog) {
@@ -111,10 +111,10 @@ test("malformed encoded reasons remain literal and sensitive decoded notes remai
 
 test("hold date boundaries and reason decoding match producer rules", () => {
   const metadata = "(hold: Waiting) (hold-kind: external) (hold-until: 2026-11-01)";
-  assert.equal(parseTaskHold(metadata, false, "2026-10-31").holdActive, true);
-  assert.equal(parseTaskHold(metadata, false, "2026-11-01").holdActive, false);
-  assert.equal(parseTaskHold(metadata.replace("external", "captain"), false, "2026-11-01").holdActive, true);
-  for (const date of ["2099-13-01", "2099-02-30", "invalid"]) assert.equal(parseTaskHold(`(hold-until: ${date})`, false).holdUntil, null);
+  assert.equal(parseBacklogTask(metadata, false, "2026-10-31").holdActive, true);
+  assert.equal(parseBacklogTask(metadata, false, "2026-11-01").holdActive, false);
+  assert.equal(parseBacklogTask(metadata.replace("external", "captain"), false, "2026-11-01").holdActive, true);
+  for (const date of ["2099-13-01", "2099-02-30", "invalid"]) assert.equal(parseBacklogTask(`(hold-until: ${date})`, false).holdUntil, null);
   for (const reason of ["fm-hold-v1:/w==", "fm-hold-v1:YQ", "plain (reason)"]) assert.equal(decodeHoldReason(reason), reason);
   const nested = "fm-hold-v1:U2FtcGxl";
   assert.equal(decodeHoldReason(`fm-hold-v1:${Buffer.from(nested).toString("base64")}`), nested, "decode only once");
@@ -134,7 +134,7 @@ test("structured review promotion remains available while backlog gates retain p
 test("repeated canonical hold fields retain every edge and use producer scalar precedence", () => {
   const reason = "Choose the final route";
   const metadata = `(hold: Old reason) (hold-kind: external) (hold-until: 2020-01-01) ${hold(reason)} (hold-until: 2099-11-01) blocked-by: a blocked-by: b,c blocked-by: a`;
-  const parsed = parseTaskHold(metadata, false, "2026-11-01");
+  const parsed = parseBacklogTask(metadata, false, "2026-11-01");
   assert.deepEqual(parsed.blockers, ["a", "b", "c"]);
   assert.equal(parsed.holdReason, reason);
   assert.equal(parsed.holdKind, "captain");
@@ -156,12 +156,12 @@ test("default hold clock expires at local midnight on both sides of UTC", (t) =>
   ]) {
     process.env.TZ = timezone;
     t.mock.timers.setTime(Date.parse(before));
-    assert.equal(parseTaskHold(metadata, false).holdDeferred, true, timezone);
-    assert.equal(parseTaskHold(metadata, false).holdActive, true, timezone);
+    assert.equal(parseBacklogTask(metadata, false).holdDeferred, true, timezone);
+    assert.equal(parseBacklogTask(metadata, false).holdActive, true, timezone);
     t.mock.timers.setTime(Date.parse(after));
-    assert.equal(parseTaskHold(metadata, false).holdDeferred, false, timezone);
-    assert.equal(parseTaskHold(metadata, false).holdActive, false, timezone);
-    assert.equal(parseTaskHold(metadata.replace("external", "captain"), false).holdActive, true, timezone);
+    assert.equal(parseBacklogTask(metadata, false).holdDeferred, false, timezone);
+    assert.equal(parseBacklogTask(metadata, false).holdActive, false, timezone);
+    assert.equal(parseBacklogTask(metadata.replace("external", "captain"), false).holdActive, true, timezone);
   }
 });
 
@@ -253,3 +253,112 @@ test("captain-held second mates display idle and stay separate from task work", 
   const resumed = await readSecondmates(home, ["mate.meta", "mate.status"], options);
   assert.equal(resumed.view.items[0].state, "live");
 });
+
+test("trailing backlog fields preserve repeated tags and dependency reasons without scanning their values", () => {
+  const prose = "Implement (hold: Use blocked-by: ghost) (hold-kind: captain) (repo: obsolete) (repo: product) (epic: Old) (theme: Final) (kind: ship) (priority: 3) (since 2026-11-01) (hold-until: 2099-11-01) blocked-by: a - Await approval parent: parent-id - Parent note discovered-from: origin-id blocked-by: b,c - Depends on both";
+  const parsed = parseBacklogTask(prose, false, "2026-11-01");
+  assert.equal(parsed.title, "Implement");
+  assert.equal(parsed.repositoryPath, "product");
+  assert.deepEqual(parsed.workGroup, { kind: "theme", name: "Final" });
+  assert.deepEqual(parsed.blockers, ["a", "b", "c"]);
+  assert.equal(parsed.holdReason, "Use blocked-by: ghost");
+  assert.equal(parsed.holdKind, "captain");
+  assert.equal(parsed.holdUntil, "2099-11-01");
+  assert.equal(parsed.holdDeferred, true);
+  const unknownTail = "Document (hold-kind: captain) (repo: product) (unknown: prose)";
+  const plain = parseBacklogTask(unknownTail, false);
+  assert.equal(plain.title, unknownTail);
+  assert.equal(plain.holdKind, null);
+  assert.equal(plain.repositoryPath, null);
+  assert.deepEqual(plain.blockers, []);
+});
+
+for (const large of [false, true]) {
+  test(`trailing backlog boundary keeps field-shaped prose for ${large ? "large" : "ordinary"} work`, async (t) => {
+    const titles = [
+      "Document (hold-kind: captain) syntax",
+      "Document (hold: Await the captain) syntax",
+      "Document (hold-until: 2099-11-01) syntax",
+      "Document blocked-by: blocker syntax",
+      "Document (repo: obsolete) syntax",
+      "Document (epic: Phantom) syntax",
+      "Document (theme: Phantom) syntax",
+      "Document (reported 2099-11-01) syntax",
+      "Document (done 2099-11-01) syntax",
+      "Document (merged 2099-11-01) syntax",
+      "Document (closed 2099-11-01) syntax",
+    ];
+    const body = large ? "  Large project\n" : "";
+    const backlog = `## Queued\n${titles.map((title, index) => `- [ ] prose-${index} - ${title} (repo: product)\n${body}`).join("")}- [ ] blocker - Synthetic prerequisite (repo: product)\n`;
+    const home = await fixture(t, backlog);
+    await mkdir(path.join(home, "projects/product"), { recursive: true });
+    const data = await read(home);
+    const items = new Map(data.workSplit.items.map((item) => [item.id, item]));
+    const displayed = large ? data.workSplit.large.projects : data.workSplit.tight.backlog.items;
+    for (const [index, title] of titles.entries()) {
+      const item = items.get(`prose-${index}`);
+      assert.equal(item.name, title);
+      assert.equal(item.status, "backlog");
+      assert.equal(item.repository, "product");
+      assert.equal(item.theme.id, "unclassified");
+      assert.equal(item.holdKind, null);
+      assert.equal(item.holdReason, null);
+      assert.equal(item.holdUntil, null);
+      assert.equal(item.holdActive, false);
+      assert.equal(item.holdDeferred, false);
+      assert.deepEqual(item.blockers, []);
+      assert.deepEqual(item.activeBlockers, []);
+      assert.equal(item.completionAt, null);
+      assert.equal(item.waitingOn, large ? "Nothing recorded" : null);
+      assert.equal(displayed.find((entry) => entry.id === item.id).name, title);
+    }
+    assert.equal(data.summary.openDecisions, 0);
+  });
+
+  test(`explicit unresolved decisions precede gates for ${large ? "large" : "ordinary"} work`, async (t) => {
+    const gates = [
+      { id: "dependency", metadata: "blocked-by: a blocked-by: b", status: "waiting", reason: "Dependency: a, b", blockers: ["a", "b"], holdKind: null, holdReason: null, holdUntil: null, holdActive: false, holdDeferred: false },
+      { id: "external", metadata: "(hold: Await vendor) (hold-kind: external)", status: "waiting", reason: "Await vendor", blockers: [], holdKind: "external", holdReason: "Await vendor", holdUntil: null, holdActive: true, holdDeferred: false },
+      { id: "deferred", metadata: `${hold("Await approval")} (hold-until: 2099-11-01) blocked-by: a`, status: "waiting", reason: "Deferred until 2099-11-01 · Await approval · Dependency: a", blockers: ["a"], holdKind: "captain", holdReason: "Await approval", holdUntil: "2099-11-01", holdActive: true, holdDeferred: true },
+      { id: "captain", metadata: hold("Await approval"), status: "captain-action", reason: "Captain · Await approval", blockers: [], holdKind: "captain", holdReason: "Await approval", holdUntil: null, holdActive: true, holdDeferred: false },
+    ];
+    const body = large ? "  Large project\n" : "";
+    const home = await fixture(t, `## In flight\n${gates.map((gate) => `- [ ] ${gate.id} - Synthetic ${gate.id} (repo: product) ${gate.metadata}\n${body}`).join("")}## Queued\n- [ ] a - Prerequisite A (repo: product)\n- [ ] b - Prerequisite B (repo: product)\n`);
+    await mkdir(path.join(home, "projects/product"), { recursive: true });
+    for (const gate of gates) await writeFile(path.join(home, `state/${gate.id}.meta`), "project=product\nvalidation_state=running\n");
+    for (const transition of ["open", "wrong-key", "resolved", "reopened"]) {
+      for (const gate of gates) {
+        let status = `working: Implementing\nneeds-decision [at=1791635123] [key=route]: Choose ${gate.id}\n`;
+        if (gate.id !== "dependency") status += "working: Progress on another step\n";
+        if (transition === "wrong-key") status += "resolved [key=other]: Unrelated answer\n";
+        if (["resolved", "reopened"].includes(transition)) status += "resolved [key=route]: Answered\nworking: Resumed\n";
+        if (transition === "reopened") status += `needs-decision [key=route] [at=1791635124]: Choose ${gate.id}\n`;
+        await writeFile(path.join(home, `state/${gate.id}.status`), status);
+      }
+      const data = await read(home);
+      const split = data.workSplit;
+      const items = new Map(split.items.map((item) => [item.id, item]));
+      const displayed = large ? split.large.projects : split.tight.inProgress.items;
+      for (const gate of gates) {
+        const item = items.get(gate.id);
+        assert.equal(item.status, transition === "resolved" ? gate.status : "captain-action");
+        assert.equal(item.waitingOn, transition === "resolved" ? gate.reason : `Choose ${gate.id}`);
+        assert.equal(displayed.find((entry) => entry.id === gate.id).waitingOn, item.waitingOn);
+        assert.deepEqual(item.pendingIssues.map((issue) => issue.key), transition === "resolved" ? [] : ["route"]);
+        assert.deepEqual(item.blockers, gate.blockers);
+        assert.deepEqual(item.activeBlockers, gate.blockers);
+        for (const field of ["holdKind", "holdReason", "holdUntil", "holdActive", "holdDeferred"]) assert.equal(item[field], gate[field]);
+        assert.equal(item.holdOpen, true);
+        assert.equal(item.isLive, false);
+      }
+      assert.equal(split.activeWorkerCount, 0);
+      for (const counts of [split.counts, split.repositories[0].counts, split.repositories[0].lanes[0].counts, split.repositories[0].lanes[0].themes[0].counts]) {
+        assert.equal(counts["captain-action"], transition === "resolved" ? 1 : 4);
+      }
+      assert.equal(data.summary.openDecisions, transition === "resolved" ? 1 : 4);
+      assert.equal((await dashboardData({ FM_HOME: home }, owner, undefined, async () => ({}))).fleet.summary.openDecisions, transition === "resolved" ? 1 : 4);
+    }
+    assert.equal(classifyCurrent({ state: "needs-decision", holdOpen: true, holdDeferred: true, pendingIssues: [{ state: "paused" }] }), "captain-action");
+    assert.equal(classifyCurrent({ state: "working", holdOpen: true, activeBlockers: ["a"], pendingIssues: [{ state: "needs-decision" }, { state: "blocked" }] }), "captain-action");
+  });
+}
