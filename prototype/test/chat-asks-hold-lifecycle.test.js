@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { backlogHoldRecords } from '../bearings.js';
+import { backlogHoldRecords, normalizeSnapshot } from '../bearings.js';
 import { createChatAskScanner, memoryStateFile, extractAsks, taskMarkers, composeCallModel } from '../chat-asks.js';
 const hold = (id, reason, checked = ' ') => `- [${checked}] ${id} - Choose (hold-kind: captain) (hold: fm-hold-v1:${Buffer.from(reason).toString('base64')})`;
 async function scanner(t, text) {
@@ -62,4 +62,76 @@ test('release/closure resolves linked holds but stale or omitted evidence never 
 test('lifecycle parser rejects duplicate ids and unscoped body prose', () => {
   assert.deepEqual(backlogHoldRecords(hold('same', 'x') + '\n- [x] same - duplicate'), []);
   assert.deepEqual(backlogHoldRecords('- [ ] work - Regular\n  Resolution mode: answered\n## Done\n  Resolution recorded by fm-captain-hold.\n  Resolution mode: released'), []);
+});
+
+const decisionModel = (rows) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: rows,
+  contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
+
+test('local chat asks stay actionable across every read-only decision matching field', async t => {
+  const cases = ['summary', 'title', 'reason', 'backlogTitle', 'backlogReason'].map(field => ({
+    text: 'DECISION NEEDED: Choose the local plan. Reply "yes".',
+    row: { id: 'remote/held', owner: 'remote', summary: 'Remote pending', [field]: 'Reply "yes".' },
+  }));
+  cases.push(...['DECISION NEEDED: [task:held] choose', 'DECISION NEEDED: Choose held.'].map(text => ({
+    text, row: { id: 'held', owner: 'remote', summary: 'Remote pending' },
+  })));
+  for (const { text, row } of cases) {
+    const { scan, store } = await scanner(t, text);
+    const base = decisionModel([row]);
+    const key = scan.asks()[0].key;
+    assert.equal(await scan.applySnapshot(base.cards, true), false);
+    assert.deepEqual(scan.asks()[0].linkedTasks, []);
+    const model = composeCallModel(base, scan.asks(), scan.view());
+    assert.deepEqual(model.cards.map(card => card.key), [base.cards[0].key, key]);
+    assert.equal(model.cards[0].chatAsks, undefined);
+    assert.equal(model.cards[1].answer.question, `chat.${key.slice(5)}`);
+    assert.equal(model.chat.linked, 0);
+    assert.equal(Object.values((await store.read()).asks)[0].status, 'open');
+    const local = { ...base.cards[0], readOnly: false, owner: '(main)' };
+    await scan.applySnapshot([local], true);
+    assert.deepEqual(scan.asks()[0].linkedTasks, [local.task]);
+    assert.equal(composeCallModel({ ...base, cards: [local] }, scan.asks(), scan.view()).chat.linked, 1);
+    await scan.applySnapshot([], true);
+    assert.deepEqual(scan.asks(), []);
+  }
+});
+
+test('saved remote-only links are excluded before composition and disappearance closure', async t => {
+  for (const fresh of [false, true]) {
+    const { scan, store } = await scanner(t, 'APPROVAL NEEDED: Choose the local plan. Reply "yes".');
+    const base = decisionModel([{ id: 'remote/held', owner: 'remote', summary: 'Reply "yes".' }]);
+    const saved = await store.read();
+    const ask = Object.values(saved.asks)[0];
+    ask.linkedTasks = [base.cards[0].task];
+    const restoredStore = memoryStateFile(saved);
+    const restored = createChatAskScanner({ home: '/synthetic/home', store: restoredStore,
+      discover: async () => ({ sources: [], warnings: [] }) });
+    await restored.scan();
+    const model = composeCallModel(base, restored.asks(), restored.view());
+    assert.equal(model.chat.open, 1);
+    assert.equal(model.chat.linked, 0);
+    assert.equal(model.cards[0].chatAsks, undefined);
+    assert.ok(model.cards[1].answer);
+    assert.equal(await restored.applySnapshot(base.cards, fresh), true);
+    assert.deepEqual(restored.asks()[0].linkedTasks, []);
+    assert.deepEqual((await restoredStore.read()).asks[ask.key].linkedTasks, []);
+    assert.equal(await restored.applySnapshot(base.cards, fresh), false);
+    await restored.applySnapshot([], true);
+    assert.equal(restored.asks()[0].key, ask.key);
+    assert.equal(restored.view().resolved.length, 0);
+  }
+});
+
+test('a shared task attaches local asks only to its actionable card', async t => {
+  const { scan } = await scanner(t, 'DECISION NEEDED: [task:held] choose');
+  const remote = decisionModel([{ id: 'held', owner: 'remote', summary: 'Remote pending' }]).cards[0];
+  const local = { ...remote, key: 'decision:local-held', owner: '(main)', readOnly: false };
+  const base = { cards: [remote, local], coverage: null, omitted: [] };
+  await scan.applySnapshot(base.cards, true);
+  assert.deepEqual(scan.asks()[0].linkedTasks, ['held']);
+  assert.equal(await scan.applySnapshot(base.cards, true), false);
+  const model = composeCallModel(base, scan.asks(), scan.view());
+  assert.equal(model.cards[0].chatAsks, undefined);
+  assert.deepEqual(model.cards[1].chatAsks.map(ask => ask.key), [scan.asks()[0].key]);
+  assert.equal(model.chat.linked, 1);
 });

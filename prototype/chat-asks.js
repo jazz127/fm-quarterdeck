@@ -114,7 +114,7 @@ const hasReply = (text, reply) => {
 };
 const HOLD_QUOTE = /"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’/g;
 function matchesHold(ask, card) {
-  if (!card.task) return false;
+  if (card.readOnly || !card.task) return false;
   if (ask.taskMarkers?.includes(card.task) || mentionsTask(ask.text, card.task)) return true;
   if (card.type !== "decision") return false;
   const replies = new Set(ask.replies.map(normalizeReply).filter(Boolean));
@@ -467,22 +467,28 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
       const evidence = fresh ? holds : [];
       cards = cards.map(card => typeof card === "string" ? { task: card } : card);
       cards = [...cards, ...evidence];
+      const linkable = cards.filter(card => !card.readOnly);
+      const excludedTasks = new Set(cards.filter(card => card.readOnly && !linkable.some(local => local.task === card.task)).map(card => card.task));
+      cards = linkable;
       const tasks = cards.filter(card => !card.closed).map(card => card.task).filter(Boolean);
       const closed = new Map(evidence.filter(row => row.closed).map(row => [row.task, row]));
       const closure = ask => {
-        const rows = ask.linkedTasks.map(task => closed.get(task));
-        if (rows.length && rows.every(Boolean)) return { resolvedTasks: ask.linkedTasks, resolutionSource: "data/backlog.md", holdResolutions: rows.map(row => ({ task: row.task, resolution: row.resolution })) };
+        const linkedTasks = ask.linkedTasks.filter(task => !excludedTasks.has(task));
+        const rows = linkedTasks.map(task => closed.get(task));
+        if (rows.length && rows.every(Boolean)) return { resolvedTasks: linkedTasks, resolutionSource: "data/backlog.md", holdResolutions: rows.map(row => ({ task: row.task, resolution: row.resolution })) };
         // Missing calls can be bucketed/aged/bounded rather than answered.
-        if (fresh && !omitted.length && ask.linkedTasks.length && !ask.linkedTasks.some(task => tasks.includes(task))) return { resolvedTasks: ask.linkedTasks, resolutionSource: "bearings snapshot" };
+        if (fresh && !omitted.length && linkedTasks.length && !linkedTasks.some(task => tasks.includes(task))) return { resolvedTasks: linkedTasks, resolutionSource: "bearings snapshot" };
         return null;
       };
-      const work = openAsks().some((ask) => cards.some(card => !ask.linkedTasks.includes(card.task) && matchesHold(ask, card)))
+      const work = openAsks().some((ask) => ask.linkedTasks.some(task => excludedTasks.has(task)) || cards.some(card => !ask.linkedTasks.includes(card.task) && matchesHold(ask, card)))
         || openAsks().some(ask => closure(ask));
       if (!work) return false;
       return (await mutate((target) => {
         let dirty = false;
         for (const ask of Object.values(target.asks)) {
           if (ask.status !== "open") continue;
+          const linkedTasks = ask.linkedTasks.filter(task => !excludedTasks.has(task));
+          if (linkedTasks.length !== ask.linkedTasks.length) { ask.linkedTasks = linkedTasks; dirty = true; }
           for (const card of cards) if (!ask.linkedTasks.includes(card.task) && matchesHold(ask, card)) { ask.linkedTasks.push(card.task); dirty = true; }
           const resolved = closure(ask);
           if (resolved) dirty = resolveAsk(target, ask, "answered", resolved) || dirty;
@@ -515,20 +521,21 @@ const linkedEntry = (ask) => ({ key: ask.key, kind: ask.kind, summary: publicTex
 // Compose the served model: snapshot cards first (each carrying the chat asks linked to it),
 // then unlinked open chat asks, newest first, at most MAX_OPEN.
 export function composeCallModel(base, asks, chatView) {
-  const tasks = new Set(base.cards.map((card) => card.task).filter(Boolean));
+  const linkable = base.cards.filter(card => !card.readOnly);
+  const tasks = new Set(linkable.map((card) => card.task).filter(Boolean));
   const linked = new Map();
   const unlinked = [];
   for (const ask of asks) {
     // The snapshot can finish between a scan and a cache read (including cold GETs
     // without a stream subscription). Dedup at composition too, before any publication.
-    const task = ask.linkedTasks.find((name) => tasks.has(name)) || base.cards.find(card => matchesHold(ask, card))?.task;
+    const task = ask.linkedTasks.find((name) => tasks.has(name)) || linkable.find(card => matchesHold(ask, card))?.task;
     if (task) linked.set(task, [...(linked.get(task) || []), ask]);
     else unlinked.push(ask);
   }
   unlinked.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   const cards = base.cards.map((card) => {
     const entries = linked.get(card.task);
-    if (!entries) return card;
+    if (card.readOnly || !entries) return card;
     const { rev, ...rest } = card;
     const withAsks = { ...rest, chatAsks: entries.map(linkedEntry) };
     return { ...withAsks, rev: shortHash(withAsks) };

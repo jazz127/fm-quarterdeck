@@ -29,6 +29,8 @@ let raw = JSON.parse(await readFile(new URL('../test/fixtures/bearings/two-calls
 raw.decisions_open[0].updated_at = new Date(Date.now() - 120000).toISOString();
 const alphaFull = `Choose the example-app release window. ${'The staged release limits exposure while validation continues. '.repeat(8)}Recommended: staged — smaller blast radius. Immediate — faster delivery.`;
 raw.decisions_open[0].summary = `${alphaFull.slice(0, 96).replace(/\s+$/, '')}…`;
+const remoteDecision = { ...raw.decisions_open.find(row => row.id === 'gamma-credential'), id: 'delta-mate/gamma-credential' };
+raw.decisions_open.find(row => row.id === 'gamma-credential').owner = '(main)';
 raw.decisions_open.find(row => row.id === 'gamma-credential').summary = 'Provide the gamma sandbox credential…';
 raw.contributions.captain.find(row => row.task === 'alpha-call').url = 'https://example.invalid/acme/example-app/pull/42';
 raw.contributions.captain.find(row => row.task === 'beta-merge').reason = `Review example-app compatibility. ${'The change is ready for review but older clients need attention. '.repeat(6)}Risk: older clients may require a migration.`;
@@ -732,6 +734,13 @@ try {
   await change();
   await until(`!document.querySelector('[data-call-key="merge:beta-merge"]')`);
   await evaluate(`() => { if(document.querySelector('[data-call-key="merge:beta-merge"]')||document.querySelector('[data-call-answered-heading]')||document.querySelector('#call-answered-toggle'))throw Error('confirmed call remains'); return 'confirmed call removed'; }`);
+  raw.decisions_open.push(remoteDecision);
+  await change();
+  await until(`!!document.querySelector('[data-call-key="decision:delta-mate/gamma-credential"]')`);
+  for (const width of [1280, 390]) {
+    await browser('resize', String(width), '844');
+    await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:delta-mate/gamma-credential"]'); card.scrollIntoView({block:'center'}); if(card.hidden||!card.innerText.includes('This call is answered in its own home.'))throw Error('remote call is not visibly read-only'); if(card.querySelector('[data-call-procrastinate], [data-call-answer], [data-call-answer-text], [data-call-thread-expand], textarea, input'))throw Error('remote call exposes local controls'); return {remoteReadOnly:true,width:innerWidth}; }`);
+  }
   await evaluate("() => { location.hash='#work'; return 'Work Split smoke'; }");
   // The fixture publishes one unchecked backlog row so the call can show its full title.
   await until("document.querySelector('#work-view').classList.contains('active') && document.querySelector('#tight-work').innerText.includes('alpha-call')");
