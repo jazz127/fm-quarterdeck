@@ -53,7 +53,7 @@ try {
         void cmd("Fetch.fulfillRequest", { requestId: reply.params.requestId, responseCode: 200,
           responseHeaders: [{ name: "content-type", value: "application/json" }],
           body: Buffer.from(JSON.stringify({ version: "0000000000000000000000000000000000000000", ready: true, delivery: "lavish", sessionId: "chromium-fixture" })).toString("base64") });
-        void cmd("Fetch.disable");
+        // Keep interception enabled until browser close so late pauses retain valid IDs.
       } else void cmd("Fetch.continueRequest", { requestId: reply.params.requestId });
     }
     if (!pending.has(reply.id)) return;

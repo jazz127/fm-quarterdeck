@@ -323,7 +323,7 @@ try {
   await command("Emulation.setTouchEmulationEnabled", { enabled: false });
   await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 844, deviceScaleFactor: 1, mobile: false });
   console.log("PASS: phone 390×844 touch type-and-send; unreachable server greys Send with a reason, Queue stays local, tab return reconnects and sends");
-  await command("Fetch.disable");
+  // Keep interception enabled until browser close so late pauses retain valid IDs.
   if (eventError) throw eventError;
   // Exercise history through actual controls: six older-page clicks retain 60 IDs.
   await evaluate("location.hash = '#lanes/alpha'");
