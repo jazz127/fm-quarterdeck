@@ -4,11 +4,12 @@ import { displayAnswer } from "./bearings-answer.js";
 import { discoverPrimarySources, mentionsTask, recordTurns } from "./chat-asks.js";
 import { createHistoryReader } from "./history-reader.js";
 import { inboxReceipts, noteWithRequestId } from "./inbox.js";
+import { landedAckKey } from "./landed-ack.js";
 
 // Card threads (BEARINGS.md "Card threads"). Text in a Captain's Call card's one box, with
 // no option selected, sends the captain's note to Firstmate through the same guarded,
 // idempotent inbox note the answers and review notes use, under a request id that names
-// the card key. Firstmate answers with `fm-inbox.sh reply <note id>`, or in the main chat.
+// the card key. Firstmate answers with `fm-inbox.sh reply <note id>`, or for local cards in the main chat.
 // The thread view is a
 // read-only, mechanical join of the card's inbox notes, their replies, and Firstmate's own
 // primary-transcript messages that mention the card's task id. No model, no writes under
@@ -18,7 +19,7 @@ export const THREAD_NOTE_TAG = "fm-quarterdeck-thread";
 export const MAX_THREAD_BODY_BYTES = 4096;
 export const MAX_QUESTION_BYTES = 2000;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CARD_KEY = /^(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}$/;
+const CARD_KEY = /^(?:decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})?|(?:merge|chat|landed):[A-Za-z0-9._-]{1,160})$/;
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const PREFIX = "quarterdeck-thread:";
@@ -33,7 +34,7 @@ export class ThreadRefused extends Error {
 const refuse = (status, code, message) => { throw new ThreadRefused(status, code, message); };
 const bytes = (text) => Buffer.byteLength(text, "utf8");
 
-export const validCardKey = (key) => typeof key === "string" && CARD_KEY.test(key);
+export const validCardKey = (key) => typeof key === "string" && (CARD_KEY.test(key) || landedAckKey(key));
 // The card key is embedded verbatim when it fits the inbox id grammar; a longer key is
 // replaced by its hash, and the note's tagged fence still names the exact key.
 export const threadKeyPart = (key) => INBOX_ID.test(`${PREFIX}${key}:${"0".repeat(36)}`) ? key : `h-${shortHash(key)}`;
@@ -78,11 +79,14 @@ function parseBody(body) {
 // escaped so the captain's text can never close the fence.
 export function formatThreadNote({ key, card, text, requestId }) {
   const task = cardTask(card, key);
-  const envelope = { schema: THREAD_SCHEMA, key, type: card?.type || key.split(":")[0], ...(task ? { task } : {}),
+  const remote = card?.owner && card.owner !== "(main)";
+  const envelope = { schema: THREAD_SCHEMA, key, type: card?.type || key.split(":")[0], ...(task ? { task } : {}), ...(remote ? { owner: card.owner } : {}),
     ...(card?.type === "chat" ? { ask: threadText(`${card.marker}: ${card.summary}`, 1024) } : {}), question: text, requestId };
   return [
     `Captain asks about ${cardLabel(card, key)} from Quarterdeck: ${text.replace(/\s+/g, " ")}`,
-    "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread) or in the main chat naming the task id. This is a question, not an answer; nothing was decided.",
+    remote
+      ? "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread). This is a question, not an answer; nothing was decided."
+      : "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread) or in the main chat naming the task id. This is a question, not an answer; nothing was decided.",
     "",
     `\`\`\`json ${THREAD_NOTE_TAG}`,
     JSON.stringify(envelope, null, 2).replaceAll("`", "\\u0060"),
@@ -169,8 +173,9 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
     while (sent.size > MAX_REMEMBERED) sent.delete(sent.keys().next().value);
   };
   return {
-    // A question may be asked about any open card, answerable or not. A retry of the same
-    // request id resends the identical note (idempotent in Firstmate) even after the card left.
+    // A question may be asked about an interactive open card, answerable or not.
+    // A retry of the same request id resends the identical note (idempotent in Firstmate)
+    // even after the card left.
     async submit(body, model) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
@@ -180,6 +185,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
+        if (card.readOnly) refuse(409, "read-only", "This call is answered in its own home");
         return { digest, key: parsed.key, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);
@@ -209,7 +215,8 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       for (const ask of card?.chatAsks || []) entries.push({ kind: "chat-ask", from: "firstmate", at: ask.clock?.at || null, text: threadText(`${ask.kind ? `${ask.kind.toUpperCase()} NEEDED: ` : ""}${ask.summary}`) });
       const task = cardTask(card, key);
       let transcriptState = "ready", omitted = false;
-      if (task) {
+      const localTranscript = (!card?.owner || card.owner === "(main)") && !/^landed:[^:]+:/.test(key) && !card?.readOnly;
+      if (task && localTranscript) {
         try {
           const found = await transcript();
           omitted = found.omitted;

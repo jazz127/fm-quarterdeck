@@ -272,6 +272,7 @@ try {
     entries: [{ kind: "message", text: "Synthetic delayed publication", region: null, route: "#overview", version: "a".repeat(40) }] };
   await reload({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: delayedId, payload: delayed }] });
   await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
+  assert.deepEqual(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]"), { id: delayedId, payload: delayed }, "reload restores the delayed-publication fixture before review startup");
   await evaluate("document.querySelector('#review-send').click()");
   await until("Boolean(JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]?.rejected)");
   await deliverLocalReview({ ...delayed, provenance: { commit: delayed.version, branch: "uat" } }, receipts);

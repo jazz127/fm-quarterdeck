@@ -31,7 +31,7 @@ class FirstmateOperatingDocsTests(unittest.TestCase):
             "private local override", "[fm-lane <LaneName>]", "[end <LaneName>]",
             "ACTION NEEDED", "APPROVAL NEEDED", "DECISION NEEDED", "[task:<id>]",
             "After **every local landing**",
-            "reply succeeds", "Never merge from free text", "**one text box**",
+            "reply succeeds", "Never merge from free text",
             "Semi-away", "Mechanical surfacing", "Before **every public push**",
             "maintainer/captain owns their merge", "Mobile friendliness",
             "Reading this file installs nothing", "Without such an override",

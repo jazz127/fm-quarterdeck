@@ -15,8 +15,8 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Queue is accent-filled with an ink border; a merge Queue uses the amber mix.
 - Held cards keep their update notice at full strength, with no dimmed or outdated treatment.
 - Long titles, options, links and ids wrap so the full text stays readable on desktop and on a phone.
-- Thread history stays collapsed. A card with two or more entries shows an expand control with the entry count; one entry does not.
-- Each card has one text box, with Queue, Send and Edit beside it, and the hint "Pick an option to answer, or just type - Firstmate replies in the thread."
+- Thread disclosure follows the [card-thread contract](BEARINGS.md#card-threads).
+- Composer availability and controls follow the [answer contract](BEARINGS.md#answers).
 - Opening a thread shows the latest exchange above that box, the count of earlier messages, and a control that expands the same history.
 - Each card carries a small coloured dot beside the type chip, one colour per state: Active green, Queued amber, Sent blue, Procrastinated muted.
 - Both Sent labels, waiting for Firstmate to read and Firstmate is on it, use the Sent blue dot.
@@ -32,9 +32,9 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Captain's Call stays in the first column.
 - Just landed fills the second column (`#overview-secondary`) with the same poster cards: a Landed chip, the repository, the clock, the full landing title, and a full pull-request link or the label local main.
 - Each landed card has an Acknowledge control and one follow-up box. It has no Procrastinate control.
-- The Just landed heading uses the same badge style as Captain's Call; [Just landed](BEARINGS.md#just-landed) owns its count and acknowledgement behavior.
+- Overview count badges and phone tab labels follow the [feed-health indicators](BEARINGS.md#feed-health), including loading, unavailable and stale readings.
 - Acknowledge and Acknowledged (N) are at least 44px high.
-- On a phone the two Overview sections are tabs, Captain's Call (N) and Just landed (N). Just landed N is the same new count, and the chosen tab is remembered for that viewer.
+- On a phone the two Overview sections are tabs; [Just landed](BEARINGS.md#just-landed) owns their count and remembered-selection behavior.
 - Second mates occupy a separate section below the columns, outside both phone tab panels, so they stay visible on either tab. [Work taxonomy](WORK-TAXONOMY.md#explicit-three-level-navigation) owns their sources and visibility.
 - Chat asks keep a double left border at the same width as other cards, so the mark does not indent the card. Also asked in chat stacks on its own line and does not widen the context column.
 - A decision title is the filed hold's full reason when one is recorded. Also asked in chat is a smaller secondary line, and a `[task:...]` marker is omitted. Reply phrases from that ask are option choices under the reason.

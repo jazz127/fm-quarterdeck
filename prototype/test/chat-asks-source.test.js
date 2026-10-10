@@ -9,6 +9,7 @@ function fixture(options = {}) {
   let base = { rev: 'base', cards: [], state: 'ready', coverage: {}, omitted: [] }, asks = [], scans = 0, closes = 0;
   const hub = {
     current: () => base,
+    freshness: () => { const {rev,state,observedAt,checkedAt,stale,error}=base; return {rev,state,observedAt,checkedAt,stale,error,ageMs:1234,maxAgeMs:300000}; },
     subscribe(listener) { hubListeners.add(listener); return () => hubListeners.delete(listener); },
     close() { closes++; },
   };
@@ -58,6 +59,8 @@ test('scans emit model only for changed content and stay silent otherwise; hub e
   await f.publish({ ...f.base(), checkedAt: '2030-01-02T10:01:00Z' }, 'observed');
   assert.equal(events.at(-1).type, 'observed');
   assert.equal(events.at(-1).checkedAt, '2030-01-02T10:01:00Z');
+  assert.equal(events.at(-1).ageMs, 1234);
+  assert.equal(events.at(-1).maxAgeMs, 300000);
   stop(); f.source.close();
 });
 

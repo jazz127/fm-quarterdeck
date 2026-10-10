@@ -3,9 +3,9 @@ import { inboxNoteState, inboxReceipts, noteWithRequestId } from "./inbox.js";
 
 // Captain's Call answers (BEARINGS.md "Answers"). Quarterdeck only relays the captain's
 // explicit answer to Firstmate as an fm-bearings-answer.v1 envelope, the same context the
-// /bearings lavish board queues, through the guarded idempotent inbox note. Firstmate then
-// feeds its keyed-answer intake; Quarterdeck never runs fm-captain-hold.sh, never merges,
-// and never closes a card itself.
+// /bearings lavish board queues, through the guarded idempotent inbox note. Feeding
+// keyed-answer intake needs a separately integrated Firstmate receiver. Quarterdeck
+// never runs fm-captain-hold.sh or merges; only chat-only asks resolve locally.
 export const ANSWER_SCHEMA = "fm-bearings-answer.v1";
 // The board's own cap on the displayed answer ("value - note"), in UTF-8 bytes.
 export const MAX_ANSWER_BYTES = 512;
@@ -36,7 +36,7 @@ function parseBody(body) {
   if (Object.keys(body).sort().join(",") !== FIELDS.join(",")) refuse(400, "invalid", "Answer fields must be requestId, key, cardRev, selection and note");
   const { requestId, key, cardRev, selection } = body;
   if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) refuse(400, "invalid", "Answer request id must be a lowercase UUID");
-  if (typeof key !== "string" || key.length > 200 || typeof cardRev !== "string" || !/^[0-9a-f]{16}$/.test(cardRev)) refuse(400, "invalid", "Answer must name a card and the revision shown");
+  if (typeof key !== "string" || key.length > 330 || typeof cardRev !== "string" || !/^[0-9a-f]{16}$/.test(cardRev)) refuse(400, "invalid", "Answer must name a card and the revision shown");
   if (typeof selection !== "string" || typeof body.note !== "string") refuse(400, "invalid", "Selection and note must be text");
   const note = body.note.replace(/\r\n?/g, "\n").trim();
   if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(note)) refuse(422, "invalid-text", "The note contains control characters");
@@ -57,7 +57,7 @@ export function validateAnswer(body, model) {
   const card = (model.cards || []).find((entry) => entry.key === parsed.key);
   if (!card) refuse(409, "gone", "This call is no longer open");
   if (card.rev !== parsed.cardRev) refuse(409, "changed", "This call changed; review it before answering");
-  if (!card.answer) refuse(409, "not-answerable", "This call cannot be answered from Quarterdeck; answer in chat");
+  if (card.readOnly || !card.answer) refuse(409, "not-answerable", "This call cannot be answered from Quarterdeck; answer in chat");
   if (parsed.selection && !card.answer.options.some((option) => option.value === parsed.selection)) refuse(422, "bad-option", "That option is not offered for this call");
   return { ...parsed, card };
 }

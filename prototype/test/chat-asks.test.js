@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { answerEnvelope, formatAnswerNote, validateAnswer } from "../bearings-answer.js";
-import { createBearingsHub, normalizeSnapshot } from "../bearings.js";
+import { backlogHoldRecords, createBearingsHub, normalizeSnapshot } from "../bearings.js";
 import { chatAsksPath, composeCallModel, createCallSource, createChatAskScanner, extractAsks, extractReplies, mentionsTask } from "../chat-asks.js";
 import { claudeProjectDirectory } from "../claude-transcript.js";
 import { createServer } from "../server.js";
@@ -240,10 +240,11 @@ test("an ask naming a filed hold is shown inside that card, not twice, and resol
   const again = composeCallModel(held, scanner.asks(), scanner.view());
   assert.equal(again.rev, model.rev, "an unchanged composition keeps its revision");
 
-  // A stale snapshot never closes a linked ask; a fresh one without the hold does.
   await scanner.applySnapshot([], false);
   assert.equal(scanner.asks().length, 2);
   await scanner.applySnapshot([], true);
+  assert.equal(scanner.asks().length, 2);
+  await scanner.applySnapshot([], true, backlogHoldRecords('- [x] sample-task - Rollout (hold-kind: captain)'));
   assert.deepEqual(scanner.asks().map((ask) => ask.recordId), ["f-2"]);
 });
 
@@ -274,6 +275,8 @@ test("filed holds win by quoted replies in titles or reasons without task-id men
   await scanner.applySnapshot([], false);
   assert.equal(scanner.asks().length, 4, "stale disappearance cannot close linked asks");
   await scanner.applySnapshot([], true);
+  assert.equal(scanner.asks().length, 4);
+  await scanner.applySnapshot([], true, backlogHoldRecords('- [x] choice-hold - Plan (hold-kind: captain)\n- [x] release-hold - Package (hold-kind: captain)'));
   assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["unquoted", "partial"]);
 });
 
