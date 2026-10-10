@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fingerprint } from "./agent-state.js";
+import { parseStatusLine } from "./firstmate-records.js";
 const exec = promisify(execFile);
 export const WORK_STATUSES = ["active", "review", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
@@ -66,22 +67,41 @@ export function resolveRepositoryIdentity(recorded, state, projectPaths = new Ma
   return { repositoryPath, repository };
 }
 
-export function foldStatusLines(lines) {
-  const events = lines.map((line, index) => {
-    const match = line.match(/^([a-z-]+)(?:\s+\[([^\]]+)\])?:\s*(.+)$/i);
-    return { state: match?.[1].toLowerCase() || "update", text: match?.[3] || line, line, index, key: match?.[2]?.match(/(?:^|\s)key=([a-zA-Z0-9._-]+)(?=\s|$)/)?.[1] || line.match(/\[key=([a-zA-Z0-9._-]+)\]/)?.[1] || null };
-  });
+export function foldStatusLines(lines, { kind = "unknown" } = {}) {
+  const events = lines.map((line, index) => ({ ...parseStatusLine(line), line, index }));
   const open = new Map();
   const resolved = new Set();
+  const waitingStates = ["blocked", "paused", "needs-decision", "waiting"];
+  const waitingEvents = new Map();
+  const close = (key) => {
+    open.delete(key);
+    for (const index of waitingEvents.get(key) || []) resolved.add(index);
+    waitingEvents.delete(key);
+  };
   for (const event of events) {
-    if (["blocked", "paused", "needs-decision", "waiting"].includes(event.state) && event.key) { open.set(event.key, event); resolved.delete(event.key); }
-    else if (event.state === "resolved" && event.key && open.has(event.key)) { open.delete(event.key); resolved.add(event.key); }
+    if (waitingStates.includes(event.state) && event.transitionAllowed) {
+      if (!waitingEvents.has(event.key)) waitingEvents.set(event.key, []);
+      waitingEvents.get(event.key).push(event.index);
+    }
+    if (["done", "failed"].includes(event.state) && ["ship", "scout"].includes(kind)) {
+      for (const key of open.keys()) close(key);
+    } else if (event.transitionAllowed) {
+      if (["blocked", "needs-decision"].includes(event.state)) {
+        open.delete(event.key);
+        open.set(event.key, event);
+      } else if (["resolved", "captain-held"].includes(event.state)) close(event.key);
+    }
   }
-  const actionable = events.filter((event) => !["resolved", "update"].includes(event.state) && !(event.key && resolved.has(event.key) && ["blocked", "paused", "needs-decision", "waiting"].includes(event.state)));
-  return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1), pendingIssues: [...open.values()].map(({ key, state }) => ({ key, state })) };
+  const actionable = events.filter((event) => !["resolved", "captain-held", "update"].includes(event.state) && !resolved.has(event.index)
+    && (!waitingStates.includes(event.state) || event.transitionAllowed));
+  return { latest: actionable.at(-1), completion: events.filter((event) => event.state === "done").at(-1),
+    pendingIssues: [...open.values()].map(({ key, state, text }) => ({ key, state, text })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [] }) {
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, blockers = [] }) {
+  if (holdOpen && (holdDeferred || blockers.length)) return "waiting";
+  if (holdOpen && holdKind === "captain") return "captain-action";
+  if (holdActive) return "waiting";
   if (pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
   if (pendingIssues.length) return "waiting";
   if (state === "needs-decision") return "captain-action";
@@ -298,12 +318,14 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     }
     const completionAttention = completionFingerprint ? evidence.length ? "previously-done" : acknowledgementsAvailable ? "newly-done" : "unknown" : null;
     if (status === "newly-done") status = completionAttention;
-    if (record.reviewRun && status !== "captain-action" && record.state !== "needs-decision") status = "review";
+    if (record.reviewRun && status !== "captain-action" && record.state !== "needs-decision" && !(record.holdOpen && (record.holdActive || record.holdDeferred || record.blockers?.length))) status = "review";
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
       lane, theme, status, isLive, sourceState: record.state,
       endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
-      retained: Boolean(record.retained), pendingIssues: record.pendingIssues || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
+      retained: Boolean(record.retained), pendingIssues: (record.pendingIssues || []).map((issue) => ({ ...issue, ...(issue.text ? { text: safeWorkNote(issue.text) } : {}) })),
+      holdKind: record.holdKind ? safeWorkNote(record.holdKind) : null, holdReason: record.holdReason ? safeWorkNote(record.holdReason) : null, holdUntil: record.holdUntil || null,
+      blockers: record.blockers || [], completionAttention, large: Boolean(record.large), waitingOn: record.waitingOn ? safeWorkNote(record.waitingOn) : null,
       completionFingerprint, completionSourceFingerprint, completionAt: record.completionAt || null, evidence,
       unboundCommit: Boolean(record.unboundCommit && !bound),
       delivery: completionFingerprint ? evidence.some((entry) => entry.tier === "production") ? "Live production" : evidence.some((entry) => entry.tier === "uat") ? "Live UAT · ready for review" : "Ready for review · deployment unknown" : "Not completed",
