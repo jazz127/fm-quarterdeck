@@ -21,6 +21,12 @@ export class BearingsUnavailable extends Error {}
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+// Cached remote decisions use <home>/<task>; retain the scope as card identity.
+const decisionId = (value) => {
+  if (typeof value !== "string") return null;
+  const parts = value.split("/");
+  return parts.length <= 2 && parts.every(part => TASK_ID.test(part)) ? value : null;
+};
 const TOKEN = /^[A-Za-z0-9()][A-Za-z0-9 ()._:-]{0,79}$/;
 const token = (value) => typeof value === "string" && TOKEN.test(value) ? value : null;
 const isoDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT/.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
@@ -426,16 +432,20 @@ function callSection(raw) {
   const cards = [];
   const decided = new Set();
   for (const row of raw.decisions_open) {
-    const id = object(row) && typeof row.id === "string" && TASK_ID.test(row.id) ? row.id : null;
+    const id = object(row) ? decisionId(row.id) : null;
     // Keep the complete ask: choices and recommendations may exist only in this text.
     const summary = id && publicText(row.summary, Infinity);
     if (!id || !summary || decided.has(id)) { invalid += 1; continue; }
     decided.add(id);
-    const contribution = raw.contributions.captain.find((entry) => object(entry) && entry.task === id && httpsUrl(entry.url));
+    const owner = token(row.owner);
+    const readOnly = owner ? owner !== "(main)" : id.includes("/");
+    const task = !readOnly && id.includes("/") ? id.split("/")[1] : id;
+    decided.add(task);
+    const contribution = raw.contributions.captain.find((entry) => object(entry) && entry.task === task && httpsUrl(entry.url));
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), answer: decisionAnswer(row, id) }));
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), answer: readOnly ? null : decisionAnswer(row, task) }));
   }
   const merges = new Set();
   for (const row of raw.contributions.captain) {
@@ -484,9 +494,10 @@ function landedSection(raw) {
   for (const row of raw.landed) {
     const id = object(row) && typeof row.id === "string" && TASK_ID.test(row.id) ? row.id : null;
     const what = id ? publicText(row.what, Infinity) : null;
-    if (!id || !what || seen.has(id)) { landedInvalid += 1; continue; }
-    seen.add(id);
-    const owner = token(row.owner);
+    const owner = id ? token(row.owner) : null;
+    const key = `landed:${id}${owner && owner !== "(main)" ? `:${shortHash(owner)}` : ""}`;
+    if (!id || !what || seen.has(key)) { landedInvalid += 1; continue; }
+    seen.add(key);
     let { url, artifact } = landedArtifact(row.artifact);
     const backlogTitle = owner === "(main)" ? publicText(row.backlogTitle, Infinity) : null;
     if (!url && owner === "(main)") {
@@ -495,7 +506,10 @@ function landedSection(raw) {
     }
     const repo = repoName(row.repo) || (owner === "(main)" ? repoName(row.backlogRepo) : null);
     const at = owner === "(main)" ? newerAt(durableDate(row.landedAt), durableDate(row.backlogLandedAt)) : null;
-    landed.push(withRev({ key: `landed:${id}`, type: "landed", task: id, what, ...(backlogTitle ? { backlogTitle } : {}), repo, owner, url, artifact, clock: { label: "Landed", at } }));
+    // Retain the legacy revision (which already includes owner) so existing
+    // acknowledgements still match only the exact landing they recorded.
+    const card = withRev({ key: `landed:${id}`, type: "landed", task: id, what, ...(backlogTitle ? { backlogTitle } : {}), repo, owner, url, artifact, clock: { label: "Landed", at } });
+    landed.push({ ...card, key });
   }
   return { landed, landedInvalid };
 }
@@ -532,8 +546,11 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
     const executable = path.join(home, "bin", "fm-bearings-snapshot.sh");
     try { await accessImpl(executable, constants.X_OK); } catch { throw new BearingsUnavailable("Firstmate bearings snapshot is not installed"); }
     return new Promise((resolve, reject) => {
-      // Never --include-prs: the background loop makes no GitHub calls.
-      const child = spawnImpl(executable, ["--json"], { env: { ...process.env, FM_HOME: home }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      // Remote collection stages tracked jobs in other homes. Dashboard reads use
+      // Firstmate's validated parent cache instead; Firstmate owns its refresh.
+      // Bound even a collector that waits for its disabled transport. Keep the
+      // independent 45 s process budget and never opt into GitHub discovery.
+      const child = spawnImpl(executable, ["--json"], { env: { ...process.env, FM_HOME: home, FM_SSH_BIN: "/usr/bin/false", FM_SNAPSHOT_BUDGET: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
       let stdout = "", stderr = "", failure = null, settled = false;
       const stop = (reason) => {
         failure ||= reason;
@@ -621,7 +638,15 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
   const listeners = new Set();
 
   const watched = () => !closed && (listeners.size > 0 || now() - pollSeenAt < pollTtlMs);
-  const freshness = () => ({ rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error });
+  const age = () => model.observedAt ? Math.max(0, now() - Date.parse(model.observedAt)) : null;
+  const current = () => {
+    if (model.state === "ready" && age() >= ceiling) model = { ...model, state: "stale", stale: true };
+    return model;
+  };
+  const freshness = () => {
+    current();
+    return { rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error, ageMs: age(), maxAgeMs: ceiling };
+  };
   const emit = (event) => { for (const listener of [...listeners]) { try { listener(event); } catch {} } };
 
   function publish(next) {
@@ -693,7 +718,7 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
     rerun = false;
   }
   return {
-    current: () => model,
+    current,
     freshness,
     subscribe(listener) {
       listeners.add(listener);

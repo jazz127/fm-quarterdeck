@@ -53,7 +53,13 @@ test("live model and observation feed the patcher, badge and independent Overvie
   assert.equal(app.run('window.callObservations.length'), 1);
   assert.match(app.node('#view-freshness').title, /Snapshot failed/);
   app.run("window.callHooks.onConnection({state:'reconnecting'})");
-  assert.equal(app.node('#fleet-state b').textContent, 'disconnected');
+  assert.equal(app.node('#fleet-state b').textContent, 'stale');
+  app.run("window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Snapshot timed out'})");
+  assert.equal(app.node('#call-badge').textContent, '?');
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
+  app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').hidden, true);
 });
 
 test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
@@ -2948,4 +2954,13 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
       assert.equal(surface.querySelector('[role="progressbar"]'), null);
     }
   }
+});
+
+test("bearings badge uses the held card's rendered lifecycle without counting removed source cards", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.run(`callPatcher.applied = {cards:[{key:'decision:held',answered:true},{key:'decision:removed'}]}; renderCallBadge({state:'ready',cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run(`renderCallBadge({state:'stale',stale:true,cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
+  assert.equal(app.node('#call-badge').textContent, '1 · stale');
 });

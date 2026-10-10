@@ -116,7 +116,8 @@ test('honest empty states and coverage disclose stale, missing and omitted evide
   assert.equal(view.emptyHtml({ state: 'ready', coverage: { checked: 2, known: 5 } }), 'No decision is recorded · checked 2 of 5');
   assert.match(view.emptyHtml({ state: 'loading' }), /Checking/);
   assert.match(view.emptyHtml({ state: 'unavailable', error: '<script>' }), /unavailable · &lt;script&gt;/);
-  assert.match(view.emptyHtml({ state: 'stale', coverage: { provenClear: true } }), /Last known calls/);
+  assert.match(view.emptyHtml({ state: 'stale', coverage: { provenClear: true } }), /Last successful|last successful/);
+  assert.doesNotMatch(view.emptyHtml({ state: 'stale', coverage: { provenClear: true } }), /right now/);
   const text = view.coverageText({ state: 'stale', stale: true, error: 'Snapshot failed', coverage: { checked: 2, known: 5, captainOmitted: 2, unmeasuredHomes: 1 }, omitted: [{ kind: 'deferred-holds', count: 3 }, { kind: 'decisions-bound', shown: 20, total: 30 }, { kind: 'invalid-rows', count: 1 }] });
   for (const phrase of ['Stale', 'checked 2 of 5', 'Snapshot failed', '+3 later-dated or blocked calls not shown', '20 of 30 decisions shown', '1 invalid calls withheld', '2 merge calls not shown', '1 homes unmeasured']) assert.ok(text.includes(phrase), phrase);
 });

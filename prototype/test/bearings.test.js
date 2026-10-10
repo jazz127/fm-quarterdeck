@@ -4,6 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { BearingsUnavailable, MODEL_SCHEMA, contentRevision, createBearingsHub, createSnapshotRunner, normalizeSnapshot, publicText } from "../bearings.js";
 import { createServer } from "../server.js";
 
@@ -106,6 +107,35 @@ test("normalizer drops unsafe URLs and invalid rows with a disclosed count", asy
   assert.equal(content.cards.find((card) => card.type === "merge").url, null);
   assert.deepEqual(content.omitted.at(-1), { kind: "invalid-rows", count: 2 });
   assert.equal(publicText("see ~/private/tree/file.txt and /opt/a/b"), "see …/file.txt and …/b");
+});
+
+test("cached decisions retain distinct scoped identities for the same local task", async () => {
+  const raw = await fixture("cached-native");
+  const remote = raw.decisions_open[0];
+  raw.decisions_open.push(
+    { ...remote, id: "cached-decision", owner: "(main)" },
+    { ...remote, id: "other-mate/cached-decision", owner: "other-mate" },
+    { ...remote },
+  );
+  const model = normalizeSnapshot(raw);
+  assert.deepEqual(model.cards.map(card => [card.key, card.task, card.owner]), [
+    ["decision:cached-mate/cached-decision", "cached-mate/cached-decision", "cached-mate"],
+    ["decision:cached-decision", "cached-decision", "(main)"],
+    ["decision:other-mate/cached-decision", "other-mate/cached-decision", "other-mate"],
+  ]);
+  assert.deepEqual(model.omitted, [{ kind: "invalid-rows", count: 1 }]);
+});
+
+test("cached decisions reject malformed scoped identity components", async () => {
+  const raw = await fixture("cached-native");
+  const invalidIds = ["/cached-decision", "cached-mate/", "../cached-decision", "cached-mate/..",
+    "cached-mate/../cached-decision", "cached-mate//cached-decision", "cached-mate/cached-decision/extra",
+    "cached-mate/bad id", "bad owner/cached-decision", "cached-mate\\cached-decision",
+    "cached-mate/%2e%2e", "a".repeat(161) + "/cached-decision", "cached-mate/" + "a".repeat(161)];
+  raw.decisions_open.push(...invalidIds.map(id => ({ ...raw.decisions_open[0], id })));
+  const model = normalizeSnapshot(raw);
+  assert.deepEqual(model.cards.map(card => card.key), ["decision:cached-mate/cached-decision"]);
+  assert.deepEqual(model.omitted, [{ kind: "invalid-rows", count: invalidIds.length }]);
 });
 
 test("content revision ignores the snapshot clock but follows every visible change", async () => {
@@ -429,6 +459,35 @@ async function liveServer(context, { revision = "a".repeat(40), snapshot, source
   return { server, hub, source: hubSource, port: server.address().port, base: `http://127.0.0.1:${server.address().port}`, moveHead: (value) => { head = value; } };
 }
 
+test("cached native decisions reach the bearings API and Overview alongside their landing", async (context) => {
+  // Oracle: fm-bearings.v1 output captured from unmodified Firstmate fb75c1f,
+  // reading a parent cache emitted by fm-fleet-snapshot.sh --secondmate-home-summary.
+  // A filed remote captain hold must remain visible with its full scoped identity.
+  const raw = await fixture("cached-native");
+  const clock = fakeClock();
+  const { base } = await liveServer(context, { clock, source: controlledRunner(raw) });
+  await fetch(`${base}/api/bearings`);
+  await clock.advance(0);
+  const response = await fetch(`${base}/api/bearings`);
+  assert.equal(response.status, 200);
+  const model = await response.json();
+  assert.equal(model.state, "ready");
+  assert.deepEqual(model.cards.map(card => [card.key, card.task, card.owner, card.summary]), [[
+    "decision:cached-mate/cached-decision", "cached-mate/cached-decision", "cached-mate",
+    "Choose the cached remote rollout: Choose blue or green",
+  ]]);
+  assert.deepEqual(model.landed.map(card => [card.task, card.owner, card.what]), [[
+    "cached-landed", "cached-mate", "Remote cached release notes",
+  ]]);
+  assert.match(model.landed[0].key, /^landed:cached-landed:[0-9a-f]{16}$/);
+  assert.deepEqual(model.omitted, []);
+  const window = {};
+  vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
+  const html = window.bearingsView.cardHtml(model.cards[0]);
+  assert.match(html, /Choose the cached remote rollout: Choose blue or green/);
+  assert.match(html, /Task <code>cached-mate\/cached-decision<\/code>/);
+});
+
 test("GET /api/bearings serves the cached model, ?since answers unchanged, and no path leaks", async (context) => {
   const { base, hub } = await liveServer(context);
   const first = await (await fetch(`${base}/api/bearings`)).json();
@@ -440,7 +499,7 @@ test("GET /api/bearings serves the cached model, ?since answers unchanged, and n
   assert.equal(model.cards.length, 3);
   assert.doesNotMatch(JSON.stringify(model), /\/srv\/|synthetic\/home/);
   const unchanged = await (await fetch(`${base}/api/bearings?since=${model.rev}`)).json();
-  assert.deepEqual(Object.keys(unchanged).sort(), ["checkedAt", "error", "firstmateActivity", "observedAt", "rev", "stale", "state", "unchanged"]);
+  assert.deepEqual(Object.keys(unchanged).sort(), ["ageMs", "checkedAt", "error", "firstmateActivity", "maxAgeMs", "observedAt", "rev", "stale", "state", "unchanged"]);
   assert.equal(unchanged.unchanged, true);
   assert.equal(unchanged.firstmateActivity.lastTurnAt, null);
   assert.ok(Number.isFinite(Date.parse(unchanged.firstmateActivity.readAt)));
@@ -525,4 +584,59 @@ test("streams are capped, recycled, refused through preview paths, and ended by 
   await new Promise((resolve) => server.close(resolve));
   await c.until(() => c.ended, "server.close ends open streams instead of hanging");
   assert.equal(c.events.at(-1).event, "bye");
+});
+
+test("dashboard snapshots skip staged remote jobs and bound collection independently", async (context) => {
+  const raw = await fixture("clear");
+  const home = await syntheticHome(context, `printf '%s|%s' "$FM_SSH_BIN" "$FM_SNAPSHOT_BUDGET" > "$FM_HOME/policy"\ncat "$FM_HOME/fixture.json"`);
+  await writeFile(path.join(home, "fixture.json"), JSON.stringify(raw));
+  await createSnapshotRunner(home)();
+  assert.equal(await readFile(path.join(home, "policy"), "utf8"), "/usr/bin/false|1");
+});
+
+test("health separates HTTP readiness from missing, stale and empty bearings", async (context) => {
+  const source = controlledRunner(new BearingsUnavailable("Bearings snapshot timed out"));
+  const clock = fakeClock();
+  const { base, hub } = await liveServer(context, { source, clock });
+  const health = async () => (await fetch(`${base}/api/health`)).json();
+  assert.equal((await health()).bearings.state, "loading");
+  const leave = hub.subscribe(() => {});
+  context.after(leave);
+  hub.touch();
+  await clock.advance(0);
+  let body = await health();
+  assert.equal(body.ok, true, "HTTP service remains ready for recovery");
+  assert.equal(body.status, "degraded");
+  assert.equal(body.bearings.state, "unavailable");
+  assert.equal(body.bearings.ageMs, null);
+  source.set(await fixture("clear"));
+  await clock.advance(30000);
+  hub.request();
+  await clock.advance(2000);
+  body = await health();
+  assert.equal(body.status, "ok");
+  assert.equal(body.bearings.state, "ready");
+  assert.equal(body.bearings.ageMs, 0);
+  source.set(new BearingsUnavailable("Bearings snapshot timed out"));
+  await clock.advance(30000);
+  hub.request();
+  await clock.advance(2000);
+  body = await health();
+  assert.equal(body.status, "degraded");
+  assert.equal(body.bearings.state, "stale");
+  assert(body.bearings.ageMs >= 30000);
+});
+
+test("an unwatched last-good snapshot becomes stale at its age ceiling", async () => {
+  const clock = fakeClock();
+  const source = controlledRunner(await fixture("clear"));
+  const { hub } = hubFor(clock, source);
+  const leave = hub.subscribe(() => {});
+  await clock.advance(0);
+  leave();
+  await clock.advance(300000);
+  assert.equal(hub.current().state, "stale");
+  assert.equal(hub.current().stale, true);
+  assert.equal(hub.freshness().ageMs, 300000);
+  hub.close();
 });
