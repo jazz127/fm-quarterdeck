@@ -171,11 +171,11 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
   return {
     // A question may be asked about any open card, answerable or not. A retry of the same
     // request id resends the identical note (idempotent in Firstmate) even after the card left.
-    async submit(body, model) {
+    async submit(body, model, { immediate = false } = {}) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
       const digest = shortHash([parsed.key, parsed.text]);
-      const previous = sent.get(parsed.requestId);
+      const previous = sent.get(parsed.requestId) || await note.lookup?.(threadRequestId(parsed.key, parsed.requestId));
       if (previous && previous.digest !== digest) refuse(409, "request-reused", "This request id was already used for a different question");
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
@@ -184,7 +184,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       })();
       remember(parsed.requestId, record);
       let receipt;
-      try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
+      try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text, { record, immediate }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
       return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at };
     },
     // The card's own history, oldest first. Inbox receipts are required; the transcript is
@@ -196,7 +196,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const entries = [];
       const data = await receipts(home);
       const notes = new Map();
-      for (const item of [...data.pending, ...data.handled]) if (item?.id && !notes.has(item.id)) notes.set(item.id, item);
+      for (const item of [...data.pending, ...data.handled]) if (item?.id && !notes.has(item.request_id || item.id)) notes.set(item.request_id || item.id, item);
       for (const item of notes.values()) {
         const match = noteForCard(item, key, card);
         if (!match) continue;

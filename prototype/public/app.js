@@ -1844,7 +1844,7 @@ const callPatcher = window.bearingsPatch?.createCallPatcher({
 });
 // Queued answers join the review panel's queue; its Send batch sends them with the notes.
 callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key) => { callThreads?.noteSent(key); renderCallLifecycle(); } });
-if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: () => callAnswers.sendQueued(), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
+if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: (options) => callAnswers.sendQueued(options), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
 callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
 callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });
 callProcrastinate = callPatcher && window.bearingsProcrastinate?.createController?.({ list: $("#call-cards"), onChange: () => renderCallLifecycle() });

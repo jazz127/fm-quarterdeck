@@ -444,3 +444,27 @@ Fixtures under `test/fixtures/bearings/` are synthetic `fm-bearings.v1` output; 
 The browser pass sends a picked option through `POST /api/bearings/answer` and text with no option through `POST /api/bearings/thread`.
 It checks that Just landed sits beside Captain's Call on a desktop width and that a phone shows one Overview tab at a time.
 It also sends one landed follow-up and acknowledges one landing.
+
+### Inbox debounce
+
+Quarterdeck saves submitted card answers, card thread notes (including landed follow-ups),
+and local review notes to its private outbox beside `FM_QUARTERDECK_STATE_PATH` before
+waiting three seconds for nearby submissions. Sustained bursts flush within five seconds.
+A combined inbox note contains separately numbered original texts, tagged envelopes,
+request IDs and card/task references. Firstmate handles each item; Quarterdeck executes
+no decision. One combined note receives one inbox acknowledgement and reply; the reply
+should name each item/task and appears on every affected card.
+
+Pending submissions remain visible on cards and in the review queue. **Send now** in the
+message composer submits its drafts urgently and flushes already saved pending work.
+Batch queue sends submit card items concurrently so they share the window. A page close
+or reload cannot cancel saved server work; tab storage also keeps uncertain client sends
+for an explicit same-ID retry. Unsubmitted drafts still belong to the browser tab.
+
+The home-scoped `*.inbox-*.json` outbox stores sealed membership before calling
+`fm-inbox.sh note --request-id`; a lost response, retry, or server restart uses that same
+combined identity. Confirmed records remain as deduplication and receipt mappings.
+Keep this state owner across restarts. Concurrent gateway writers serialize using an
+exclusive adjacent `.lock` file. A crash during a locked write can leave that lock;
+submissions fail visibly and retain their pending records until an operator verifies the
+writer is stopped and repairs the abandoned lock. Never delete an active writer's lock.

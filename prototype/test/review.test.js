@@ -968,9 +968,9 @@ test("review conversation notes: long notes are collapsed by default and expanda
   assert.equal(toggle.textContent, "Expand");
 
   vm.runInContext('inFlight = { id: "batch-1", payload: { entries: queue.splice(0) } }; update()', context);
-  assert.equal(thread.children[0].children[0].children[0].textContent, "Sending batch · 2 notes");
+  assert.equal(thread.children[0].children[0].children[0].textContent, "Pending · batching batch · 2 notes");
   assert.equal(thread.children[0].children[0].children[1].textContent, "Sending · 2 notes");
-  assert.equal(thread.children[0].children[0].title, "Sending batch · 2 notes");
+  assert.equal(thread.children[0].children[0].title, "Pending · batching batch · 2 notes");
   assert.equal(thread.children[0].children.filter((child) => child.tagName === "ARTICLE").length, 2);
   vm.runInContext('retryBatches = [inFlight]; inFlight = null; update()', context);
   assert.equal(thread.children[0].children[0].children[0].textContent, "Retry needed batch · 2 notes");

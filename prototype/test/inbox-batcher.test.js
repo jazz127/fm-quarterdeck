@@ -1,0 +1,80 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { createInboxBatcher } from "../inbox-batcher.js";
+import { createAnswerRelay, answerEnvelope, formatAnswerNote } from "../bearings-answer.js";
+import { createThreadRelay, formatThreadNote } from "../bearings-thread.js";
+import { quarterdeckSendMatches } from "../authorship.js";
+const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+async function fixture(t, options = {}) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qd-outbox-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const deliveries = [];
+  const setup = { home: path.join(directory, "home"), statePath: path.join(directory, "state.json"), delayMs: 100,
+    deliver: async (home, id, text) => { deliveries.push({ id, text }); return { id: "2000000000-note", request_id: id, saved: true, announced: true }; }, ...options };
+  const batcher = createInboxBatcher(setup);
+  t.after(() => batcher.close());
+  return { batcher, setup, deliveries };
+}
+const card = { key: "decision:example-task", type: "decision", task: "example-task", rev: "a".repeat(16), answer: { question: "example-task", options: [] } };
+const model = { state: "ready", rev: "b".repeat(16), cards: [card] };
+const answer = { requestId: uuid(1), key: card.key, cardRev: card.rev, selection: "", note: "Tuesday\nAfter checks" };
+test("a burst preserves each envelope, uses one guarded request, and maps receipts to each item", async (t) => {
+  const f = await fixture(t);
+  const a = createAnswerRelay({ home: f.setup.home, note: f.batcher.note, receipts: f.batcher.receipts });
+  const thread = createThreadRelay({ home: f.setup.home, note: f.batcher.note, receipts: f.batcher.receipts, transcript: async () => ({ turns: [] }) });
+  const submissions = [a.submit(answer, model), thread.submit({ requestId: uuid(2), key: card.key, text: "What is next?" }, model)];
+  const results = await Promise.all(submissions);
+  assert.equal(f.deliveries.length, 1);
+  assert.equal(results[0].noteId, results[1].noteId);
+  const sent = f.deliveries[0];
+  assert.ok(quarterdeckSendMatches(sent.id, sent.text));
+  assert.ok(sent.text.includes(formatAnswerNote(answerEnvelope({ card, ...answer }, model.rev))));
+  assert.ok(sent.text.includes(formatThreadNote({ card, key: card.key, text: "What is next?", requestId: uuid(2) })));
+  const restored = createInboxBatcher({ ...f.setup, readReceipts: async () => ({ pending: [{ id: results[0].noteId, request_id: sent.id }], handled: [], replies: [] }) });
+  t.after(() => restored.close());
+  const history = await createThreadRelay({ home: f.setup.home, receipts: restored.receipts, transcript: async () => ({ turns: [] }) }).history(card.key, model);
+  assert.equal(history.entries.filter((entry) => entry.from === "captain").length, 2);
+  const retry = createAnswerRelay({ home: f.setup.home, note: restored.note });
+  await retry.submit(answer, { cards: [] });
+  assert.equal(f.deliveries.length, 1, "restart retry after card resolution does not deliver again");
+  await assert.rejects(retry.submit({ ...answer, note: "Changed" }, model), /different answer/);
+});
+test("a lost delivery receipt retries exactly the sealed batch, including after restart", async (t) => {
+  let fail = true;
+  const seen = [];
+  const f = await fixture(t, { deliver: async (home, id, text) => { seen.push({ id, text }); if (fail) throw Error("lost response"); return { id: "2000000000-note", request_id: id }; } });
+  const promises = [f.batcher.note(f.setup.home, "quarterdeck-call:" + uuid(1), "First"), f.batcher.note(f.setup.home, "quarterdeck-thread:decision:example-task:" + uuid(2), "Second")];
+  const settled = await Promise.allSettled(promises);
+  assert.ok(settled.every((result) => result.status === "rejected"));
+  f.batcher.close();
+  fail = false;
+  const restored = createInboxBatcher(f.setup);
+  t.after(() => restored.close());
+  await restored.flush();
+  assert.deepEqual(seen[1], seen[0]);
+});
+test("page disappearance leaves saved work for restart; send now bypasses the window", async (t) => {
+  const f = await fixture(t, { delayMs: 10000 });
+  void f.batcher.note(f.setup.home, "quarterdeck-call:" + uuid(1), "Pending");
+  await f.batcher.note.lookup("quarterdeck-call:" + uuid(1));
+  f.batcher.close();
+  const restarted = createInboxBatcher(f.setup);
+  t.after(() => restarted.close());
+  const before = Date.now();
+  await restarted.note(f.setup.home, "quarterdeck-call:" + uuid(1), "Pending", { immediate: true });
+  assert.ok(Date.now() - before < 1000);
+  assert.equal(f.deliveries.length, 1);
+});
+test("batch provenance refuses mismatched identities and nested batches", async () => {
+  const id = `quarterdeck-batch:${uuid(3)}`;
+  const text = formatAnswerNote(answerEnvelope({ card, ...answer }, model.rev));
+  const envelope = { schema: "fm-quarterdeck-inbox-batch.v1", requestId: id, items: [{ requestId: `quarterdeck-call:${uuid(1)}`, text }] };
+  const format = () => `Batch\n\n\`\`\`json fm-quarterdeck-batch\n${JSON.stringify(envelope)}\n\`\`\``;
+  assert.ok(quarterdeckSendMatches(id, format()));
+  envelope.items[0].requestId = id;
+  assert.equal(quarterdeckSendMatches(id, format()), false);
+});

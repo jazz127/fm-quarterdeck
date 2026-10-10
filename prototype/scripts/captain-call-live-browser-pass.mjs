@@ -65,14 +65,36 @@ await writeFile(path.join(home, '.lavish', 'bearings-board.html'), `<!doctype ht
 const inbox = path.join(home, 'bin/fm-inbox.sh');
 await writeFile(inbox, `#!/bin/sh
 case "$1" in
-  note) case "$3" in quarterdeck-thread:*) printf '%s\\n' "$3" >> "$FM_HOME/thread-attempts"; cat > "$FM_HOME/thread-note.txt"; cp "$FM_HOME/thread-note.txt" "$FM_HOME/thread-$3.txt"; printf '%s' "$3" > "$FM_HOME/thread-request-id"; printf '{"schema":"fm-inbox-note.v1","request_id":"%s","saved":true,"id":"thread-1","announced":true,"outcome":"created"}\\n' "$3"; exit 0 ;; esac
-    printf '%s\\n' "$3" >> "$FM_HOME/answer-attempts"; cat > "$FM_HOME/answer-note.txt"; cp "$FM_HOME/answer-note.txt" "$FM_HOME/answer-$3.txt"; [ ! -e "$FM_HOME/fail-answer" ] || exit 1; [ ! -e "$FM_HOME/delay-answer" ] || sleep 5; printf '%s' "$3" > "$FM_HOME/answer-request-id"; printf '{"schema":"fm-inbox-note.v1","request_id":"%s","saved":true,"id":"note-1","announced":true,"outcome":"created"}\\n' "$3" ;;
+  note) node "$FM_HOME/note.mjs" "$3" ;;
   receipts)
     node "$FM_HOME/receipts.mjs" ;;
   *) exit 2 ;;
 esac
 `);
 await chmod(inbox, 0o755);
+await writeFile(path.join(home, 'note.mjs'), `
+import { readFile, writeFile, appendFile } from 'node:fs/promises';
+const home = process.env.FM_HOME;
+const id = process.argv[2];
+let body = ''; for await (const chunk of process.stdin) body += chunk;
+const match = /\`\`\`json fm-quarterdeck-batch\\n([\\s\\S]*?)\\n\`\`\`/.exec(body);
+const items = match ? JSON.parse(match[1]).items : [{ requestId: id, text: body }];
+await appendFile(home + '/wake-attempts', id + '\\n');
+for (const item of items) {
+  const thread = item.requestId.startsWith('quarterdeck-thread:');
+  const kind = thread ? 'thread' : 'answer';
+  await appendFile(home + '/' + kind + '-attempts', item.requestId + '\\n');
+  await writeFile(home + '/' + kind + '-note.txt', item.text);
+  await writeFile(home + '/' + kind + '-' + item.requestId + '.txt', item.text);
+  if (!thread) {
+    if (await readFile(home + '/fail-answer').then(() => true, () => false)) process.exit(1);
+    if (await readFile(home + '/delay-answer').then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+  await writeFile(home + '/' + kind + '-request-id', item.requestId);
+}
+console.log(JSON.stringify({ schema: 'fm-inbox-note.v1', request_id: id, saved: true, id: items.every(item => item.requestId.startsWith('quarterdeck-thread:')) ? 'thread-1' : 'note-1', announced: true, outcome: 'created' }));
+`);
+
 await writeFile(path.join(home, 'receipts.mjs'), `
 import { readFile } from 'node:fs/promises';
 const read = async name => readFile(process.env.FM_HOME + '/' + name, 'utf8').catch(() => '');

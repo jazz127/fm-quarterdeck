@@ -179,8 +179,8 @@ window.bearingsAnswerForm = (() => {
       const confirmNote = part(form, "confirm-note");
       if (confirmNote) {
         const text = state?.path === "thread"
-          ? "Send sends this note to the card thread now; Send batch in the review queue sends every queued note together. Edit takes it out of the queue."
-          : "Send sends this answer now; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.";
+          ? "Send submits this note with a short batching delay; Send now in the message composer bypasses it; Send batch in the review queue sends every queued note together. Edit takes it out of the queue."
+          : "Send submits this answer with a short batching delay; Send now in the message composer bypasses it; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.";
         if (confirmNote.textContent !== text) confirmNote.textContent = text;
       }
       const compose = part(form, "compose");
@@ -195,7 +195,7 @@ window.bearingsAnswerForm = (() => {
         // aria-disabled, not disabled: a disabled button would drop the captain's focus.
         send.setAttribute("aria-disabled", String(phase === "sending"));
         send.setAttribute("aria-busy", String(phase === "sending"));
-        send.textContent = phase === "sending" ? "Sending…" : phase === "failed" ? "Retry send" : "Send";
+        send.textContent = phase === "sending" ? "Pending · batching…" : phase === "failed" ? "Retry send" : "Send";
       }
       const edit = part(form, "edit");
       if (edit) { edit.hidden = !queuedLock; edit.setAttribute("aria-disabled", String(phase === "sending")); }
@@ -246,7 +246,7 @@ window.bearingsAnswerForm = (() => {
       for (const input of form.querySelectorAll('input[type="radio"]')) input.checked = false;
     }
 
-    async function send(key, { focus = true } = {}) {
+    async function send(key, { focus = true, immediate = false } = {}) {
       const state = states.get(key);
       if (!state || !["confirm", "failed"].includes(state.phase)) return false;
       // A stored send from before the one box has no path; it was an answer.
@@ -255,7 +255,7 @@ window.bearingsAnswerForm = (() => {
       update(key, { ...state, path, phase: "sending", attempted: true, error: null });
       let response = null, body = null;
       try {
-        response = await fetchImpl(thread ? "/api/bearings/thread" : "/api/bearings/answer", { method: "POST", headers: { "content-type": "application/json" },
+        response = await fetchImpl(thread ? "/api/bearings/thread" : "/api/bearings/answer", { method: "POST", headers: { "content-type": "application/json", ...(immediate ? { "x-quarterdeck-send-now": "1" } : {}) },
           body: JSON.stringify(thread ? { requestId: state.requestId, key, text: state.note }
             : { requestId: state.requestId, key, cardRev: state.cardRev, selection: state.selection, note: state.note }) });
         body = await response.json().catch(() => null);
@@ -286,17 +286,15 @@ window.bearingsAnswerForm = (() => {
       return false;
     }
     // Queued cards, for the review queue's list and its Send batch. Each item keeps its own
-    // request id and its own path, an answer note or a thread note. Batching changes no intake.
+    // request id and its own path, an answer note or a thread note. The server combines nearby submissions into one guarded inbox note.
     const queuedPhases = new Set(["confirm", "sending", "failed"]);
     function queued() {
       const openKeys = new Set([...list.querySelectorAll("[data-call-key]")].map(keyOf));
       return states.keys().filter((key) => openKeys.has(key) && queuedPhases.has(states.get(key)?.phase))
         .map((key) => { const state = states.get(key); return { key, label: state.label || key, text: display(state.selectionLabel || state.selection, state.note), phase: state.phase }; });
     }
-    async function sendQueued() {
-      let ok = true;
-      for (const entry of queued()) if (entry.phase !== "sending") ok = await send(entry.key, { focus: false }) && ok;
-      return ok;
+    async function sendQueued({ immediate = false } = {}) {
+      return (await Promise.all(queued().filter((entry) => entry.phase !== "sending").map((entry) => send(entry.key, { focus: false, immediate })))).every(Boolean);
     }
     function unqueue(key) {
       const state = states.get(key);

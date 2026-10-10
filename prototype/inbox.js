@@ -27,9 +27,9 @@ export async function inboxReady(home) {
   const ready = JSON.parse(result.stdout);
   return ready.schema === "fm-primary-ready.v1" && ready.can_receive === true;
 }
-export async function announceReview(home, payload) {
+export async function announceReview(home, payload, note = noteWithRequestId, options = {}) {
   const body = payload.schema === "fm-agentos-review.v2" ? formatReviewNote(payload) : `Quarterdeck review annotation batch ${payload.batchId}\nVersion: ${payload.version}\nRoute: ${payload.route}\nEnd: ${payload.end}\nPreview: ${payload.provenance ? `${payload.provenance.preview} · ${payload.provenance.branch} · ${payload.provenance.commit} · ${payload.provenance.remoteCheckpoint || "no remote checkpoint"}` : "standalone"}\nEntries:\n${payload.entries.map((entry, i) => `${i + 1}. ${entry.kind} · ${entry.route} · ${entry.target?.type === "record" ? `Lane Chat record ${entry.target.recordId}` : entry.target?.type === "quote" ? `Lane Chat message quote ${JSON.stringify({ time: entry.target.time, text: entry.target.text, lanes: entry.target.lanes })}` : entry.region ? `${entry.region.label} (${entry.region.id})` : "message"}\n${entry.text}`).join("\n\n")}`;
-  return noteWithRequestId(home, requestId(payload.batchId), body);
+  return note(home, requestId(payload.batchId), body, options);
 }
 // Idempotent per request id: a retry returns the original note and repairs a missing wake.
 export async function noteWithRequestId(home, id, body) {

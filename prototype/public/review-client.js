@@ -631,7 +631,7 @@ function update() {
     const header = document.createElement("div");
     header.className = "review-note-header";
     const heading = document.createElement("strong");
-    heading.textContent = `${entry.phase === "sending" ? "Sending" : entry.phase === "failed" ? "Retry needed" : "Queued"} Captain's Call answer · ${entry.label}`;
+    heading.textContent = `${entry.phase === "sending" ? "Pending · batching" : entry.phase === "failed" ? "Retry needed" : "Queued"} Captain's Call answer · ${entry.label}`;
     header.append(heading);
     const text = document.createElement("p");
     text.className = "review-note-text";
@@ -658,7 +658,7 @@ function update() {
     details.addEventListener("toggle", () => { if (details.open) openBatches.add("call-answers"); else openBatches.delete("call-answers"); });
     return details;
   }
-  const capturedBatches = [[inFlight, "Sending"], ...retryBatches.map((batch) => [batch, "Retry needed"])].filter(([captured]) => captured);
+  const capturedBatches = [[inFlight, "Pending · batching"], ...retryBatches.map((batch) => [batch, "Retry needed"])].filter(([captured]) => captured);
   // Desktop: Sent list over an always-listed queue (count lives in the section heading).
   for (const batch of sent) sentList.append(renderSentBatch(batch));
   for (const entry of calls) thread.append(renderCallAnswer(entry));
@@ -1007,22 +1007,23 @@ function enqueue() {
 }
 el("review-form").addEventListener("submit", (event) => { event.preventDefault(); enqueue(); });
 let sendingCalls = false;
-async function sendCallAnswers() {
+async function sendCallAnswers(options = {}) {
   const ready = callQueue().filter((entry) => entry.phase !== "sending");
   if (!ready.length || sendingCalls) return false;
   sendingCalls = true;
   el("review-state").textContent = `Sending ${ready.length} Captain's Call ${ready.length === 1 ? "answer" : "answers"}…`;
   let ok = false;
-  try { ok = await window.quarterdeckCallQueue.send(); } catch {}
+  try { ok = await window.quarterdeckCallQueue.send(options); } catch {}
   finally { sendingCalls = false; }
   el("review-state").textContent = ok ? `Sent ${ready.length} Captain's Call ${ready.length === 1 ? "answer" : "answers"}; receipts show on each card.` : "Some Captain's Call answers were not confirmed; their cards say why and keep them for retry.";
   update();
   try { window.quarterdeckCallQueue?.refresh?.(); } catch {}
   return ok;
 }
-async function send(end) {
+async function send(end, { immediate = false } = {}) {
   // Await only when answers are queued, so an ordinary batch posts in the same tick.
-  if (callQueue().some((entry) => entry.phase !== "sending")) await sendCallAnswers();
+  const calls = callQueue().some((entry) => entry.phase !== "sending") ? sendCallAnswers({ immediate }) : null;
+  if (calls) void calls;
   if (pending || !config.ready) return;
   // Send batch and Send & End both take a non-empty compose draft with the queued notes.
   // Text Queue already took stays in that queue once; a full board still sends and keeps the extra draft.
@@ -1035,7 +1036,7 @@ async function send(end) {
       update();
     } else if (draft && (end || queue.length < 30) && !enqueue()) return;
   }
-  if (!queue.length && retryBatches.length && !end) { await submitBatch(retryBatches[0]); return; }
+  if (!queue.length && retryBatches.length && !end) { await submitBatch(retryBatches[0], { immediate }); return; }
   if (!queue.length && (!end || !retryBatches.length)) return;
   // Capture the entire persisted board at the action cutoff, before any await.
   // Earlier unconfirmed identities are retried separately, never joined to it.
@@ -1057,14 +1058,14 @@ async function send(end) {
     if (previous.length) retryBatches.push(captured);
     saveDraft();
   }
-  for (const prior of previous) if (!await submitBatch(prior)) return;
-  if (captured && !await submitBatch(captured)) return;
+  for (const prior of previous) if (!await submitBatch(prior, { immediate })) return;
+  if (captured && !await submitBatch(captured, { immediate })) return;
   if (end && !captured && !queue.length && !retryBatches.length && !el("review-message").value.trim()) {
     selected = null; hovered = null; panel(false);
     el("review-state").textContent += " · review ended";
   }
 }
-async function submitBatch(captured) {
+async function submitBatch(captured, { immediate = false } = {}) {
   if (pending || !config.ready || !captured) return;
   const retryIndex = retryBatches.findIndex((batch) => batch.id === captured.id);
   retryBatches = retryBatches.filter((batch) => batch.id !== captured.id);
@@ -1076,7 +1077,7 @@ async function submitBatch(captured) {
   update();
   try {
     const payload = captured.payload;
-    const response = await fetch("/api/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    const response = await fetch("/api/review", { method: "POST", headers: { "content-type": "application/json", ...(immediate ? { "x-quarterdeck-send-now": "1" } : {}) }, body: JSON.stringify(payload) });
     const result = await response.json();
     if (!response.ok) {
       if (response.status === 400 && result.error === "Invalid review payload or version") {
@@ -1115,6 +1116,13 @@ async function submitBatch(captured) {
     return false;
   } finally { inFlight = null; inFlightIndex = null; pending = false; update(); }
 }
+el("review-send-now")?.addEventListener("click", () => {
+  void send(false, { immediate: true });
+  // Also flush submissions already waiting, including those saved before a reload.
+  void fetch("/api/inbox/send-now", { method: "POST" }).then((response) => {
+    if (!response.ok) el("review-state").textContent = "Delivery unconfirmed; pending items retained for retry.";
+  }).catch(() => { el("review-state").textContent = "Delivery unconfirmed; pending items retained for retry."; });
+});
 el("review-send").addEventListener("click", () => send(false));
 window.quarterdeckReviewQueue = { refresh: () => update(), sendCallAnswers, sending: () => sendingCalls };
 el("review-end").addEventListener("click", () => send(true));

@@ -134,7 +134,7 @@ window.bearingsView = (() => {
       <p class="call-answer-error" data-call-answer-error role="alert" hidden></p>
       <div class="call-answer-confirm" data-call-answer-confirm role="group" aria-label="Queued answer" hidden>
         <p>Queued for Firstmate: <strong data-call-answer-preview></strong></p>
-        <p class="call-meta" data-call-answer-confirm-note>Send sends this answer now; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.</p>
+        <p class="call-meta" data-call-answer-confirm-note>Send submits this answer with a short batching delay; Send now in the message composer bypasses it; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.</p>
       </div>
       <div class="call-answer-receipt" data-call-answer-receipt tabindex="-1" hidden><p role="status" data-call-answer-receipt-text></p><button type="button" data-call-answer-again>Answer again</button></div>
     </form>`;

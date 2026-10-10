@@ -27,6 +27,7 @@ import { readPreferences } from "./preferences.js";
 import { readHealthPreferences, saveHealthPreferences, validHealthPreferences } from "./health-preferences.js";
 import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
+import { createInboxBatcher } from "./inbox-batcher.js";
 import { announceReview, inboxReady, inboxReceipts, inboxReviewState, SAFE_NOTE_ID } from "./inbox.js";
 import { VERIFIED_CAPTAIN, inboxInput, verifiedQuarterdeckNote } from "./authorship.js";
 import { lstat, open, readFile, readdir, stat } from "node:fs/promises";
@@ -1051,7 +1052,7 @@ async function sendJson(request, response, status, body) {
   response.end(payload);
 }
 
-export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), bearingsSource = createCallSource({ home: env.FM_HOME, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), statePath: chatAsksPath(configuredStatePath(env)) }) }), bearingsStream = {}, answerRelay = createAnswerRelay({ home: env.FM_HOME }), threadRelay = createThreadRelay({ home: env.FM_HOME, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env) }) }), costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options), procrastination = createProcrastinationStore(env), landedAcks = createLandedAckStore(env) } = {}) {
+export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), bearingsSource = createCallSource({ home: env.FM_HOME, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), statePath: chatAsksPath(configuredStatePath(env)) }) }), bearingsStream = {}, answerRelay, threadRelay, costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options), procrastination = createProcrastinationStore(env), landedAcks = createLandedAckStore(env) } = {}) {
   const review = reviewConfiguration(env);
   const agentStatePath = configuredStatePath(env);
   const agentStateOwner = createAgentStateOwner(agentStatePath);
@@ -1059,6 +1060,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     const relative = path.relative(path.resolve(env.FM_HOME), path.resolve(agentStatePath));
     if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) throw new Error("Quarterdeck presentation state must be outside FM_HOME");
   }
+  const inboxBatcher = createInboxBatcher({ home: env.FM_HOME, statePath: agentStatePath });
+  answerRelay ||= createAnswerRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts });
+  threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env) }) });
   const servedCommit = revisionResolver.initial;
   const registered = validateRegistry(previewRegistry ?? (env.FM_PREVIEW_REGISTRY_PATH ? JSON.parse(readFileSync(env.FM_PREVIEW_REGISTRY_PATH, "utf8")) : []));
   const deploymentTier = env.FM_DEPLOYMENT_TIER || "";
@@ -1251,7 +1255,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         }
         const batch = url.searchParams.get("batchId");
         const status = await reviewStatus(batch);
-        const intake = status && env.FM_HOME ? inboxReviewState(await inboxReceipts(env.FM_HOME), batch) : null;
+        const intake = status && env.FM_HOME ? inboxReviewState(await inboxBatcher.receipts(), batch) : null;
         await sendJson(request, response, status ? 200 : 404, status ? { ...status, ...(intake && status.state === "accepted" ? intake : {}), intake: intake?.state || null } : { error: "Receipt not found; keep the batch and retry Send" });
         return;
       }
@@ -1259,7 +1263,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         if (request.method === "GET") {
           used = true;
           const intakeReady = review.delivery === "local" && env.FM_HOME ? await inboxReady(env.FM_HOME).catch(() => false) : false;
-          const receipts = review.delivery === "local" && env.FM_HOME ? await inboxReceipts(env.FM_HOME).catch(() => null) : null;
+          const receipts = review.delivery === "local" && env.FM_HOME ? await inboxBatcher.receipts().catch(() => null) : null;
           await sendJson(request, response, 200, { version: selectedCommit, sessionId: review.sessionId, ready: review.ready, delivery: review.delivery,
             intakeReady, awaitingReview: review.delivery === "local" && (!env.FM_HOME || receipts) ? await reviewCount(receipts) : null });
           return;
@@ -1294,7 +1298,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
           try {
             const existing = review.delivery === "local" ? await localReviewReceipt(payload) : null;
             if (existing) {
-              if (env.FM_HOME) await announceReview(env.FM_HOME, existing.payload);
+              if (env.FM_HOME) await announceReview(env.FM_HOME, existing.payload, inboxBatcher.note, { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
               await sendJson(request, response, 200, { receiptId: existing.receiptId, delivery: "local" });
               return;
             }
@@ -1308,7 +1312,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
             const receipt = review.delivery === "lavish"
               ? await reviewDeliver(attributed, review.endpoint)
               : await localReviewDeliver(attributed, env.FM_REVIEW_STATUS_PATH);
-            if (review.delivery === "local" && env.FM_HOME) await announceReview(env.FM_HOME, attributed);
+            if (review.delivery === "local" && env.FM_HOME) await announceReview(env.FM_HOME, attributed, inboxBatcher.note, { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
             await sendJson(request, response, 200, receipt);
           } catch {
             await sendJson(request, response, 502, { error: "Review delivery unconfirmed; queue retained for retry" });
@@ -1392,6 +1396,13 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         openBearingsStream(request, response);
         return;
       }
+      if (url.pathname === "/api/inbox/send-now" && request.method === "POST") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
+        try { await inboxBatcher.flush(); await sendJson(request, response, 200, { state: "sent" }); }
+        catch { await sendJson(request, response, 502, { error: "Delivery unconfirmed; pending items retained for retry" }); }
+        return;
+      }
       // Captain's Call answers: host only, an explicit captain submit relayed to Firstmate (BEARINGS.md "Answers").
       if (url.pathname === "/api/bearings/answer" && request.method === "POST") {
         if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
@@ -1404,7 +1415,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         // A request spanning a fast-forward is refused rather than answered under a mixed identity.
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         try {
-          const accepted = await answerRelay.submit(body, bearingsSource.current());
+          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
           // A chat ask has no Firstmate hold to close it; the confirmed relay resolves it here.
           if (accepted.envelope?.type === "chat") await bearingsSource.resolveChat?.(accepted.key, "answered", { requestId: accepted.requestId }).catch(() => {});
           await sendJson(request, response, 202, accepted);
@@ -1507,7 +1518,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         let body = null;
         try { body = JSON.parse(text); } catch {}
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
-        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current())); }
+        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" })); }
         catch (error) {
           if (!(error instanceof ThreadRefused)) throw error;
           await sendJson(request, response, error.status, { error: error.message, code: error.code });
@@ -1617,7 +1628,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   server.bearings = bearingsSource;
   server.previewLifecycle = lifecycle;
   server.shutdownPreviews = () => lifecycle.close();
-  server.on("close", () => { lifecycle.close().catch(() => {}); });
+  server.on("close", () => { inboxBatcher.close(); lifecycle.close().catch(() => {}); });
   if (dev) {
     let watcher;
     let pending;

@@ -40,7 +40,7 @@ window.bearingsLanded = (() => {
         </div>
         <p class="call-box-hint">Write a follow-up. Firstmate replies in this thread.</p>
         <p class="call-answer-error" data-landed-error role="alert" hidden></p>
-        <div class="call-answer-confirm" data-landed-confirm role="group" aria-label="Queued follow-up" hidden><p>Queued for Firstmate: <strong data-landed-preview></strong></p><p class="call-meta">Send sends this follow-up now. Edit takes it out of the queue. Nothing was decided.</p></div>
+        <div class="call-answer-confirm" data-landed-confirm role="group" aria-label="Queued follow-up" hidden><p>Queued for Firstmate: <strong data-landed-preview></strong></p><p class="call-meta">Send submits this follow-up with a short batching delay. Send now in the message composer bypasses it. Edit takes it out of the queue. Nothing was decided.</p></div>
       </form>`;
   }
 

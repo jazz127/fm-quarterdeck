@@ -22,6 +22,7 @@ export const VERIFIED_CAPTAIN = Object.freeze({ author: "Captain", role: "captai
 // Quarterdeck's own send namespaces (inbox.js, bearings-answer.js, bearings-thread.js).
 // Each request id must agree with the Quarterdeck envelope Quarterdeck wrote in the body.
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const BATCH_ID = new RegExp(`^quarterdeck-batch:(${UUID})$`);
 const REVIEW_ID = new RegExp(`^agentos-review:(${UUID})$`, "i");
 const ANSWER_ID = new RegExp(`^quarterdeck-call:(${UUID})$`);
 const THREAD_ID = new RegExp(`^quarterdeck-thread:[A-Za-z0-9._:-]+:(${UUID})$`);
@@ -36,6 +37,13 @@ function fencedEnvelope(body, tag) {
 
 export function quarterdeckSendMatches(requestId, body) {
   if (typeof requestId !== "string" || requestId.length > 128 || typeof body !== "string" || body.length > 4_000_000) return false;
+  if (BATCH_ID.test(requestId)) {
+    const envelope = fencedEnvelope(body, "fm-quarterdeck-batch");
+    return envelope?.schema === "fm-quarterdeck-inbox-batch.v1" && envelope.requestId === requestId &&
+      Array.isArray(envelope.items) && envelope.items.length > 0 && envelope.items.length <= 30 &&
+      new Set(envelope.items.map((item) => item.requestId)).size === envelope.items.length &&
+      envelope.items.every((item) => !BATCH_ID.test(item.requestId) && quarterdeckSendMatches(item.requestId, item.text));
+  }
   let match;
   if ((match = requestId.match(REVIEW_ID))) return parseReviewNote(body)?.batch?.toLowerCase() === match[1].toLowerCase();
   if ((match = requestId.match(ANSWER_ID))) {
