@@ -69,6 +69,8 @@ let hoveredNode = null;
 let config = { ready: false, version: "unknown", sessionId: "", delivery: "local" };
 let queue = [];
 let queueIds = []; // Tab-local authoring identities; never sent in the review payload.
+// Prompt Queue last took from the compose box. Send batch must not add that text again.
+let composeQueuedText = "";
 let sent = []; // Receipt-confirmed batches in this tab, including across a document reload.
 const openBatches = new Set();
 const openNotes = new Set();
@@ -273,14 +275,20 @@ const statusShort = {
   unavailable: "Status unavailable",
 };
 const noteCount = (count) => `${count} ${count === 1 ? "note" : "notes"}`;
+// Pending and announced in the inbox is the pending receipt posture. The collapsed
+// header and the expanded header both use that posture's sent label.
+function pendingReceiptLabel() {
+  const owned = window.callLifecycle?.sentLabel?.("pending");
+  return typeof owned === "string" && owned ? owned : "Sent - waiting for Firstmate to read";
+}
 function batchStatusFull(batch) {
   if (config.delivery === "lavish") return "Delivery confirmed; downstream status unavailable";
-  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return "Accepted durably · queued for Firstmate; awaiting acknowledgement";
+  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return pendingReceiptLabel();
   return statusLabels[batch.state] || statusLabels.accepted;
 }
 function batchStatusShort(batch) {
   if (config.delivery === "lavish") return "Sent";
-  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return "Queued for Firstmate";
+  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return pendingReceiptLabel();
   return statusShort[batch.state] || "Accepted";
 }
 // A real batch id is shortened for the closed header. The call-answer group and an
@@ -321,6 +329,48 @@ function copyBatchId(node, text) {
   if (typeof write !== "function") { select(); return; }
   try { Promise.resolve(write.call(navigator.clipboard, text)).then(mark).catch(select); }
   catch { select(); }
+}
+// The message plus the batch sentence, real id, and sent time. Call-answer groups
+// and unsaved drafts are not batch ids.
+function reviewMessageCopyText(text, batch = {}) {
+  const lines = [typeof text === "string" ? text : ""];
+  const details = [];
+  if (batch.full) details.push(batch.full);
+  const id = typeof batch.id === "string" ? batch.id.trim() : "";
+  if (id && id !== "call-answers" && id !== "draft") details.push(id);
+  const when = batchWhen(batch.sentAt);
+  if (when) details.push(`${when.iso} · ${when.relative}`);
+  if (details.length) lines.push("", ...details);
+  return lines.join("\n");
+}
+function copyReviewMessage(button, text) {
+  const mark = () => { button.textContent = "Copied"; button.setAttribute("data-copied", "true"); };
+  const select = () => {
+    const body = button.closest?.("article")?.querySelector?.(".review-note-text");
+    const selection = document.getSelection?.();
+    if (!body || !selection || !document.createRange) return;
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+  const write = typeof navigator !== "undefined" && navigator.clipboard?.writeText;
+  if (typeof write !== "function") { select(); return; }
+  try { Promise.resolve(write.call(navigator.clipboard, text)).then(mark).catch(select); }
+  catch { select(); }
+}
+function appendMessageCopy(card, text, batch) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "review-note-copy";
+  button.textContent = "Copy";
+  button.setAttribute("aria-label", "Copy message and batch details");
+  button.addEventListener("click", (event) => {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    copyReviewMessage(button, reviewMessageCopyText(text, batch));
+  });
+  card.append(button);
 }
 // The closed summary shows one short line: chevron, title, then sent time and a
 // short batch id when this batch has them. The full sentence stays on the tooltip
@@ -384,7 +434,7 @@ async function refreshStatuses() {
       sent = sent.filter((item) => item.id !== batch.id);
       openBatches.clear(); openNotes.clear();
     }
-    if (!el("review-panel").hidden) el("review-state").textContent = `${batch.state === "accepted" && batch.intake === "accepted" && batch.announced ? "Accepted durably · queued for Firstmate; awaiting acknowledgement" : statusLabels[batch.state]} · receipt ${batch.receiptId}`;
+    if (!el("review-panel").hidden) el("review-state").textContent = `${batchStatusFull(batch)} · receipt ${batch.receiptId}`;
   }
   update();
 }
@@ -426,7 +476,7 @@ function update() {
   el("review-sent-summary").setAttribute("aria-label", `Sent batches, ${sent.length}`);
   el("review-queued-count").textContent = String(queuedCount);
   saveDraft();
-  function renderNote(entry, key, removeIndex = null) {
+  function renderNote(entry, key, removeIndex = null, batch = null) {
     if (entry.prompt !== undefined) entry = { ...entry, text: entry.prompt, kind: entry.tag === "message" ? "message" : "annotation", target: null, region: entry.label ? { label: entry.label } : null, version: entry.version || config.version, route: entry.route || route() };
     const card = document.createElement("article");
     const header = document.createElement("div");
@@ -487,6 +537,7 @@ function update() {
       remove.addEventListener("click", () => { queue.splice(removeIndex, 1); queueIds.splice(removeIndex, 1); if (!queue.length) batchId = null; openNotes.clear(); update(); });
       header.append(remove);
     }
+    appendMessageCopy(card, entry.text, batch);
     return card;
   }
   function renderSentBatch(batch) {
@@ -498,7 +549,7 @@ function update() {
     const sentFull = `${batchStatusFull(batch)} · ${noteCount(batch.entries.length)} · receipt ${batch.receiptId}`;
     fillBatchSummary(summary, `${batchStatusShort(batch)} · ${noteCount(batch.entries.length)}`, sentFull, { id: batch.id, sentAt: batch.sentAt });
     details.append(summary);
-    for (const [index, entry] of batch.entries.entries()) details.append(renderNote({ ...entry, delivered: true }, `${batch.id}:${index}`));
+    for (const [index, entry] of batch.entries.entries()) details.append(renderNote({ ...entry, delivered: true }, `${batch.id}:${index}`, null, { full: sentFull, id: batch.id, sentAt: batch.sentAt }));
     if (batch.reply) {
       const reply = document.createElement("p");
       reply.textContent = batch.reply;
@@ -528,7 +579,7 @@ function update() {
     const summary = document.createElement("summary");
     fillBatchSummary(summary, `Queued · ${noteCount(queue.length)}`, `Queued batch · ${noteCount(queue.length)}`, { id: batchId });
     details.append(summary);
-    for (const [index, entry] of queue.entries()) details.append(renderNote(entry, `queued:${index}`, index));
+    for (const [index, entry] of queue.entries()) details.append(renderNote(entry, `queued:${index}`, index, { full: `Queued batch · ${noteCount(queue.length)}`, id: batchId }));
     details.addEventListener("toggle", () => {
       const key = batchId || "draft";
       if (details.open) openBatches.add(key); else openBatches.delete(key);
@@ -543,7 +594,7 @@ function update() {
     const capturedCount = noteCount(captured.payload.entries.length);
     fillBatchSummary(summary, `${title === "Retry needed" ? "Retry" : title} · ${capturedCount}`, `${title} batch · ${capturedCount}`, { id: captured.id });
     details.append(summary);
-    captured.payload.entries.forEach((entry, index) => details.append(renderNote(entry, `${captured.id}:${index}`)));
+    captured.payload.entries.forEach((entry, index) => details.append(renderNote(entry, `${captured.id}:${index}`, null, { full: `${title} batch · ${capturedCount}`, id: captured.id })));
     if (title === "Retry needed") {
       const retry = document.createElement("button");
       retry.type = "button";
@@ -594,6 +645,7 @@ function update() {
       header.append(remove);
     }
     card.append(header, text);
+    appendMessageCopy(card, entry.text, { full: `Queued Captain's Call answers · ${calls.length}`, id: "call-answers" });
     return card;
   }
   function renderCallBatch() {
@@ -610,7 +662,7 @@ function update() {
   // Desktop: Sent list over an always-listed queue (count lives in the section heading).
   for (const batch of sent) sentList.append(renderSentBatch(batch));
   for (const entry of calls) thread.append(renderCallAnswer(entry));
-  for (const [index, entry] of queue.entries()) thread.append(renderNote(entry, `queued:${index}`, index));
+  for (const [index, entry] of queue.entries()) thread.append(renderNote(entry, `queued:${index}`, index, { full: `Queued batch · ${noteCount(queue.length)}`, id: batchId }));
   for (const [captured, title] of capturedBatches) thread.append(renderCaptured(captured, title));
   // Phone: the Review tab lists sent batches, the queued batch, then in-flight/retry batches.
   for (const batch of sent) phoneThread.append(renderSentBatch(batch));
@@ -694,13 +746,20 @@ async function loadConfig() {
   // Status reads would fail too; keep the unavailable reason visible instead.
   if (config.ready) void refreshStatuses();
 }
-// Recovery re-reads run one at a time: while the open composer cannot send, and on tab return.
+// Recovery re-reads run one at a time while a composer can send: the review
+// panel, or the desktop inline composer while that panel is hidden. Tab return
+// re-reads too.
 let recheck = null;
 function recheckConfig() { recheck ||= loadConfig().finally(() => { recheck = null; }); }
+function reviewComposerOpen() {
+  const panel = el("review-panel");
+  const inline = el("review-annotation");
+  return Boolean(panel && !panel.hidden) || Boolean(inline && !inline.hidden);
+}
 // Live Captain's Call reuses this one update notice; it never reloads on its own.
 window.quarterdeckRevision = { recheck: recheckConfig, showUpdate: () => { updateNotice.hidden = false; } };
 if (typeof setInterval === "function") setInterval(() => {
-  if (!config.ready && !el("review-panel").hidden) recheckConfig();
+  if (!config.ready && reviewComposerOpen()) recheckConfig();
   else if (config.ready && sent.some((batch) => !["completed", "failed", "replied"].includes(batch.state))) void refreshStatuses();
 }, 5000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "hidden") recheckConfig(); });
@@ -907,12 +966,11 @@ document.addEventListener("click", (event) => {
   if (!regionFor(event.target)) return;
   selectRegion(event.target, pickingRegion ? undefined : { x: event.clientX, y: event.clientY });
 }, true);
-el("review-message").addEventListener("input", () => { resizeMessage(); update(); });
+el("review-message").addEventListener("input", () => { composeQueuedText = ""; resizeMessage(); update(); });
 el("review-message").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.isComposing) return;
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault();
-    if (el("review-message").value.trim() && !enqueue()) return;
     void send(false);
   } else if (!event.shiftKey && !event.altKey && !window.matchMedia?.("(pointer: coarse)")?.matches) {
     event.preventDefault();
@@ -933,6 +991,7 @@ function enqueue() {
   queue.push(note);
   queueIds.push(crypto.randomUUID());
   batchId ||= crypto.randomUUID();
+  composeQueuedText = text;
   el("review-message").value = "";
   closeAnnotation();
   resizeMessage();
@@ -965,7 +1024,17 @@ async function send(end) {
   // Await only when answers are queued, so an ordinary batch posts in the same tick.
   if (callQueue().some((entry) => entry.phase !== "sending")) await sendCallAnswers();
   if (pending || !config.ready) return;
-  if (!reviewHistoryTab() && el("review-message").value.trim() && (!queue.length || end) && !enqueue()) return;
+  // Send batch and Send & End both take a non-empty compose draft with the queued notes.
+  // Text Queue already took stays in that queue once; a full board still sends and keeps the extra draft.
+  if (!reviewHistoryTab()) {
+    const draft = el("review-message").value.trim();
+    const alreadyQueued = Boolean(draft) && draft === composeQueuedText && queue.some((entry) => entry.prompt === draft);
+    if (alreadyQueued) {
+      el("review-message").value = "";
+      resizeMessage();
+      update();
+    } else if (draft && (end || queue.length < 30) && !enqueue()) return;
+  }
   if (!queue.length && retryBatches.length && !end) { await submitBatch(retryBatches[0]); return; }
   if (!queue.length && (!end || !retryBatches.length)) return;
   // Capture the entire persisted board at the action cutoff, before any await.
@@ -1033,6 +1102,7 @@ async function submitBatch(captured) {
     retryBatches = retryBatches.filter((batch) => batch.id !== captured.id);
     openBatches.delete(captured.id);
     el("review-state").textContent = `${result.delivery === "local" ? statusLabels.accepted : "Delivery confirmed; downstream status unavailable"} · receipt ${result.receiptId}`;
+    window.dispatchEvent?.(new Event("quarterdeck-sent"));
     if (result.delivery === "local") void refreshStatuses();
     if (captured.payload.end && !queue.length && !retryBatches.length && !el("review-message").value.trim()) {
       selected = null; hovered = null; panel(false);

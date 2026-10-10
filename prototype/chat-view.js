@@ -5,7 +5,7 @@ const label = (value, max) => typeof value === "string" && value.length <= max &
 const date = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(value) && Number.isFinite(Date.parse(value));
 const anchor = (value) => value === null || (keys(value, ["id", "at"]) && label(value.id, 300) && value.id.length > 0 && date(value.at));
 const routePattern = /^#(?:lanes(?:\/[^\s#?]*)?|overview|work|expenses|quota|preferences|closed)$/;
-const kinds = new Set(["captain", "conversation", "supervision", "thinking", "steer", "crew", "branch", "tools", "harness"]);
+const kinds = new Set(["captain", "conversation", "supervision", "thinking", "steer", "crew", "branch", "tools", "harness", "input"]);
 
 export function validChatView(view, route, branch, commit) {
   if (!keys(view, ["schema", "capturedAt", "route", "served", "lanes", "filters", "visible"]) ||

@@ -1,6 +1,6 @@
 // Live Captain's Call transport (BEARINGS.md). One EventSource per visible tab on the
-// host; previews and stream failures fall back to ?since polling. It never reloads the
-// page: a changed served revision only raises the existing update notice.
+// host; previews and stream failures fall back to ?since polling. A changed served
+// revision keeps the update notice and rebinds this document to the new commit.
 window.bearingsLive = (() => {
   function createBearingsLive({
     onModel = () => {}, onObserved = () => {}, onConnection = () => {}, onRevision = () => window.quarterdeckRevision?.showUpdate?.(),
@@ -15,7 +15,8 @@ window.bearingsLive = (() => {
     let failures = 0;
     let retryTimer = null, pollTimer = null;
     let started = false;
-    let revisionChanged = false;
+    let servedRevision = bootRevision;
+    let recoveringRevision = false;
     const visible = () => doc.visibilityState !== "hidden";
     const status = (state) => onConnection({ state, failures });
 
@@ -31,7 +32,7 @@ window.bearingsLive = (() => {
         if (!response.ok) throw new Error(`Captain's Call unavailable (${response.status})`);
         acceptModel(await response.json());
         return true;
-      } catch { status("disconnected"); return false; }
+      } catch { status(recoveringRevision ? "revision" : "disconnected"); return false; }
     }
     function closeStream() {
       source?.close();
@@ -51,47 +52,66 @@ window.bearingsLive = (() => {
         if (started && visible() && !source) poll();
       }, pollMs);
     }
-    function revision() {
-      revisionChanged = true;
+    function scheduleRetry() {
+      poll();
+      const delay = backoffMs[Math.min(Math.max(failures - 1, 0), backoffMs.length - 1)];
+      timers.clearTimeout(retryTimer);
+      retryTimer = timers.setTimeout(() => { retryTimer = null; void catchUp().then(() => openStream()); }, delay);
+    }
+    function goLive() {
+      recoveringRevision = false;
+      failures = 0;
+      timers.clearTimeout(pollTimer);
+      pollTimer = null;
+      status("live");
+    }
+    // The server closes a stream when its checkout no longer matches its boot
+    // commit. Retry that feed here; do not latch the open document shut.
+    function revisionStop() {
+      recoveringRevision = true;
+      if (source) source.revisionHandled = true;
       closeStream();
       stopTimers();
+      failures += 1;
       status("revision");
       onRevision();
+      if (started && visible()) scheduleRetry();
     }
     function openStream() {
-      if (!started || !visible() || source || revisionChanged) return;
-      if (!streamAllowed || typeof EventSourceImpl !== "function") { status("polling"); poll(); return; }
+      if (!started || !visible() || source) return;
+      if (!streamAllowed || typeof EventSourceImpl !== "function") { status(recoveringRevision ? "revision" : "polling"); poll(); return; }
       const events = new EventSourceImpl(streamUrl);
       source = events;
       const parse = (event) => { try { return JSON.parse(event.data); } catch { return null; } };
       events.addEventListener("hello", (event) => {
         const hello = parse(event);
-        if (hello && bootRevision && hello.servedCommit !== bootRevision) { revision(); return; }
-        failures = 0;
-        timers.clearTimeout(pollTimer);
-        pollTimer = null;
-        status("live");
+        const advertised = hello && typeof hello.servedCommit === "string" ? hello.servedCommit : "";
+        if (servedRevision && advertised !== servedRevision) {
+          if (!advertised) { revisionStop(); return; }
+          servedRevision = advertised;
+          onRevision();
+          goLive();
+          return;
+        }
+        goLive();
       });
       events.addEventListener("model", (event) => acceptModel(parse(event)));
       events.addEventListener("observed", (event) => { const data = parse(event); if (data) onObserved(data); });
-      events.addEventListener("revision", () => revision());
+      events.addEventListener("revision", () => revisionStop());
       // The server recycles long-lived streams; reconnect at once and catch up.
       events.addEventListener("bye", () => { closeStream(); void catchUp().then(() => openStream()); });
       events.onerror = () => {
-        if (source !== events) return;
+        if (events.revisionHandled || source !== events) return;
         // Take reconnection over from EventSource so backoff and polling stay bounded.
         closeStream();
         failures += 1;
-        status("reconnecting");
+        status(recoveringRevision ? "revision" : "reconnecting");
         onStreamLost();
-        poll();
-        const delay = backoffMs[Math.min(failures - 1, backoffMs.length - 1)];
-        timers.clearTimeout(retryTimer);
-        retryTimer = timers.setTimeout(() => { retryTimer = null; void catchUp().then(() => openStream()); }, delay);
+        scheduleRetry();
       };
     }
     function resume() {
-      if (!started || !visible() || revisionChanged) return;
+      if (!started || !visible()) return;
       void catchUp().then(() => openStream());
     }
     function suspend() {

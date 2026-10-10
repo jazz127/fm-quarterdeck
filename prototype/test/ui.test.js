@@ -53,6 +53,13 @@ test("live model and observation feed the patcher, badge and independent Overvie
   assert.match(app.node('#view-freshness').title, /Snapshot failed/);
   app.run("window.callHooks.onConnection({state:'reconnecting'})");
   assert.equal(app.node('#fleet-state b').textContent, 'disconnected');
+  app.run("freshness.bearings.lastSuccess = Date.now() - 3600000; freshness.bearings.error = null; freshness.bearings.stale = false; freshness.bearings.refreshing = false; window.callHooks.onConnection({state:'revision'})");
+  const stopped = app.node('#view-freshness');
+  assert.equal(app.node('#fleet-state b').textContent, 'updating');
+  assert.notEqual(app.node('#fleet-state b').textContent, 'fresh');
+  assert.equal(stopped.dataset.state, 'updating');
+  assert.match(stopped.title, /^Captain's Call · updating · Last success/);
+  assert.equal(app.node('#fleet-state').classList.contains('offline'), true);
 });
 
 test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
@@ -1154,7 +1161,7 @@ test("message filters use stock labels in signal order and expose Select all/Cle
   const app = ui();
   app.run("renderMessageTypeFilters();");
   const html = app.node("#message-type-filters").innerHTML;
-  for (const label of ["captain", "Firstmate replies", "supervision outcomes", "thinking", "steers", "crew status", "crew replies", "tools", "harness"]) {
+  for (const label of ["captain", "Firstmate replies", "supervision outcomes", "thinking", "steers", "crew status", "crew replies", "tools", "harness", "unverified input"]) {
     assert.match(html, new RegExp(label));
   }
   assert.ok(html.indexOf("captain") < html.indexOf("Firstmate replies"));
@@ -1210,6 +1217,43 @@ test("fleet notes are default-on, captain has its own toggle, and steers stay in
   app.run('selectedMessageTypes.delete("captain"); selectedMessageTypes.add("steer"); renderFeed()');
   assert.doesNotMatch(app.node("#messages").innerHTML, /Captain chat/);
   assert.match(app.node("#messages").innerHTML, /origin-steer/);
+});
+
+test("unverified input is its own default-hidden kind, and a confirmed send refreshes the loaded fleet log", async () => {
+  const calls = [];
+  const app = ui({ fetchImpl(url) {
+    if (!url.startsWith("/api/lanes")) return new Promise(() => {});
+    return new Promise((resolve) => calls.push((data) => resolve({ ok: true, json: async () => data })));
+  } });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const data = { lanes: [lane("general", [
+    record({ role: "captain", author: "Captain", text: "Verified Quarterdeck send", recordId: "a" }),
+    record({ role: "input", author: "Pi session input", kind: "input", state: "input", text: "models", recordId: "b", transcriptOrigin: "main Pi" }),
+  ])], source: "Firstmate home", transcript: { sessions: [], warnings: [] } };
+  assert.equal(calls.length, 1);
+  calls[0](data);
+  await flush();
+  const feed = () => app.node("#messages").innerHTML;
+  assert.match(feed(), /Verified Quarterdeck send/);
+  assert.doesNotMatch(feed(), /models/, "unverified input is outside the default feed");
+  app.run('selectedMessageTypes.add("input"); renderFeed()');
+  assert.match(feed(), /<strong>Pi session input<\/strong><span class="message-origin origin-input">unverified input<\/span>/);
+  assert.doesNotMatch(feed(), /class="message input[^"]*"[^>]*>[\s\S]*?origin-captain/);
+  app.run('selectedMessageTypes.delete("captain"); renderFeed()');
+  assert.match(feed(), /models/, "the captain toggle does not govern unverified input");
+  assert.doesNotMatch(feed(), /Verified Quarterdeck send/);
+
+  app.windowEvent("quarterdeck-sent");
+  assert.equal(calls.length, 2, "a send while Fleet Chats is open reloads the log");
+  calls[1](data);
+  await flush();
+  app.run('window.location.hash = "#overview"');
+  app.hashchange("#overview");
+  app.windowEvent("quarterdeck-sent");
+  assert.equal(calls.length, 2, "elsewhere, the send only marks the log behind");
+  app.run('window.location.hash = "#lanes"');
+  app.hashchange("#lanes");
+  assert.equal(calls.length, 3, "returning to Fleet Chats catches up once");
 });
 
 test("message metadata and safe Markdown/raw views preserve readable source text", () => {

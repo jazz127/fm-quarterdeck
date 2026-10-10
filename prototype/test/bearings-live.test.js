@@ -69,23 +69,51 @@ test("hidden tabs hold no stream; returning catches up with ?since and reopens",
   assert.equal(sources[1].closed, true);
 });
 
-test("a served-revision change shows the update notice once and never reconnects or reloads", async () => {
-  const { live, sources, seen, timers } = setup();
-  live.start();
+test("a served-revision change rebinds this document and restores the feed", async () => {
+  const first = setup();
+  first.live.start();
   await flush();
-  sources[0].emit("hello", { servedCommit: "b".repeat(40) });
-  assert.equal(seen.revision, 1);
-  assert.equal(sources[0].closed, true);
-  timers.advance(120000);
-  assert.equal(sources.length, 1);
-  assert.equal(seen.connection.at(-1), "revision");
+  first.sources[0].emit("hello", { servedCommit: "b".repeat(40) });
+  assert.equal(first.seen.revision, 1, "update notice once for the new commit");
+  assert.equal(first.sources[0].closed, false, "the connected stream is the new process");
+  assert.equal(first.seen.connection.at(-1), "live");
+  first.sources[0].emit("model", { rev: "r2", cards: [] });
+  assert.equal(first.live.rev, "r2");
+  first.timers.advance(120000);
+  assert.equal(first.sources.length, 1, "a rebound stream stays up without a reload");
 
   const second = setup();
   second.live.start();
   await flush();
+  second.sources[0].emit("hello", { servedCommit: "a".repeat(40) });
   second.sources[0].emit("revision", {});
   assert.equal(second.seen.revision, 1);
   assert.equal(second.sources[0].closed, true);
+  assert.equal(second.seen.connection.at(-1), "revision");
+  second.timers.advance(2999);
+  assert.equal(second.sources.length, 1, "backoff holds the first retry");
+  second.timers.advance(1);
+  await flush();
+  assert.equal(second.sources.length, 2, "a revision close retries instead of latching");
+  second.sources[1].emit("hello", { servedCommit: "c".repeat(40) });
+  assert.equal(second.seen.revision, 2);
+  assert.equal(second.sources[1].closed, false);
+  assert.equal(second.seen.connection.at(-1), "live");
+
+  const third = setup();
+  third.live.start();
+  await flush();
+  third.sources[0].emit("revision", {});
+  third.doc.visibilityState = "hidden";
+  third.docListeners.get("visibilitychange")();
+  third.timers.advance(120000);
+  assert.equal(third.sources.length, 1, "a hidden tab does not reconnect");
+  third.doc.visibilityState = "visible";
+  third.docListeners.get("visibilitychange")();
+  await flush();
+  assert.equal(third.sources.length, 2, "returning after a revision stop reopens");
+  third.sources[1].emit("hello", { servedCommit: "b".repeat(40) });
+  assert.equal(third.seen.connection.at(-1), "live");
 });
 
 test("stream errors fall back to 15 s polling and retry with 3 s, 10 s, then 30 s backoff", async () => {

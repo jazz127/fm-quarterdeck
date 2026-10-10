@@ -31,7 +31,7 @@ test("quoted line/list option labels and single-quoted suggested replies are exp
   assert.deepEqual(extractReplies('A prose mention of "not a label" is not an option.'), []);
 });
 
-test("queued human attachments answer every matching earlier ask; tools, hooks, machine text and future asks do not", async t => {
+test("transcript input never answers an ask: queued human attachments, typed prompts, tools, hooks and machine text", async t => {
   const f = await fixture(t, [
     assistant("one", 1, 'DECISION NEEDED: Pick a sample host.\n- "stay on Lyra": continue\n- "pause work": wait'),
     assistant("two", 2, 'ACTION NEEDED: Archive sample threads. Reply "archive threads".'),
@@ -44,38 +44,31 @@ test("queued human attachments answer every matching earlier ask; tools, hooks, 
   assert.equal(f.scanner.asks().length, 3);
   await appendFile(f.file, jsonl([
     queued("answer", 5, "<system-reminder>unrelated harness note</system-reminder>stay on lyra -- please archive threads, then inspect the sample preview"),
+    user("typed", 5, `<pasted>\n${"synthetic detail ".repeat(6000)}\n</pasted>\nstay on Lyra; archive threads`),
     assistant("future", 6, 'ACTION NEEDED: New sample thread. Reply "archive threads".'),
   ]));
   await f.scanner.scan();
-  assert.deepEqual(f.scanner.asks().map(a => a.recordId), ["future"]);
+  assert.deepEqual(f.scanner.asks().map(a => a.recordId), ["one", "three", "future"], "only the same-marker repeat supersedes");
+  assert.equal(Object.values((await f.store.read()).asks).some(a => a.resolvedBy === "reply"), false);
+  assert.deepEqual(recordTurns(queued("human", 7, "archive threads"), "claude").map(turn => turn.role), ["input"], "human-flagged input is still unverified");
+  assert.deepEqual(recordTurns({ type: "message", message: { role: "user", content: "archive threads" } }, "pi").map(turn => turn.role), ["input"]);
   assert.equal(recordTurns(queued("nonhuman", 7, "archive threads", "hook"), "claude").length, 0);
-});
-
-test("captain records above 64 KiB still resolve, including pasted blocks and reminder wrappers", async t => {
-  const f = await fixture(t, [
-    assistant("ask", 1, 'ACTION NEEDED: Inspect the sample plot. Reply "plot checked".'),
-    user("answer", 2, `<system-reminder>machine context</system-reminder>\n<pasted>\n${"synthetic detail ".repeat(6000)}\n</pasted>\nplot checked`),
-  ]);
-  await f.scanner.scan();
-  assert.deepEqual(f.scanner.asks(), []);
-  assert.equal(Object.values((await f.store.read()).asks)[0].resolvedBy, "reply");
 });
 
 test("record ceiling is enforced even when an oversized record ends in the current chunk", async t => {
   const f = await fixture(t, [
-    assistant("ask", 1, 'ACTION NEEDED: Inspect the sample plot. Reply "plot checked".'),
-    user("over-cap", 2, `${"x".repeat(4000)} plot checked`),
-    user("small", 3, "not yet"),
+    assistant("over-cap", 1, `ACTION NEEDED: ${"x".repeat(4000)} Reply "plot checked".`),
+    assistant("small", 2, 'ACTION NEEDED: Inspect the sample plot. Reply "plot checked".'),
   ], { maxLineBytes: 1024 });
   await f.scanner.scan();
-  assert.equal(f.scanner.asks().length, 1);
+  assert.deepEqual(f.scanner.asks().map(a => a.recordId), ["small"]);
   assert.equal(Object.values((await f.store.read()).cursors)[0].offset, (await readFile(f.file)).length);
-  await appendFile(f.file, jsonl([user("valid", 4, "plot checked")]));
+  await appendFile(f.file, jsonl([assistant("valid", 3, 'APPROVAL NEEDED: Approve the sample plot. Reply "approved".')]));
   await f.scanner.scan();
-  assert.deepEqual(f.scanner.asks(), []);
+  assert.deepEqual(f.scanner.asks().map(a => a.recordId), ["small", "valid"]);
 });
 
-test("version repair refreshes existing option extraction, replays queued answers and preserves dismissals", async t => {
+test("version repair refreshes existing option extraction, never replays transcript input as answers, and preserves dismissals", async t => {
   const f = await fixture(t, [
     assistant("option", 1, 'DECISION NEEDED: Choose a host.\n- "stay on Lyra": continue'),
     assistant("dismissed", 2, 'ACTION NEEDED: Sample dismiss. Reply "dismiss".'),
@@ -86,15 +79,13 @@ test("version repair refreshes existing option extraction, replays queued answer
   await f.scanner.scan();
   await f.store.update(state => {
     state.matchingVersion = 2;
-    const option = Object.values(state.asks).find(a => a.recordId === "option");
-    option.status = "open"; option.replies = []; delete state.tombstones[option.key];
+    Object.values(state.asks).find(a => a.recordId === "option").replies = [];
     return { write: true };
   });
   const repaired = f.make();
   await repaired.scan();
-  assert.deepEqual(repaired.asks(), []);
+  assert.deepEqual(repaired.asks().map(a => [a.recordId, a.replies]), [["option", ["stay on Lyra"]]]);
   const state = await f.store.read();
-  assert.equal(Object.values(state.asks).find(a => a.recordId === "option").resolvedBy, "reply");
   assert.equal(Object.values(state.asks).find(a => a.recordId === "dismissed").resolvedBy, "dismissed");
   assert.equal(await repaired.scan(), false);
 });

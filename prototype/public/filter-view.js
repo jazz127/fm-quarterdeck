@@ -9,7 +9,7 @@ window.filterView = (() => {
 
   function kindFiltersHtml(types, selectedIds, escapeHtml) {
     return types.map((type) => {
-      const singular = ({ captain: "captain", conversation: "Firstmate reply", supervision: "supervision outcome", thinking: "thinking", steer: "steer", crew: "crew status", branch: "crew reply", tools: "tool", harness: "harness" })[type.id] || type.label;
+      const singular = ({ captain: "captain", conversation: "Firstmate reply", supervision: "supervision outcome", thinking: "thinking", steer: "steer", crew: "crew status", branch: "crew reply", tools: "tool", harness: "harness", input: "unverified input" })[type.id] || type.label;
       const arrows = [[-1, "Previous", "↑"], [1, "Next", "↓"]].map(([step, label, arrow]) => `<button class="kind-message-jump" type="button" data-kind-jump="${escapeHtml(type.id)}" data-kind-step="${step}" aria-label="${escapeHtml(`${label} ${singular} message`)}" title="${escapeHtml(`${label} ${singular} message in loaded history`)}" disabled><span aria-hidden="true">${arrow}</span></button>`).join("");
       return `<div class="message-type-row">
     <label class="message-type-option" title="${escapeHtml(type.label)}">

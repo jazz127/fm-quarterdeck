@@ -28,7 +28,8 @@ import { readHealthPreferences, saveHealthPreferences, validHealthPreferences } 
 import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
 import { announceReview, inboxReady, inboxReceipts, inboxReviewState } from "./inbox.js";
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { VERIFIED_CAPTAIN, inboxInput, verifiedQuarterdeckNote } from "./authorship.js";
+import { lstat, open, readFile, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -386,7 +387,7 @@ function publicMessage({ author, role, source, text, timestamp, timestampSource 
 }
 
 function messageOrder(message) {
-  if (message.role === "captain") return 0;
+  if (message.role === "captain" || message.kind === "input") return 0;
   if (message.kind === "thinking") return 1;
   if (message.kind === "crew") return 3;
   return 2;
@@ -419,7 +420,8 @@ function publicSessions(tasks) {
   }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
-async function readRecordFile(filePath, source, role, defaultAuthor, reader) {
+// `identify(headers, body)` returns the record's author/role/state/kind.
+async function readRecordFile(filePath, source, identify, reader) {
   const [text, fileStat] = await Promise.all([reader.text(filePath), stat(filePath)]);
   const parsed = parseHeaderRecord(text);
   if (!parsed.body) return null;
@@ -427,16 +429,13 @@ async function readRecordFile(filePath, source, role, defaultAuthor, reader) {
   const isSteer = parsed.headers.schema === "fm-task-inbox.v1";
   reader.takeMessage();
   return publicMessage({
-    author: isSteer ? "Firstmate" : parsed.headers.author || defaultAuthor,
-    role: isSteer ? "firstmate" : role,
-    kind: isSteer ? "steer" : "conversation",
+    ...(isSteer ? { author: "Firstmate", role: "firstmate", kind: "steer", state: "firstmate" } : await identify(parsed.headers, parsed.body)),
     source,
     text: parsed.body,
     ...(/^agentos-review:[0-9a-f-]{36}$/i.test(parsed.headers.request_id || "") ? { review: parseReviewNote(parsed.body) } : {}),
     timestamp,
     timestampSource,
     taskId: parsed.headers.task_id || parsed.headers.work_id || parsed.headers.endpoint_task_id || null,
-    state: role,
   });
 }
 
@@ -468,25 +467,44 @@ async function readTaskSteers(home, taskId, reader) {
   for (const [directory, sourceRoot] of locations) {
     for (const name of await filesInOptionalDirectory(directory)) {
       if (!name.endsWith(".msg")) continue;
-      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, "firstmate", "Firstmate", reader);
+      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, (headers) => ({ author: headers.author || "Firstmate", role: "firstmate", kind: "conversation", state: "firstmate" }), reader);
       if (message) messages.push({ ...message, taskId, kind: "steer" });
     }
   }
   return messages;
 }
 
+// Presence in an inbox is not authorship: only a verified Quarterdeck send is the
+// Captain's (authorship.js). Every other note, including any `author=` header, is
+// unverified input. Firstmate's own inbox is state/inbox; legacy inbox/ never verifies.
 async function readCaptainNotes(home, reader) {
+  const firstmateInbox = path.join(home, "state", "inbox");
   const locations = [
-    [path.join(home, "inbox"), "inbox"],
-    [path.join(home, "inbox", "handled"), "inbox/handled"],
-    [path.join(home, "state", "inbox"), "state/inbox"],
-    [path.join(home, "state", "inbox", "handled"), "state/inbox/handled"],
+    [path.join(home, "inbox"), "inbox", false],
+    [path.join(home, "inbox", "handled"), "inbox/handled", false],
+    [firstmateInbox, "state/inbox", true],
+    [path.join(firstmateInbox, "handled"), "state/inbox/handled", true],
   ];
+  // A reservation is one short note id; read at most 256 bytes outside the history budget.
+  const reservation = async (requestId) => {
+    const reserved = path.join(firstmateInbox, ".requests", requestId);
+    let file;
+    try {
+      if (!(await lstat(reserved)).isFile()) return null;
+      file = await open(reserved, "r");
+    } catch (error) { if (error.code === "ENOENT" || error.code === "ENOTDIR") return null; throw error; }
+    try {
+      const buffer = Buffer.alloc(256);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      return buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/)[0].trim();
+    } finally { await file.close(); }
+  };
   const messages = [];
-  for (const [directory, sourceRoot] of locations) {
+  for (const [directory, sourceRoot, inFirstmateInbox] of locations) {
     for (const name of await filesInOptionalDirectory(directory)) {
       if (!name.endsWith(".note") && !name.endsWith(".msg")) continue;
-      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, "captain", "Captain", reader);
+      const identify = async (headers, body) => await verifiedQuarterdeckNote({ name, inFirstmateInbox, headers, body, reservation }) ? VERIFIED_CAPTAIN : inboxInput();
+      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, identify, reader);
       if (message) messages.push(message);
     }
   }

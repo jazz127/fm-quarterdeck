@@ -4,6 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { validateAnswer } from "../bearings-answer.js";
 import { BearingsUnavailable, MODEL_SCHEMA, contentRevision, createBearingsHub, createSnapshotRunner, normalizeSnapshot, publicText } from "../bearings.js";
 import { createServer } from "../server.js";
 
@@ -106,6 +107,39 @@ test("normalizer drops unsafe URLs and invalid rows with a disclosed count", asy
   assert.equal(content.cards.find((card) => card.type === "merge").url, null);
   assert.deepEqual(content.omitted.at(-1), { kind: "invalid-rows", count: 2 });
   assert.equal(publicText("see ~/private/tree/file.txt and /opt/a/b"), "see …/file.txt and …/b");
+});
+
+test("a decision with lettered lines offers those letters, and a card without them stays free text", async () => {
+  const raw = await fixture("two-calls");
+  const letters = "Choose the sample window.\na) Staged rollout — fewer users at once\nb) Ship now — faster delivery\nc) Wait — need another check";
+  raw.decisions_open[0].summary = letters;
+  raw.decisions_open[0].reason = "a) shorter\nb) list";
+  const answer = normalizeSnapshot(raw).cards[0].answer;
+  assert.deepEqual(answer.options, [
+    { value: "a", label: "a", hint: "Staged rollout — fewer users at once" },
+    { value: "b", label: "b", hint: "Ship now — faster delivery" },
+    { value: "c", label: "c", hint: "Wait — need another check" },
+  ]);
+  assert.equal(answer.recommend, null);
+  const model = { schema: "fm-quarterdeck-call.v1", rev: "model", state: "ready", ...normalizeSnapshot(raw) };
+  const card = model.cards[0];
+  assert.equal(validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "a", note: "" }, model).selection, "a");
+  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "z", note: "" }, model), /not offered/);
+  raw.decisions_open[0].summary = "Provide the gamma sandbox credential";
+  raw.decisions_open[0].reason = "No lettered choice is recorded.";
+  assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options, []);
+  raw.decisions_open[0].summary = "a) keep /srv/synthetic/workspace/data/secret\nb) drop the sample";
+  delete raw.decisions_open[0].reason;
+  const redacted = normalizeSnapshot(raw).cards[0].answer.options[0].hint;
+  assert.equal(redacted.includes("synthetic"), false);
+  assert.match(redacted, /secret/);
+  raw.decisions_open[0].options = [{ value: "later", label: "Later" }];
+  raw.decisions_open[0].summary = "a) staged\nb) now";
+  assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options.map((option) => option.value), ["later"]);
+  raw.decisions_open[0].options = [{ value: "reconcile", label: "Reconcile" }];
+  assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options, []);
+  raw.contributions.captain.find((row) => row.task === "beta-merge").reason = "a) merge it\nb) wait";
+  assert.deepEqual(normalizeSnapshot(raw).cards.find((card) => card.type === "merge").answer.options.map((option) => option.value), ["merge"]);
 });
 
 test("content revision ignores the snapshot clock but follows every visible change", async () => {

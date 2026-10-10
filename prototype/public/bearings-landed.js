@@ -300,6 +300,7 @@ window.bearingsLanded = (() => {
         draft.text = "";
         draft.requestId = null;
         draft.notice = "Question sent to Firstmate";
+        globalThis.dispatchEvent?.(new Event("quarterdeck-sent"));
         draft.error = "";
         paintPhase(node, key);
         await loadHistory(key);

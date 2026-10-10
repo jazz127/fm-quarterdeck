@@ -449,6 +449,118 @@ test("queued local batch enables both Send actions while an empty queue stays di
   assert.equal(element("review-end").disabled, true);
 });
 
+async function composeBoard() {
+  const elements = new Map();
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, {
+      id, value: "", textContent: "", hidden: id === "review-annotation", disabled: false, style: {}, scrollHeight: 40, listeners: {},
+      addEventListener(type, fn) { this.listeners[type] = fn; },
+      setAttribute() {}, focus() {}, replaceChildren() {}, append() {},
+    });
+    return elements.get(id);
+  }
+  const posts = [];
+  let uuid = 0;
+  const calls = [];
+  const callSends = [];
+  const context = vm.createContext({
+    document: { body: { append() {} }, getElementById: element, querySelector: () => ({ textContent: "" }), addEventListener() {}, createElement: () => ({ textContent: "", style: {}, append() {}, setAttribute() {}, addEventListener() {} }) },
+    window: { addEventListener() {}, quarterdeckCallQueue: { list: () => calls, send: async () => { callSends.push(calls.length); calls.length = 0; return true; }, remove() {} } },
+    location: { hash: "#overview" }, crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}` },
+    fetch: async (_url, options) => {
+      if (options?.method !== "POST") return { ok: true, json: async () => ({ ready: true, delivery: "local", sessionId: "", version: reviewVersion }) };
+      posts.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ receiptId: "local:compose", delivery: "local" }) };
+    },
+  });
+  vm.runInContext(reviewClientScript, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(vm.runInContext("config.ready", context), true);
+  const queue = (text) => {
+    element("review-message").value = text;
+    element("review-message").listeners.input();
+    element("review-form").listeners.submit({ preventDefault() {} });
+  };
+  const send = () => element("review-send").listeners.click();
+  return { element, posts, calls, callSends, queue, send, context };
+}
+
+test("Send batch includes compose text with queued notes, sends either alone, and does nothing when both are empty", async () => {
+  const both = await composeBoard();
+  both.queue("Queued note");
+  assert.equal(both.element("review-message").value, "");
+  both.element("review-message").value = "Typed note";
+  both.element("review-message").listeners.input();
+  await both.send();
+  assert.deepEqual(both.posts[0].entries.map((entry) => entry.prompt), ["Queued note", "Typed note"], "queued notes and typed text go together");
+  assert.equal(both.element("review-message").value, "", "the compose box clears after Send batch");
+
+  const typed = await composeBoard();
+  typed.element("review-message").value = "Only typed";
+  typed.element("review-message").listeners.input();
+  await typed.send();
+  assert.deepEqual(typed.posts[0].entries.map((entry) => entry.prompt), ["Only typed"], "typed text alone is sent");
+  assert.equal(typed.element("review-message").value, "");
+
+  const queued = await composeBoard();
+  queued.queue("Only queued");
+  await queued.send();
+  assert.deepEqual(queued.posts[0].entries.map((entry) => entry.prompt), ["Only queued"], "a queued note is unchanged when the box is empty");
+  assert.equal(queued.posts.length, 1);
+
+  const empty = await composeBoard();
+  assert.equal(empty.element("review-send").disabled, true);
+  await empty.send();
+  empty.element("review-message").value = "   ";
+  empty.element("review-message").listeners.input();
+  await empty.send();
+  assert.deepEqual(empty.posts, [], "an empty compose box and an empty queue do not send");
+  assert.equal(empty.element("review-message").value, "   ");
+});
+
+test("Send batch does not send compose text again when that text was already queued", async () => {
+  const stale = await composeBoard();
+  stale.queue("Same note");
+  stale.element("review-message").value = "Same note";
+  await stale.send();
+  assert.deepEqual(stale.posts[0].entries.map((entry) => entry.prompt), ["Same note"], "a draft Queue already took is not added twice");
+  assert.equal(stale.element("review-message").value, "");
+
+  const retyped = await composeBoard();
+  retyped.queue("Same note");
+  retyped.element("review-message").value = "Same note";
+  retyped.element("review-message").listeners.input();
+  await retyped.send();
+  assert.deepEqual(retyped.posts[0].entries.map((entry) => entry.prompt), ["Same note", "Same note"], "typing the same words again is a new note");
+
+  const shortcut = await composeBoard();
+  shortcut.queue("Queued note");
+  shortcut.element("review-message").value = "Typed note";
+  shortcut.element("review-message").listeners.input();
+  shortcut.element("review-message").listeners.keydown({ key: "Enter", ctrlKey: true, isComposing: false, preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(shortcut.posts[0].entries.map((entry) => entry.prompt), ["Queued note", "Typed note"], "Ctrl+Enter sends the draft once");
+
+  const card = await composeBoard();
+  card.calls.push({ key: "decision:alpha-call", label: "Decision alpha-call", text: "Tuesday", phase: "confirm" });
+  card.element("review-message").value = "With the card";
+  card.element("review-message").listeners.input();
+  card.element("review-count").textContent = "";
+  card.context.window.quarterdeckReviewQueue.refresh();
+  await card.send();
+  assert.deepEqual(card.callSends, [1], "a queued card answer still uses its own sender");
+  assert.deepEqual(card.posts[0].entries.map((entry) => entry.prompt), ["With the card"]);
+
+  const full = await composeBoard();
+  for (let index = 0; index < 30; index += 1) full.queue(`Note ${index}`);
+  full.element("review-message").value = "Stays in the box";
+  full.element("review-message").listeners.input();
+  await full.send();
+  assert.equal(full.posts.length, 1);
+  assert.equal(full.posts[0].entries.length, 30, "a full board still sends");
+  assert.equal(full.element("review-message").value, "Stays in the box", "a draft past the board cap stays in the box");
+});
+
 test("queued Captain's Call answers count in the review queue and Send batch sends them through their own route first", async () => {
   const elements = new Map();
   function element(id) {
@@ -878,6 +990,20 @@ test("review conversation notes: long notes are collapsed by default and expanda
   assert.equal(batch.children[0].children[1].className, "review-batch-label");
   assert.equal(batch.children[0].children[1].textContent, "Accepted · 2 notes");
   assert.equal(batch.children[0].children[1]["aria-hidden"], "true");
+  vm.runInContext(await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8"), context);
+  vm.runInContext(`sent[0].state = "accepted"; sent[0].intake = "accepted"; sent[0].announced = true; update();`, context);
+  const phrase = context.window.callLifecycle.sentLabel("pending");
+  for (const listId of ["review-sent-list", "review-phone-thread"]) {
+    const header = getElement(listId).children[0].children[0];
+    const expanded = header.children[0].textContent;
+    const collapsed = header.children[1].textContent;
+    assert.equal(header.children[0].className, "review-batch-full");
+    assert.equal(header.children[1].className, "review-batch-label");
+    assert.equal(collapsed, `${phrase} · 2 notes`);
+    assert.equal(expanded, `${phrase} · 2 notes · receipt receipt-1`);
+    assert.ok(expanded.startsWith(collapsed), `${listId} expanded label continues the collapsed label`);
+    assert.doesNotMatch(`${collapsed}\n${expanded}`, /Queued|Accepted durably/);
+  }
   const pendingMeta = batch.children[0].children[2];
   assert.equal(pendingMeta.className, "review-batch-meta");
   assert.equal(pendingMeta.children.length, 1, "a sent batch without a time still shows its id");
@@ -922,11 +1048,30 @@ test("review conversation notes: long notes are collapsed by default and expanda
   assert.equal(context.copied, "batch-1");
   assert.equal(copyEvent.stopped, true);
   assert.equal(copyEvent.defaultPrevented, true);
+  const sentCard = sentList.children[0].children.find((child) => child.tagName === "ARTICLE");
+  const messageCopy = sentCard.children.find((child) => child.className === "review-note-copy");
+  assert.equal(messageCopy.textContent, "Copy");
+  assert.equal(messageCopy["aria-label"], "Copy message and batch details");
+  assert.equal(sentCard.children.find((child) => child.className === "review-note-header").children.some((child) => child.className === "review-note-copy"), false);
+  context.copied = "";
+  messageCopy.listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(messageCopy.textContent, "Copied");
+  const copiedPhrase = context.window.callLifecycle.sentLabel("pending");
+  assert.match(context.copied, new RegExp(`^Short note\\n\\n${copiedPhrase} · 2 notes · receipt receipt-1\\nbatch-1\\n2026-03-04T15:07:00\\.000Z · `));
 
   vm.runInContext(`window.quarterdeckCallQueue = { list: () => [{ key: "decision:alpha-call", label: "Alpha", text: "Tuesday", phase: "confirm" }] }; update()`, context);
   const callSummary = getElement("review-phone-thread").children.map((child) => child.children[0]).find((summary) => summary.children[1].textContent.startsWith("Call answers"));
   assert.equal(callSummary.children[1].textContent, "Call answers · 1");
   assert.equal(callSummary.children.length, 2, "the call-answer group is not given a fake batch id");
+  const callCard = getElement("review-thread").children.find((child) => child.className === "review-call-answer");
+  const callCopy = callCard.children.find((child) => child.className === "review-note-copy");
+  const callRemove = callCard.children.find((child) => child.className === "review-note-header").children.find((child) => child.textContent === "Remove");
+  assert.equal(callRemove.tagName, "BUTTON");
+  context.copied = "";
+  callCopy.listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.copied, "Tuesday\n\nQueued Captain's Call answers · 1");
 
   vm.runInContext(`
     window.quarterdeckCallQueue = { list: () => [] };
@@ -940,4 +1085,9 @@ test("review conversation notes: long notes are collapsed by default and expanda
   assert.equal(queuedId.textContent, "abcdef1");
   assert.equal(queuedId.title, "abcdef12-3456-7890-abcd-ef1234567890");
   assert.equal(queuedSummary.children[2].children.some((child) => child.tagName === "TIME"), false, "queued batches have no sent time");
+  const queuedCard = getElement("review-thread").children.find((child) => child.tagName === "ARTICLE");
+  context.copied = "";
+  queuedCard.children.find((child) => child.className === "review-note-copy").listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.copied, "Short note\n\nQueued batch · 1 note\nabcdef12-3456-7890-abcd-ef1234567890");
 });

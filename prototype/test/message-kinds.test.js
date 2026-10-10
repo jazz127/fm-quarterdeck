@@ -25,6 +25,11 @@ test("message kinds catalog defaults, migrates legacy prefs, and maps type ids",
   assert.equal(api.typeId({ role: "captain", kind: "conversation" }), "captain");
   assert.equal(api.typeId({ role: "firstmate", kind: "thinking" }), "thinking");
   assert.equal(api.typeId({ role: "firstmate" }), "conversation");
+  // Unverified transcript/inbox input has its own kind, outside the default feed and never captain.
+  assert.equal(api.typeId({ role: "input", kind: "input", author: "Pi session input" }), "input");
+  assert.equal(api.label("input"), "unverified input");
+  assert.equal(api.stored().has("input"), false);
+  assert.equal(api.DEFAULT_IDS.includes("input"), false);
   assert.equal(api.label("conversation"), "Firstmate replies");
   assert.equal(api.icon("tools"), "tools");
   assert.match(api.svg("tools"), /message-kind-svg/);

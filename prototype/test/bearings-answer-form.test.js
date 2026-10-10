@@ -116,6 +116,40 @@ function tabStorage() {
     key: (index) => [...entries.keys()][index], get length() { return entries.size; } };
 }
 
+test("selecting a lettered option submits that letter, and text alone stays a thread note", async () => {
+  const key = "decision:alpha-call";
+  const lettered = () => {
+    const card = decision();
+    card.answer = { ...card.answer, options: [
+      { value: "a", label: "a", hint: "Staged rollout — fewer users at once" },
+      { value: "b", label: "b", hint: "Ship now — faster delivery" },
+    ] };
+    return card;
+  };
+  const typed = setup();
+  typed.patcher.update(model([lettered()]));
+  typed.part(key, "text").type("Tuesday");
+  typed.submit(key);
+  assert.equal(typed.answers.state(key).path, "thread");
+  assert.equal(typed.fetches.length, 0, "text with no letter selected is not an answer yet");
+
+  const t = setup();
+  t.patcher.update(model([lettered()]));
+  assert.match(t.node(key).querySelector('input[value="a"]').closest(".call-opt").textContent, /Staged rollout — fewer users at once/);
+  assert.equal(t.node(key).querySelectorAll('input[type="radio"]').length, 2);
+  const radio = t.node(key).querySelector('input[value="a"]');
+  radio.checked = true;
+  radio.dispatchEvent({ type: "change" });
+  t.submit(key);
+  assert.equal(t.answers.state(key).selection, "a");
+  assert.equal(t.answers.state(key).selectionLabel, "a");
+  assert.equal(t.part(key, "preview").textContent, "a");
+  t.part(key, "send").click();
+  await flush();
+  assert.equal(t.fetches[0].url, "/api/bearings/answer");
+  assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: "a1", selection: "a", note: "" });
+});
+
 test("nothing is sent until Queue and then an explicit Send; the sent answer clears its draft and shows receipts", async () => {
   const t = setup({ responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
   const card = decision();

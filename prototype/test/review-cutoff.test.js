@@ -11,6 +11,7 @@ function harness() {
   const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const posts = [];
   const waiting = [];
+  const intervals = [];
   let mode = "success", configUp = true, uuid = 0;
   const version = "e21fb8d5c854d8b19a6721e911b31628aac96cdd";
   function page() {
@@ -39,6 +40,7 @@ function harness() {
         createElement: () => ({ textContent: "", style: {}, append() {}, setAttribute() {}, addEventListener() {} }) },
       window: { innerHeight: 800, visualViewport, addEventListener() {}, matchMedia: (query) => ({ get matches() { return query.startsWith("(min-") ? desktop : !desktop; } }) }, setTimeout: (fn) => fn(), location: { hash: "#overview" }, sessionStorage: storage,
       crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}` },
+      setInterval(fn, ms) { intervals.push({ fn, ms }); return intervals.length; },
       fetch: async (url, options) => {
         if (options?.method === "POST") {
           const body = JSON.parse(options.body);
@@ -82,7 +84,7 @@ function harness() {
     const body = posts.at(-1);
     waiting.shift()({ ok: !failure, status: failure ? 502 : 200, json: async () => failure ? { error: "disk error" } : { receiptId: `local:${body.batchId}`, delivery: "local" } });
   };
-  return { page, posts, data, release, setMode: (value) => { mode = value; }, setConfigUp: (value) => { configUp = value; } };
+  return { page, posts, data, intervals, release, setMode: (value) => { mode = value; }, setConfigUp: (value) => { configUp = value; } };
 }
 
 test("open help consumes Escape before annotation, picking or review", async () => {
@@ -325,6 +327,7 @@ test("review panel keeps desktop Sent/Queued sections and phone Message/Review t
   const batchCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
   assert.match(batchCss, /\.review-batch > summary \{[^}]*font-size: 12px;[^}]*line-height: 1\.25;[^}]*white-space: nowrap/);
   assert.match(batchCss, /\.review-note-text,\n\.review-batch > p \{ font-size: 12px; line-height: 1\.25; \}/);
+  assert.match(batchCss, /\.review-note-text,\n\.review-note-preview,\n\.review-batch > p,\n\.review-batch-full,\n\.review-batch-label,\n\.review-batch-meta time \{[^}]*-webkit-user-select: text; user-select: text; \}/);
   assert.doesNotMatch(batchCss, /\.review-note-full \{[^}]*font-size:/);
   assert.match(batchCss, /\.review-batch-label \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap/);
   assert.match(batchCss, /\.review-batch\[open\] > summary \.review-batch-full \{[^}]*white-space: normal/);
@@ -654,6 +657,32 @@ test("mobile review close overlay regression: z-index 75 overtakes shell level-7
   // In corrected overlay state (panel z-index is 75, overtaking lane-list 70):
   const fixedWinner = simulateHitTest(75);
   assert.equal(fixedWinner.id, "review-close", "With z-index 75, Close button overtakes app shell and wins hit testing");
+});
+
+test("desktop inline composer recovers Send while the review panel stays hidden", async () => {
+  const h = harness();
+  h.setConfigUp(false);
+  const p = h.page(); await tick();
+  p.element("review-panel").hidden = true;
+  p.element("review-annotation").hidden = true;
+  p.element("review-message").value = "Synthetic inline note";
+  p.element("review-message").listeners.input();
+  assert.equal(p.element("review-send").disabled, true, "unreachable server cannot accept Send");
+  assert.equal(h.intervals.length, 1);
+  assert.equal(h.intervals[0].ms, 5000);
+  h.setConfigUp(true);
+  h.intervals[0].fn();
+  await tick(); await tick();
+  assert.equal(p.element("review-send").disabled, true, "a hidden panel and hidden inline composer do not poll");
+  assert.equal(p.element("review-panel").hidden, true);
+  p.element("review-annotation").hidden = false;
+  h.intervals[0].fn();
+  await tick(); await tick();
+  assert.equal(p.element("review-panel").hidden, true, "recovery does not open the review panel");
+  assert.equal(p.element("review-annotation").hidden, false);
+  assert.equal(p.element("review-send").disabled, false, "the open inline composer re-reads configuration");
+  assert.equal(p.element("review-state").textContent, "Review delivery reconnected.");
+  assert.equal(p.element("review-message").value, "Synthetic inline note");
 });
 
 test("phone composer re-enables Send when an unreachable server returns", async () => {

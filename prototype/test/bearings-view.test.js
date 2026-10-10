@@ -107,6 +107,21 @@ test('answerable cards render a form: freeform only without options, options wit
   assert.match(linked, /data-call-reply="&lt;hold&gt;"/);
 });
 
+test('lettered choices render as one radio group with the description under each letter', () => {
+  const html = view.cardHtml({ key: 'decision:alpha-call', task: 'alpha-call', type: 'decision', summary: 'Choose', answer: { question: 'alpha-call', options: [
+    { value: 'a', label: 'a', hint: 'Staged rollout — fewer users' },
+    { value: 'b', label: 'b', hint: 'Ship now — faster delivery' },
+  ], recommend: null, close: null, freeform: true } });
+  const name = `call-selection-${view.idFor('decision:alpha-call')}`;
+  assert.equal((html.match(new RegExp(`type="radio" name="${name}"`, 'g')) || []).length, 2);
+  assert.match(html, /value="a"[^>]*data-call-option-label="a"[\s\S]*<span class="call-opt-label">a<\/span><span class="call-opt-hint">Staged rollout — fewer users<\/span>/);
+  assert.match(html, /value="b"[\s\S]*Ship now — faster delivery/);
+  assert.doesNotMatch(html, /No structured options/);
+  const hinted = view.cardHtml({ key: 'decision:hold', task: 'hold', type: 'decision', summary: 'Choose', answer: { question: 'hold', options: [], recommend: null, close: null, freeform: true },
+    chatAsks: [{ summary: 'asked', replies: ['option A'], replyHints: { 'option A': 'keep the current window' } }] });
+  assert.match(hinted, /data-call-reply="option A"[\s\S]*<span class="call-opt-hint">keep the current window<\/span>/);
+  assert.doesNotMatch(hinted, /Suggested reply from chat/);
+});
 test('a captain-hold asking for a credential is labelled Credentials', () => {
   assert.match(view.cardHtml({ type: 'decision', verb: 'captain-hold', summary: 'Provide the gamma sandbox credential' }), />Credentials</);
   assert.match(view.cardHtml({ type: 'decision', verb: 'captain-hold', summary: 'Pick the alpha rollout window' }), />Decision</);

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { answerEnvelope, formatAnswerNote, validateAnswer } from "../bearings-answer.js";
 import { createBearingsHub, normalizeSnapshot } from "../bearings.js";
-import { chatAsksPath, composeCallModel, createCallSource, createChatAskScanner, extractAsks, extractReplies, mentionsTask } from "../chat-asks.js";
+import { chatAsksPath, chatCard, composeCallModel, createCallSource, createChatAskScanner, extractAsks, extractReplies, mentionsTask } from "../chat-asks.js";
 import { claudeProjectDirectory } from "../claude-transcript.js";
 import { createServer } from "../server.js";
 
@@ -68,7 +68,7 @@ test("marker grammar: line-start markers tolerant of markdown; mentions, code an
   assert.equal(mentionsTask("see sample-task.md", "sample-task"), false);
 });
 
-test("a Firstmate ask surfaces, a captain reply that repeats the quoted reply resolves it, and reads are incremental", async (context) => {
+test("a Firstmate ask surfaces, transcript input that repeats the quoted reply never resolves it, and reads are incremental", async (context) => {
   const env = await claudeHome(context);
   await writeFile(env.transcript, lines(
     captain("c-1", 0, "status?"),
@@ -87,22 +87,23 @@ test("a Firstmate ask surfaces, a captain reply that repeats the quoted reply re
   const cursor = Object.values(state.cursors)[0];
   assert.equal(cursor.offset, (await readFile(env.transcript)).length);
 
-  // A machine envelope never answers; a reply typed in a later captain message does, exactly.
+  // A transcript role=user line is unverified input (authorship.js), not the captain's
+  // reply: neither a machine envelope nor a matching reply resolves the ask.
   await appendFile(env.transcript, lines(captain("c-2", 3, "FIRSTMATE_OP: retire both"), captain("c-3", 4, "Retire both.")));
   // A trailing partial record is left for the next scan rather than parsed early.
-  await appendFile(env.transcript, captain("c-4", 5, "rotated").slice(0, 20));
-  assert.equal(await scanner.scan(), true);
-  assert.deepEqual(scanner.asks().map((ask) => ask.key), [keys[1]]);
-  const resolved = JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8")).asks[keys[0]];
-  assert.equal(resolved.resolvedBy, "reply");
-  await appendFile(env.transcript, `${captain("c-4", 5, "rotated").slice(20)}\n`);
+  const partial = firstmate("f-3", 5, "ACTION NEEDED: Restart the sample preview. Reply \"restart\".");
+  await appendFile(env.transcript, partial.slice(0, 20));
   await scanner.scan();
-  assert.deepEqual(scanner.asks(), []);
+  assert.deepEqual(scanner.asks().map((ask) => ask.key), keys);
+  assert.equal(Object.values(JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8")).asks).some((ask) => ask.resolvedBy === "reply"), false);
+  await appendFile(env.transcript, `${partial.slice(20)}\n${captain("c-4", 6, "rotated")}\n`);
+  await scanner.scan();
+  assert.deepEqual(scanner.asks().map((ask) => ask.recordId), ["f-1", "f-2", "f-3"]);
 
-  // A fresh process resumes from the persisted cursor and keeps resolutions.
+  // A fresh process resumes from the persisted cursor without duplicating cards.
   const restarted = scannerFor(env);
   await restarted.scan();
-  assert.deepEqual(restarted.asks(), []);
+  assert.deepEqual(restarted.asks().map((ask) => ask.recordId), ["f-1", "f-2", "f-3"]);
 });
 
 test("keys are stable, dismissals survive a rewritten transcript, re-asks supersede, and backfill skips stale asks", async (context) => {
@@ -130,7 +131,7 @@ test("keys are stable, dismissals survive a rewritten transcript, re-asks supers
   assert.deepEqual(scanner.asks().map((entry) => entry.recordId), ["f-3"]);
 });
 
-test("later captain messages resolve case and punctuation variants anywhere as whole phrases", async (context) => {
+test("transcript input quoting a suggested reply in any case or punctuation leaves asks open", async (context) => {
   const env = await claudeHome(context);
   await writeFile(env.transcript, lines(
     captain("before", 0, "archive sample notes"),
@@ -142,13 +143,13 @@ test("later captain messages resolve case and punctuation variants anywhere as w
   ));
   const scanner = scannerFor(env);
   await scanner.scan();
-  assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["long"]);
+  assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["case", "long"]);
   await appendFile(env.transcript, lines(captain("long-answer", 5, "Please ARCHIVE\t sample, notes ---- then check the sample preview.")));
   await scanner.scan();
-  assert.deepEqual(scanner.asks(), []);
+  assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["case", "long"]);
   const restarted = scannerFor(env);
   await restarted.scan();
-  assert.deepEqual(restarted.asks(), []);
+  assert.deepEqual(restarted.asks().map(ask => ask.recordId), ["case", "long"]);
 });
 
 test("same-marker replies supersede older asks despite changed prose, not different markers", async (context) => {
@@ -163,7 +164,7 @@ test("same-marker replies supersede older asks despite changed prose, not differ
   assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["different-marker", "newer"]);
   await appendFile(env.transcript, lines(captain("answer", 4, "Please retire both -- inspect the logs too.")));
   await scanner.scan();
-  assert.deepEqual(scanner.asks(), [], "a reply tests every earlier open ask, including different markers");
+  assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["different-marker", "newer"], "transcript input never resolves an ask");
 });
 
 test("an upgraded scanner replays a bounded window to repair persisted open asks and repeats", async (context) => {
@@ -188,7 +189,7 @@ test("an upgraded scanner replays a bounded window to repair persisted open asks
   await writeFile(chatAsksPath(env.statePath), JSON.stringify(legacy));
   const upgraded = scannerFor(env);
   await upgraded.scan();
-  assert.deepEqual(upgraded.asks().map(ask => ask.recordId), ["newer"]);
+  assert.deepEqual(upgraded.asks().map(ask => ask.recordId), ["answered", "newer"], "the repeat supersedes; transcript input resolves nothing");
   assert.equal(await upgraded.scan(), false, "repair is one-off; idle scans remain cheap");
 });
 
@@ -296,6 +297,67 @@ test("chat cards answer through the keyed relay as the captain's own reply, even
   assert.match(note.split("\n")[0], /reply to your chat ask: retire both$/);
   assert.deepEqual(note.split("\n").filter((line) => line.startsWith("```")), ["```json fm-bearings-answer", "```"]);
   assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000002", key: card.key, cardRev: card.rev, selection: "", note: "x" }, { ...model, chat: { ...model.chat, state: "unavailable" } }), /not current/);
+});
+
+test("lettered decision lines are radios, and a quoted reply keeps its own description", () => {
+  const sample = (overrides) => ({
+    key: "chat:sampleletter", kind: "decision", marker: "DECISION NEEDED",
+    text: "Choose the sample window.\na) Staged rollout\nb) Wait a week",
+    replies: [], source: "session-one.jsonl", offset: 0, part: 0, at: at(1), ...overrides,
+  });
+  const lettered = chatCard(sample({}));
+  assert.deepEqual(lettered.answer.options, [
+    { value: "a", label: "a", hint: "Staged rollout" },
+    { value: "b", label: "b", hint: "Wait a week" },
+  ]);
+  assert.deepEqual(lettered.replies, ["a", "b"]);
+  assert.deepEqual(chatCard(sample({ kind: "approval", marker: "APPROVAL NEEDED", key: "chat:approvalletter" })).answer.options, []);
+  const described = chatCard(sample({
+    key: "chat:described",
+    text: 'Choose.\n- "stay on Lyra": continue the current setup\nReply "pause work".',
+    replies: ["stay on Lyra", "pause work"],
+  }));
+  assert.deepEqual(described.answer.options.map((option) => [option.value, option.label, option.hint]), [
+    ["reply-1", "stay on Lyra", "continue the current setup"],
+    ["reply-2", "pause work", "Firstmate's suggested reply"],
+  ]);
+  assert.deepEqual(described.replies, ["stay on Lyra", "pause work"]);
+  assert.equal(chatCard(sample({ text: 'Choose. Reply "stay".', replies: ["stay"] })).answer.options[0].hint, "Firstmate's suggested reply");
+  assert.deepEqual(extractReplies('Reply with "a", "b" or `c`; later reply: "d". Unquoted reply yes.'), ["a", "b", "c", "d"]);
+  assert.deepEqual(extractAsks("DECISION NEEDED: pick a sample plan.\n- Option A: ship behind a flag\n- Option B: wait a week. Reply `flag` or `wait`.")[0].replies, ["flag", "wait"]);
+  const optionLines = chatCard(sample({ text: "pick a sample plan.\n- Option A: ship behind a flag\n- Option B: wait a week" }));
+  assert.deepEqual(optionLines.answer.options.map((option) => [option.value, option.hint]), [["A", "ship behind a flag"], ["B", "wait a week"]]);
+  const valid = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000011", key: lettered.key, cardRev: lettered.rev, selection: "a", note: "" }, { state: "ready", cards: [lettered], chat: { state: "ready" } });
+  const envelope = answerEnvelope(valid, "model");
+  assert.equal(envelope.selection, "");
+  assert.equal(envelope.note, "a");
+});
+
+test("a filed decision with no options takes lettered lines from a linked decision ask", async (context) => {
+  const env = await claudeHome(context);
+  await writeFile(env.transcript, lines(
+    firstmate("letters", 1, "DECISION NEEDED: [task:hold-letters] Choose the sample window.\na) Staged rollout\nb) Wait a week"),
+    firstmate("approval-letters", 2, "APPROVAL NEEDED: [task:hold-approval] Approve the sample window.\na) yes now\nb) not yet"),
+    firstmate("described", 3, 'DECISION NEEDED: [task:hold-described] Choose the sample plan.\n- "stay on Lyra": continue the current setup\n- "pause work": wait for the check'),
+    firstmate("structured", 4, "DECISION NEEDED: [task:hold-structured] Keep or change the filed options.\na) staged rollout\nb) wait a week"),
+  ));
+  const scanner = scannerFor(env);
+  await scanner.scan();
+  const model = composeCallModel(base([
+    { id: "hold-letters", verb: "decide", summary: "Choose the sample window", owner: "(main)" },
+    { id: "hold-approval", verb: "approve", summary: "Approve the sample", owner: "(main)" },
+    { id: "hold-described", verb: "decide", summary: "Choose the sample plan", owner: "(main)" },
+    { id: "hold-structured", verb: "decide", summary: "Keep the filed options", owner: "(main)", options: [{ value: "later", label: "Later", hint: "Not now" }, { value: "now", label: "Now", hint: "Ship" }] },
+  ]), scanner.asks(), scanner.view());
+  const card = (task) => model.cards.find((entry) => entry.task === task);
+  assert.equal(model.chat.linked, 4);
+  assert.equal(model.chat.open, 0);
+  assert.deepEqual(card("hold-letters").answer.options.map((option) => [option.value, option.hint]), [["a", "Staged rollout"], ["b", "Wait a week"]]);
+  assert.deepEqual(scanner.asks().find((ask) => ask.recordId === "letters").replies, []);
+  assert.deepEqual(card("hold-approval").answer.options, []);
+  assert.deepEqual(card("hold-described").answer.options, []);
+  assert.deepEqual(card("hold-described").chatAsks[0].replyHints, { "stay on Lyra": "continue the current setup", "pause work": "wait for the check" });
+  assert.deepEqual(card("hold-structured").answer.options.map((option) => option.value), ["later", "now"]);
 });
 
 test("server: a refresh surfaces new asks; dismiss and a confirmed answer resolve them in Quarterdeck state only", async (context) => {

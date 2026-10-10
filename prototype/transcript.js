@@ -2,6 +2,7 @@ import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHistoryReader } from "./history-reader.js";
 import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
+import { sessionInput } from "./authorship.js";
 
 const MIRROR_MATCH_WINDOW_MS = 60_000;
 const NATIVE_MAIN = new Set(["main Pi", "main Claude"]);
@@ -203,11 +204,14 @@ export async function readConversationTranscript(home, publicMessage, { selected
           // Remove only machine envelopes, not arbitrary ordinary user turns.
           if (role === "user" && (/^\W*FIRSTMATE_OP:/.test(text) || /^FIRSTMATE SUPERVISION WAKE:/.test(text) || /^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/.test(text))) continue;
           reader.takeMessage();
-          messages.push({ ...publicMessage({
-            author: recordKind === "supervision" ? "Fleet" : role === "user" ? "Captain" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: role === "user" ? "captain" : "firstmate",
-            source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex,
-            state: role === "user" ? "captain" : thinking ? "thinking" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : recordKind || "conversation",
-          }), transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });
+          // A transcript role=user entry (or [captain] mirror) is unverified input, never
+          // the Captain's: the LLM role says nothing about who wrote it (authorship.js).
+          const identity = role === "user" ? sessionInput(origin) : {
+            author: recordKind === "supervision" ? "Fleet" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: "firstmate",
+            state: thinking ? "thinking" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : recordKind || "conversation",
+          };
+          messages.push({ ...publicMessage({ ...identity, source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex }),
+            transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });
           session.messageCount += 1;
           const iso = timestamp.toISOString();
           if (!session.startedAt || iso < session.startedAt) session.startedAt = iso;

@@ -264,6 +264,7 @@ window.bearingsAnswerForm = (() => {
       if (response && response.status === 202) {
         // The words now live in Firstmate's inbox; an unsent-text stub would be wrong.
         clearDraft(key);
+        win.dispatchEvent?.(new Event("quarterdeck-sent"));
         if (thread) {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
           // which keeps the card Sent until that note is acknowledged or Firstmate replies.

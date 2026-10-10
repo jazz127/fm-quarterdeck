@@ -27,6 +27,10 @@ Inside a source, only the model's own text parts count as Firstmate text: Claude
 - The ask is the rest of the marker line plus any following non-blank lines, such as a decision's option list. It ends at a blank line, another marker, a code fence or a `[fm-lane …]`/`[end …]` line. Code-fenced text is never an ask. A mid-sentence or backticked mention of a marker is not an ask. Ask text is capped at 4000 characters.
 - **Structured task marker:** `[task:<id>]` anywhere on the ask's marker line explicitly names its filed hold. Ids use `[A-Za-z0-9][A-Za-z0-9._-]{0,159}`; malformed markers do not count. Markers are extracted before ask text clipping and persisted independently of prose. Ordinary whole-token id mentions remain compatible. The optional code-enforced Stop hook requires this structured marker (see below).
 - **Replies** are quoted alternatives after the word *reply* (`Reply **"x"**`, `reply \`a\` or \`b\``, `shortest reply: "y"`), plus quoted option labels at the start of the ask body or a following list/continuation line (`- "stay here": continue`, `"plan A" keeps the setup`). Straight/curly single and double quotes and backticks are accepted. Mid-sentence quoted prose is not an option label. Unquoted replies are never guessed, and at most 6 are kept.
+- Lettered lines on a decision ask that has no quoted replies can become answer radios (`a)`, `(a)`, `a:`, `a -`, `Option A:`, a quoted `"a":`, or a lowercase `a.`).
+  The same grammar is in `prototype/BEARINGS.md`.
+  Those letters are not suggested-reply phrases, so a later chat message that contains the letter does not resolve the ask.
+  A quoted reply line that continues with a description shows that description under the radio.
 
 ### Card identity and deduplication
 
@@ -41,11 +45,12 @@ Inside a source, only the model's own text parts count as Firstmate text: Claude
 | --- | --- |
 | Answered in Quarterdeck | A confirmed send through the existing `POST /api/bearings/answer` keyed relay (`202`) resolves the ask in Quarterdeck state. |
 | Dismissed in Quarterdeck | Review dismissal → Dismiss this ask posts `POST /api/bearings/dismiss {key, cardRev}` (host-only, same-origin, revision-guarded). Cancel and review are local; no inbox note is sent. |
-| Replied in chat | A later captain prompt containing a suggested reply as a whole phrase anywhere after normalization resolves every earlier open ask offering that reply. Longer messages and punctuation/case variants are accepted, including different markers sharing a suggested phrase. |
 | Hold answered/released/closed | On fresh selected-home ledger evidence, all linked holds have closed/answered/released lifecycle records; alternatively a fresh snapshot with no omission disclosures and no contrary open ledger hold no longer contains any linked task. The ask resolves as `answered`, with `resolutionSource` (`data/backlog.md` or `bearings snapshot`), task ids and recorded modes retained. Stale or omitted evidence never proves disappearance. |
 | Superseded | A later Firstmate ask repeats the same marker and normalized reply, or identical normalized ask text. |
 
-**Later** is proven by later byte/part order in the same source, provided known timestamps do not run backwards. Across sources, a strictly newer timestamp is required; equal or absent clocks alone do not prove order. Earlier captain messages never answer future asks, even during replay.
+**Later** is proven by later byte/part order in the same source, provided known timestamps do not run backwards. Across sources, a strictly newer timestamp is required; equal or absent clocks alone do not prove order.
+
+A reply typed in chat does not resolve an ask. A transcript `role=user` entry (including a human-flagged Claude prompt or queued prompt) is unverified input, not proof that the captain wrote it ([authorship](../prototype/TRANSCRIPTS.md#authorship)), so it never counts as the captain's reply. Answer, dismiss or supersede the card instead.
 
 Resolved keys become tombstones (up to 5000), so re-reading a rewritten transcript never revives them. The latest 50 hold-based resolutions are exposed as `chat.resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]` in `/api/bearings` and retained alongside dismissal/answer provenance in Quarterdeck state; automatic closure is not silent deletion. Card visuals are unchanged.
 
@@ -65,8 +70,9 @@ The state lives in one JSON file, `<FM_QUARTERDECK_STATE_PATH>.chat-asks.json` (
 ## Known limits
 
 - An ask Firstmate phrases **without** a marker line is not detected. The marker convention is the one contract with Firstmate.
-- Chat-reply resolution needs the suggested reply's whole normalized phrase somewhere in the captain's message. A paraphrase ("ok, do it") leaves the card open until it is answered, dismissed or superseded. The matcher does not interpret negation or intent around a matching phrase.
-- When several open asks offer the same reply text, that matching phrase resolves all earlier open matches. A later same-marker ask offering the same reply supersedes older asks even if their prose differs; generic replies can therefore conflate distinct same-marker asks.
+- A letter on a decision line is an answer radio, not a suggested reply. A later message that merely contains that letter does not resolve the ask.
+- A card answered only in chat stays open until it is answered or dismissed in Quarterdeck, its hold closes, or Firstmate supersedes it.
+- A later same-marker ask offering the same reply supersedes older asks even if their prose differs; generic replies can therefore conflate distinct same-marker asks.
 - Linking needs a structured task marker, whole-token task-id mention, matching quoted reply or exact normalized reason. Otherwise an ask about a filed hold shows as its own card. If a linked ledger hold is omitted by bearings, its chat card remains visible rather than inventing a filed card.
 - Asks in a source's history beyond the 4 MiB backfill window, or older than 24 hours at first discovery, are not shown.
 - A chat card resolves on accepted send (`202`), not on a later received/replied receipt. Its receipt is visible only while the ordinary engagement hold keeps it on screen. Whether to keep answered cards until receipt acknowledgement is a separate product decision.
@@ -87,11 +93,11 @@ Synthetic extractor tests cover lowercase replies, a suggested reply inside a lo
 ## Alternatives rejected
 
 - **A Python script or cron job writing cards.** It would duplicate the transcript confinement rules already in the Node server, add a second process and a second state owner, and lag behind the live stream. Node in the server reuses `findClaudePrimary`, `claudeTurns`, the answer relay and the SSE hub. `prototype/scripts/chat-asks.mjs` runs the same scanner on demand.
-- **Relying on instructions to file every ask.** This is the rule that failed. The optional Stop hook below enforces filing/markers in code instead; detection and legacy reply matching still work when it is not installed.
+- **Relying on instructions to file every ask.** This is the rule that failed. The optional Stop hook below enforces filing/markers in code instead; detection still works when it is not installed.
 - **Model-based extraction or summarization.** It is non-deterministic, costs money, and was explicitly excluded.
 - **Writing chat asks into Firstmate's backlog.** That would violate the read-only boundary, and Firstmate alone owns holds.
 - **Re-parsing the windowed Fleet Chats transcript on each poll.** That reads up to 8 MiB per request. The cursor makes an idle poll a `stat`.
-- **Matching replies by raw substring or fuzzy similarity.** These can confuse word fragments or paraphrases with answers. Whole-message/line equality was initially adopted but missed replies followed by additional requests; normalized whole-phrase matching anywhere in a later captain message now accepts those without introducing semantic inference.
+- **Resolving asks from replies typed in chat.** Normalized whole-phrase matching against later transcript `role=user` entries was used until it was found to treat unverified input as the captain's words. Transcript input carries no proof of its author, so no reply matching, however strict, can make it the captain's answer.
 - **Using `fs.watch` on the transcript.** It is unreliable on WSL and network filesystems. A 3 s stat while streamed is cheap and certain.
 
 ## Revisit triggers

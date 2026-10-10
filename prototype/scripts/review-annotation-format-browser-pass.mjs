@@ -13,7 +13,7 @@ const scratch = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-review-format-
 const home = path.join(scratch, "home"), receipts = path.join(scratch, "receipts");
 await mkdir(path.join(home, "data"), { recursive: true });
 await mkdir(path.join(home, "state/main-session"), { recursive: true });
-await mkdir(path.join(home, "inbox")); await mkdir(path.join(home, "bin"));
+await mkdir(path.join(home, "inbox")); await mkdir(path.join(home, "state/inbox/.requests"), { recursive: true }); await mkdir(path.join(home, "bin"));
 await writeFile(path.join(home, "data/projects.md"), "- Demo - Synthetic annotation evidence\n");
 await writeFile(path.join(home, "state/main-session/session.jsonl"), JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:00Z", message: { role: "assistant", content: "Merged the build fix; CI is green on main.\n\nNext: retry the flaky preview test." } }) + "\n");
 const checklist = "Synthetic checklist\n\n- First item\n- Second item\n- Third item";
@@ -26,10 +26,12 @@ if (args[0] === 'ready') console.log(JSON.stringify({schema:'fm-primary-ready.v1
 else if (args[0] === 'note') {
   const request_id = args[args.indexOf('--request-id')+1], id = request_id.split(':')[1];
   const body = fs.readFileSync(0,'utf8');
-  fs.writeFileSync(path.join(home,'inbox',id+'.note'),'request_id='+request_id+'\\nat=2030-01-01T00:00:00Z\\n--\\n'+body);
+  // Stock layout: the note under its own id plus the request reservation naming it.
+  fs.writeFileSync(path.join(home,'state/inbox/.requests',request_id),id+'\\n');
+  fs.writeFileSync(path.join(home,'state/inbox',id+'.note'),'id='+id+'\\nat=2030-01-01T00:00:00Z\\nsource=text\\nrequest_id='+request_id+'\\n--\\n'+body);
   console.log(JSON.stringify({schema:'fm-inbox-note.v1',request_id,id,saved:true,announced:true}));
 } else if (args[0] === 'receipts') {
-  const pending = fs.readdirSync(path.join(home,'inbox')).filter(name => /^[0-9a-f-]{36}\\.note$/.test(name)).map(name => ({id:name.slice(0,-5),request_id:'agentos-review:'+name.slice(0,-5),announced:true}));
+  const pending = fs.readdirSync(path.join(home,'state/inbox')).filter(name => /^[0-9a-f-]{36}\\.note$/.test(name)).map(name => ({id:name.slice(0,-5),request_id:'agentos-review:'+name.slice(0,-5),announced:true}));
   console.log(JSON.stringify({schema:'fm-inbox-receipts.v1',pending,handled:[],replies:[],omitted:[]}));
 } else process.exit(1);
 `, { mode: 0o700 });
@@ -50,7 +52,10 @@ try {
     const { command, evaluate, until } = browser;
     await command("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 720 });
     await command("Page.navigate", { url });
-    await until("document.querySelectorAll('article.message').length >= 2 && document.querySelector('#review-context').textContent.includes('Firstmate inbox intake')");
+    // The legacy inbox notes below are unverified input, outside the default feed.
+    await until("document.querySelectorAll('article.message').length >= 1 && document.querySelector('#review-context').textContent.includes('Firstmate inbox intake')");
+    await evaluate("document.querySelector('#message-type-filters input[value=input]').click()");
+    await until("document.querySelectorAll('article.message').length >= 2");
     const clickElement = async (selector, alt = width >= 720) => {
       const point = await evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); node.scrollIntoView({block:'center'}); const r=node.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`);
       await command("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, modifiers: alt ? 1 : 0, ...point });
@@ -73,7 +78,7 @@ try {
     assert.equal(entry.target.prefix, "Merged the build fix; "); assert.equal(entry.target.suffix, " on main.");
     assert.match(entry.record.recordId, /\.jsonl(?:@0|:1):0$/);
     assert.equal(entry.version, undefined); assert.equal(entry.route, undefined);
-    const note = await readFile(path.join(home, "inbox", `${batch.id}.note`), "utf8");
+    const note = await readFile(path.join(home, "state/inbox", `${batch.id}.note`), "utf8");
     assert.match(note, new RegExp(`request_id=agentos-review:${batch.id}`)); assert.match(note, /```json fm-review/);
     await evaluate("document.querySelector('#review-close').click(); getSelection().removeAllRanges(); document.querySelector('#refresh').click()");
     await until(`Array.from(document.querySelectorAll('article.message')).some(node => node.querySelector('.message-source')?.textContent.includes(${JSON.stringify(batch.id)}))`);
@@ -129,7 +134,34 @@ try {
     await closeReadingControls(browser);
     await until("document.querySelector('.review-meta[data-review-chip=note-0]')?.open");
     assert.ok(await evaluate("document.querySelector('.review-prompt-line').innerText.includes('Link the CI run here.')"));
-    console.log(`PASS ${width}px: text-range receipt/intake, prompt-only chips, keyboard/open-state, no overflow, clicked list item/fingerprint, metadata search`);
+    // Send batch takes text still in the compose box together with notes already queued.
+    await evaluate(`(() => {
+      const panel = document.querySelector('#review-panel');
+      if (panel.hidden) document.querySelector('#review-panel-toggle').click();
+      document.querySelector('#review-conversation-tab').click();
+      const message = document.querySelector('#review-message');
+      message.value = 'Queued before the batch.';
+      message.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#review-form').requestSubmit();
+      message.value = 'Typed with the queued note.';
+      message.dispatchEvent(new Event('input', { bubbles: true }));
+      message.scrollIntoView({ block: 'center' });
+    })()`);
+    await until("!document.querySelector('#review-send').disabled && document.querySelector('#review-message').value === 'Typed with the queued note.' && JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue.some(entry => entry.prompt === 'Queued before the batch.')");
+    if (process.env.SCREENSHOT_DIR) {
+      await mkdir(process.env.SCREENSHOT_DIR, { recursive: true });
+      const { data } = await command("Page.captureScreenshot", { format: "png" });
+      await writeFile(path.join(process.env.SCREENSHOT_DIR, `send-batch-compose-${width}.png`), Buffer.from(data, "base64"));
+    }
+    await evaluate("document.querySelector('#review-send').click()");
+    await until("document.querySelector('#review-message').value === '' && JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent.some(batch => batch.entries.some(entry => entry.prompt === 'Typed with the queued note.'))");
+    const combined = await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent.find(batch => batch.entries.some(entry => entry.prompt === 'Typed with the queued note.')).entries.map(entry => entry.prompt)");
+    assert.deepEqual(combined, ["Queued before the batch.", "Typed with the queued note."]);
+    if (process.env.SCREENSHOT_DIR) {
+      const { data } = await command("Page.captureScreenshot", { format: "png" });
+      await writeFile(path.join(process.env.SCREENSHOT_DIR, `send-batch-compose-sent-${width}.png`), Buffer.from(data, "base64"));
+    }
+    console.log(`PASS ${width}px: text-range receipt/intake, prompt-only chips, keyboard/open-state, no overflow, clicked list item/fingerprint, metadata search, send batch includes compose`);
     await browser.close(); browser = null;
   }
 } finally {

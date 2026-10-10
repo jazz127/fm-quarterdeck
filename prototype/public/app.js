@@ -577,7 +577,7 @@ function messagesForSelection() {
   const query = transcriptQuery.trim().toLocaleLowerCase();
   const matchesQuery = (message) => !query || [message.text, message.author, message.source, ...message.laneNames]
     .some((value) => String(value || "").toLocaleLowerCase().includes(query));
-  const order = (message) => message.role === "captain" ? 0 : message.kind === "thinking" ? 1 : message.kind === "crew" ? 3 : 2;
+  const order = (message) => message.role === "captain" || message.kind === "input" ? 0 : message.kind === "thinking" ? 1 : message.kind === "crew" ? 3 : 2;
   return [...merged.values()].filter(matchesQuery).sort((a, b) => String(a.occurredAt).localeCompare(String(b.occurredAt)) || order(a) - order(b));
 }
 
@@ -1881,8 +1881,9 @@ function renderFreshness() {
   const key = activeFreshnessKey();
   const item = freshness[key];
   const expired = key !== "bearings" && item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
+  const revisionStopped = key === "bearings" && item.connection === "revision";
   const disconnected = key === "bearings" && ["disconnected", "reconnecting"].includes(item.connection);
-  const condition = disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
+  const condition = revisionStopped ? "updating" : disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
   const last = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : "No successful reading yet";
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");
@@ -1893,7 +1894,7 @@ function renderFreshness() {
   el.title = full;
   el.setAttribute("aria-label", full);
   const pill = $("#fleet-state");
-  pill.classList.toggle("offline", condition === "disconnected" || condition === "stale");
+  pill.classList.toggle("offline", condition === "disconnected" || condition === "stale" || condition === "updating");
   $("#fleet-state b").textContent = condition;
   pill.title = full;
   pill.setAttribute("aria-label", full);
@@ -2065,9 +2066,20 @@ function loadDashboard() {
   if (active === "lanes") void refreshEndpoint("lanes");
   if ($(".workspace").dataset.view === "preferences") void refreshPreferences();
 }
+// A confirmed Quarterdeck send (review batch, Captain's Call answer or thread note) is a
+// verified Captain message in the fleet log, so the loaded log must not stay behind it.
+let lanesBehindSend = false;
+window.addEventListener("quarterdeck-sent", () => {
+  if (!freshness.lanes.lastSuccess) return;
+  if (activeFreshnessKey() === "lanes") requestLanes();
+  else lanesBehindSend = true;
+});
 function ensureViewData(view) {
   renderFreshness();
-  if ((view === "conversations" || view === "closed") && !freshness.lanes.lastSuccess) void refreshEndpoint("lanes");
+  if ((view === "conversations" || view === "closed") && (!freshness.lanes.lastSuccess || lanesBehindSend)) {
+    lanesBehindSend = false;
+    void refreshEndpoint("lanes");
+  }
   if (view === "preferences" && !preferenceEntries.length) void refreshPreferences();
   if (view === "expenses") void refreshCosts();
 }

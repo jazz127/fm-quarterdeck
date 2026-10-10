@@ -16,7 +16,7 @@ function buttons(html) {
   }));
 }
 
-test('all nine emitted kind glyphs remain visible expanded, collapsed, hovered and keyboard-focused; phone rules are unchanged', () => {
+test('all ten emitted kind glyphs remain visible expanded, collapsed, hovered and keyboard-focused; phone rules are unchanged', () => {
   const body = element('div', ['conversation-body']);
   const panel = element('aside', ['conversation-kind-panel'], {}, body, 'conversation-kind-panel');
   const row = element('div', ['message-type-row'], {}, panel);
@@ -25,9 +25,9 @@ test('all nine emitted kind glyphs remain visible expanded, collapsed, hovered a
   const glyph = element('span', ['message-kind-glyph'], {}, option);
   const label = element('span', ['message-kind-label'], {}, option);
   const markup = window.filterView.kindFiltersHtml(window.messageKinds.TYPES, new Set(['captain']), String);
-  assert.equal([...markup.matchAll(/class="message-kind-svg"/g)].length, 9);
-  assert.equal([...markup.matchAll(/<input[^>]*aria-label="[^"]+"/g)].length, 9, 'one named checkbox per kind');
-  assert.equal(buttons(markup).length, 18, 'previous/next controls have their own accessible names');
+  assert.equal([...markup.matchAll(/class="message-kind-svg"/g)].length, 10);
+  assert.equal([...markup.matchAll(/<input[^>]*aria-label="[^"]+"/g)].length, 10, 'one named checkbox per kind');
+  assert.equal(buttons(markup).length, 20, 'previous/next controls have their own accessible names');
   const jumps = element('div', ['kind-message-jumps'], {}, row);
   const jump = element('button', ['kind-message-jump'], {}, jumps);
   assert.equal(computed(css, jumps).display, 'flex');

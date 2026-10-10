@@ -15,6 +15,7 @@ window.messageKinds = (() => {
     branch: wrap('<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M6 8.5v7"/><path d="M8.5 6h5a4 4 0 0 1 4 4"/>'), // git-branch
     tools: wrap('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'), // wrench
     harness: wrap('<path d="M12 2l8.5 5v10L12 22 3.5 17V7L12 2z"/>'), // hexagon
+    input: wrap('<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0" stroke-dasharray="3 2.6"/>'), // user, dashed: author unverified
     help: wrap('<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/>'), // circle-help
   };
   // Ordered from high-signal conversation to progressively noisier operational records.
@@ -28,6 +29,9 @@ window.messageKinds = (() => {
     { id: "branch", label: "crew replies", icon: "branch", filterGlyph: "branch", svg: ICONS.branch },
     { id: "tools", label: "tools", icon: "tools", filterGlyph: "tools", svg: ICONS.tools },
     { id: "harness", label: "harness", icon: "harness", filterGlyph: "harness", svg: ICONS.harness },
+    // Transcript role=user entries and inbox notes without a verified Quarterdeck send:
+    // shown on request, never as the captain's (authorship.js).
+    { id: "input", label: "unverified input", icon: "input", filterGlyph: "input", svg: ICONS.input },
   ];
   const DEFAULT_IDS = ["captain", "conversation", "supervision"];
   const known = (id) => TYPES.some((type) => type.id === id);

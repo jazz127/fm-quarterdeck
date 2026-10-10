@@ -5,20 +5,28 @@ import os from "node:os";
 import path from "node:path";
 import { createServer, loadFirstmateHome } from "../server.js";
 import { openBrowser, openReadingControls, closeReadingControls } from "./browser-harness.mjs";
+import { writeVerifiedReviewNote } from "./verified-send-fixture.mjs";
 
 const scratch = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-kinds-"));
 await mkdir(path.join(scratch, "data"));
 await mkdir(path.join(scratch, "state/main-session"), { recursive: true });
 await writeFile(path.join(scratch, "data/projects.md"), "- Alpha - Synthetic fleet\n- Beta - Synthetic fleet\n");
+// Captain slots are verified Quarterdeck sends; transcript role=user input is never the Captain's.
+const captainSlot = i => !(i >= 201 && i <= 350 || i === 450) && i % 20 === 0;
+const slotTime = i => new Date(Date.UTC(2030, 0, 1, 12, i)).toISOString();
+const writeCaptainNotes = async () => {
+  for (let i = 0; i < 451; i++) if (captainSlot(i)) await writeVerifiedReviewNote(scratch, { at: slotTime(i), prompt: `Alpha update ${i}: Synthetic kind navigation.` });
+};
 const fixture = padding => Array.from({ length: 451 }, (_, i) => {
+  if (captainSlot(i)) return null;
   const mixed = i >= 201 && i <= 350 || i === 450;
   const text = (mixed ? ["General", "Alpha", "Beta"] : ["Alpha"]).map(name =>
     `[fm-lane ${name}]\n${name} update ${i}: **Synthetic kind navigation**.\n${padding || "Readable body."}\n[end ${name}]`).join("\n\n");
   return JSON.stringify({ type: "message", timestamp: new Date(Date.UTC(2030, 0, 1, 12, i)).toISOString(), message: {
-    role: i === 370 ? "toolResult" : !mixed && i % 20 === 0 ? "user" : "assistant",
+    role: i === 370 ? "toolResult" : "assistant",
     toolName: i === 370 ? "Synthetic tool" : undefined, content: [{ type: "text", text }],
   } });
-}).join("\n") + "\n";
+}).filter(Boolean).join("\n") + "\n";
 const requests = [];
 const server = createServer({}, {
   lanesReader: async (_, options) => loadFirstmateHome(scratch, options),
@@ -62,6 +70,7 @@ try {
       await evaluate(`(() => {const f=document.querySelector('#messages'),n=f.querySelector('article[data-record-index="${index}"]'); f.scrollTop+=n.getBoundingClientRect().top-f.getBoundingClientRect().top-12;})()`);
       await until(`document.querySelector('article[data-record-index="${index}"]').getBoundingClientRect().top-document.querySelector('#messages').getBoundingClientRect().top<14`);
     };
+    await writeCaptainNotes();
     await writeFile(path.join(scratch, "state/main-session/session.jsonl"), fixture(""));
     browser = await openBrowser();
     await browser.command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 720 });
@@ -119,7 +128,7 @@ try {
     await openKinds();
     assert.equal(await evaluate("[...document.querySelectorAll('button[data-kind-jump=thinking]')].every(n=>n.disabled)"), true, "absent native kind has no invented targets");
     const controls = await evaluate("[...document.querySelectorAll('button[data-kind-jump]')].map(n=>({label:n.getAttribute('aria-label'),width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height}))");
-    assert.equal(controls.length, 18);
+    assert.equal(controls.length, 20);
     for (const control of controls) {
       assert.match(control.label, /^(Previous|Next) /);
       assert.ok(control.width >= (width < 720 ? 44 : 24) && control.height >= (width < 720 ? 44 : 24), JSON.stringify(control));
@@ -132,7 +141,9 @@ try {
     assert.equal(await evaluate("document.documentElement.scrollWidth>innerWidth"), false);
     await browser.close(); browser = null;
 
-    // A >1 MiB archive makes Previous explicitly demand older source records.
+    // A >1 MiB archive makes Previous explicitly demand older source records. Inbox
+    // sends are never windowed, so this transcript-window case runs without them.
+    await rm(path.join(scratch, "state/inbox"), { recursive: true, force: true });
     await writeFile(path.join(scratch, "state/main-session/session.jsonl"), fixture(" padding".repeat(256)));
     const start = requests.length;
     browser = await openBrowser();

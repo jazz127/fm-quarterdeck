@@ -106,6 +106,16 @@ window.bearingsView = (() => {
     }
     return replies;
   }
+  // The description under a linked reply, when the ask line recorded one.
+  function linkedReplyHint(card, reply) {
+    if (Array.isArray(card.chatAsks)) {
+      for (const ask of card.chatAsks) {
+        const hint = ask?.replyHints && typeof ask.replyHints === "object" ? ask.replyHints[reply] : "";
+        if (typeof hint === "string" && hint.trim()) return hint;
+      }
+    }
+    return "Suggested reply from chat · sent as your words";
+  }
   // One text box per card. A checked option answers; text alone is a thread note.
   // The hint under the box is the captain's contract for that split (BEARINGS.md).
   const BOX_HINT = "Pick an option to answer, or just type - Firstmate replies in the thread.";
@@ -139,7 +149,7 @@ window.bearingsView = (() => {
     const replies = linkedReplies(card, options);
     const radio = (value, text, hint, extra = "", recommended = false) => `<label class="call-opt"><input type="radio" name="call-selection-${id}" value="${escape(value)}" data-call-draft="selection" data-call-option-label="${escape(text)}"${extra}${recommended ? ` aria-describedby="call-rec-${id}"` : ""}><span class="call-opt-body"><span class="call-opt-label">${escape(text)}</span>${hint ? `<span class="call-opt-hint">${escape(hint)}</span>` : ""}</span>${recommended ? `<span class="call-opt-rec" id="call-rec-${id}">Recommended</span>` : ""}</label>`;
     const optionHtml = options.map((option) => radio(option.value, option.label, option.hint, "", answer.recommend === option.value)).join("")
-      + replies.map((reply, index) => radio(`chat-reply-${index + 1}`, reply, "Suggested reply from chat · sent as your words", ` data-call-reply="${escape(reply)}"`)).join("");
+      + replies.map((reply, index) => radio(`chat-reply-${index + 1}`, reply, linkedReplyHint(card, reply), ` data-call-reply="${escape(reply)}"`)).join("");
     const choices = options.length + replies.length;
     const body = choices ? `<div class="call-opts">${optionHtml}</div>` : `<p class="call-answer-gap">No structured options for this call yet; any recorded choices are in the full ${card.type === "merge" ? "reason" : "ask"} above.</p>`;
     return answerForm(card, label, body, thread);

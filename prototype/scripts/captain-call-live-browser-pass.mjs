@@ -336,6 +336,36 @@ try {
     await evaluate(`() => { if(document.querySelector('#review-panel-toggle').getAttribute('aria-expanded')!=='true')document.querySelector('#review-panel-toggle').click(); if(innerWidth<721)document.querySelector('#review-history-tab').click(); const root=document.querySelector(innerWidth<721?'#review-phone-thread':'#review-thread'); if(root.querySelectorAll('.review-call-answer').length!==2||!document.querySelector('#review-count').textContent.includes('2'))throw Error('queue list/count missing'); const batch=root.querySelector('details'); if(batch){batch.open=true;if(!batch.querySelector('summary').textContent.includes("Queued Captain's Call answers · 2"))throw Error('phone batch missing');} return 'shared queue list'; }`);
     await browser('screenshot', path.join(proof, `captain-shared-queue-${width}.png`));
     await evaluate(`() => {
+      const root = document.querySelector(innerWidth < 721 ? '#review-phone-thread' : '#review-thread');
+      const card = root.querySelector('.review-call-answer');
+      const body = card && card.querySelector('.review-note-text');
+      const copy = card && card.querySelector('.review-note-copy');
+      if (!body || !copy || copy.textContent !== 'Copy') throw Error('copy control missing');
+      if (getComputedStyle(body).userSelect === 'none') throw Error('message user-select disabled');
+      const batch = card.closest('.review-batch');
+      if (batch) batch.open = true;
+      const selectable = [body];
+      if (batch) selectable.push(batch.querySelector('.review-batch-full'));
+      for (const node of selectable) {
+        if (!node || getComputedStyle(node).userSelect === 'none') throw Error('batch detail user-select disabled');
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        if (selection.toString() !== node.textContent) throw Error('text is not selectable');
+      }
+      getSelection().removeAllRanges();
+      let copied = '';
+      const clipboard = navigator.clipboard;
+      const originalWrite = clipboard.writeText;
+      clipboard.writeText = (text) => { copied = text; return Promise.resolve(); };
+      try { copy.click(); }
+      finally { clipboard.writeText = originalWrite; }
+      if (!copied.includes(body.textContent) || !copied.includes("Queued Captain's Call answers · 2") || copied.includes('call-answers')) throw Error('call copy payload ' + copied.slice(0, 240));
+      return 'call message copy ' + innerWidth;
+    }`);
+    await evaluate(`() => {
       const phone = innerWidth < 721;
       const thread = document.querySelector('#review-phone-thread');
       if (!phone) { thread.hidden = false; thread.style.display = 'block'; }
@@ -534,6 +564,56 @@ try {
     return 'review note sending';
   }`);
   await until(`document.querySelector('#review-sent-count').textContent!=='0'`);
+  for (const width of [1280, 390]) {
+    await browser('resize', String(width), '844');
+    await evaluate(`() => {
+      const phone = innerWidth < 721;
+      if (phone) document.querySelector('#review-history-tab').click();
+      else document.querySelector('#review-sent').open = true;
+      const root = document.querySelector(phone ? '#review-phone-thread' : '#review-sent-list');
+      const summary = [...root.querySelectorAll('.review-batch > summary')].find((node) => node.querySelector('.review-batch-id'));
+      if (!summary) throw Error('sent batch missing for copy');
+      const batch = summary.parentElement;
+      batch.open = true;
+      const card = batch.querySelector('article');
+      const body = card.querySelector('.review-note-text');
+      const full = summary.querySelector('.review-batch-full');
+      const copy = card.querySelector('.review-note-copy');
+      if (!body || !full || !copy) throw Error('sent copy targets missing');
+      for (const node of [body, full]) {
+        if (getComputedStyle(node).userSelect === 'none') throw Error('sent text user-select disabled');
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        if (selection.toString() !== node.textContent) throw Error('sent text is not selectable');
+      }
+      getSelection().removeAllRanges();
+      copy.scrollIntoView({ block: 'center' });
+      return 'sent message selectable ' + innerWidth;
+    }`);
+    await browser('screenshot', path.join(proof, `review-message-copy-${width}.png`));
+    await evaluate(`() => {
+      const phone = innerWidth < 721;
+      const root = document.querySelector(phone ? '#review-phone-thread' : '#review-sent-list');
+      const summary = [...root.querySelectorAll('.review-batch > summary')].find((node) => node.querySelector('.review-batch-id'));
+      const batch = summary.parentElement;
+      const openBefore = batch.open;
+      const card = batch.querySelector('article');
+      const copy = card.querySelector('.review-note-copy');
+      const id = summary.querySelector('.review-batch-id').title;
+      let copied = '';
+      const clipboard = navigator.clipboard;
+      const originalWrite = clipboard.writeText;
+      clipboard.writeText = (text) => { copied = text; return Promise.resolve(); };
+      try { copy.click(); }
+      finally { clipboard.writeText = originalWrite; }
+      if (batch.open !== openBefore) throw Error('copy toggled the batch');
+      if (!copied.includes('Synthetic batch header note') || !copied.includes(summary.querySelector('.review-batch-full').textContent) || !copied.includes(id)) throw Error('sent copy payload ' + copied.slice(0, 240));
+      return 'sent message copied ' + innerWidth;
+    }`);
+  }
   for (const width of [390, 360]) {
     await browser('resize', String(width), '844');
     await evaluate(`() => {

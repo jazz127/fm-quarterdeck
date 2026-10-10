@@ -4,8 +4,10 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { contentRevision, publicText, shortHash } from "./bearings.js";
+import { enumeratedLetterOptions, publishOptions, replyDescription } from "./enumerated-options.js";
 import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
 import { createHistoryReader } from "./history-reader.js";
+import { UNVERIFIED_INPUT } from "./authorship.js";
 
 // Chat asks (BEARINGS.md "Chat asks"). Firstmate's captain-facing asks carry marker lines
 // (ACTION NEEDED / APPROVAL NEEDED / DECISION NEEDED). This module turns every such line in
@@ -105,13 +107,8 @@ export function extractAsks(text) {
   return asks;
 }
 
-// Case-folded words with punctuation/whitespace as separators. Padding enforces whole
-// phrases ("path 2" cannot match "path 20"), including inside a longer captain prompt.
+// Case-folded words with punctuation/whitespace as separators.
 export const normalizeReply = (text) => String(text).normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, " ").trim();
-const hasReply = (text, reply) => {
-  const phrase = normalizeReply(reply);
-  return Boolean(phrase) && ` ${normalizeReply(text)} `.includes(` ${phrase} `);
-};
 const HOLD_QUOTE = /"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’/g;
 function matchesHold(ask, card) {
   if (!card.task) return false;
@@ -143,23 +140,24 @@ export function mentionsTask(text, task) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Transcript records → turns. Only the model's own text is an ask; only the captain's own
-// prompts can quote a reply. Harness traffic, machine envelopes, tools and thinking are ignored.
+// Transcript records → turns. Only the model's own text is an ask. A transcript role=user
+// entry is unverified input (authorship.js), never the captain's reply, so it cannot
+// resolve an ask. Harness traffic, machine envelopes, tools and thinking are ignored.
 const MACHINE_TEXT = /^\W*(?:FIRSTMATE_OP:|FIRSTMATE SUPERVISION WAKE:|MAIN DIALOG MIRROR\b|<task-notification>)|^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/;
 const textParts = (content) => typeof content === "string" ? [content] : Array.isArray(content)
   ? content.map((part) => part?.type === "text" && typeof part.text === "string" ? part.text : null) : [];
 export function recordTurns(record, origin, toolNames = new Map()) {
   const turns = [];
   const push = (role, content) => textParts(content).forEach((text, part) => {
-    if (typeof text === "string" && text.trim() && !(role === "captain" && MACHINE_TEXT.test(text))) turns.push({ role, text, part });
+    if (typeof text === "string" && text.trim() && !(role === UNVERIFIED_INPUT.role && MACHINE_TEXT.test(text))) turns.push({ role, text, part });
   });
   if (origin === "claude") {
     for (const turn of claudeTurns(record, toolNames)) {
       if (turn.role === "assistant" && !turn.recordKind) push("firstmate", turn.content);
-      else if (turn.role === "user") push("captain", turn.content);
+      else if (turn.role === "user") push(UNVERIFIED_INPUT.role, turn.content);
     }
   } else if (record?.type === "message" && ["user", "assistant"].includes(record.message?.role)) {
-    push(record.message.role === "user" ? "captain" : "firstmate", record.message.content);
+    push(record.message.role === "user" ? UNVERIFIED_INPUT.role : "firstmate", record.message.content);
   }
   return turns;
 }
@@ -329,8 +327,8 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
     for (const [key] of tombs.slice(MAX_TOMBSTONES)) delete target.tombstones[key];
   }
 
-  // Apply one parsed record. Captain prompts test every earlier open ask; repeated
-  // marker+reply supersedes an older ask. All matching stays within the record byte cap.
+  // Apply one parsed record. Repeated marker+reply supersedes an older ask. Unverified
+  // session input never resolves an ask. All matching stays within the record byte cap.
   function applyRecord(target, record, { source, origin, offset, backfill }, toolNames) {
     const at = (() => { const value = new Date(record.timestamp ?? record.message?.timestamp); return Number.isNaN(value.valueOf()) ? null : value.toISOString(); })();
     const recordId = (origin === "claude" ? record.uuid : record.id) || `${source}@${offset}`;
@@ -358,16 +356,6 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
             if (older.status === "open" && isLater(ask, older) && repeatsAsk(ask, older)) changed = resolveAsk(target, older, "superseded", { supersededBy: key }) || changed;
           }
           if (!existing) { target.asks[key] = ask; changed = true; }
-        }
-      } else {
-        const prompt = { source, offset, part: turn.part, recordId, at };
-        const matching = Object.values(target.asks)
-          .filter(ask => ask.status === "open" && isLater(prompt, ask))
-          .sort((a, b) => String(b.at).localeCompare(String(a.at)) || b.offset - a.offset);
-        for (const ask of matching) {
-          const reply = ask.replies.find(reply => hasReply(turn.text, reply));
-          if (!reply) continue;
-          changed = resolveAsk(target, ask, "reply", { resolvedReply: normalizeReply(reply), resolvedByRecord: recordId }) || changed;
         }
       }
     }
@@ -415,10 +403,10 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
             const backfill = prior.ino === null;
             const toolNames = new Map();
             const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes, onLine: async (line, offset) => {
-              // Human mid-turn prompts may be queued_command attachments, not user
-              // records. The whole-record cap, not a separate 64 KiB prompt cap, bounds
-              // parsing. Adapters still exclude tool output, hooks and machine traffic.
-              if (!line.includes("NEEDED") && !line.includes('"user"') && !line.includes('"queued_command"')) return;
+              // Only Firstmate's own marker lines matter; session input never resolves an
+              // ask. The whole-record cap bounds parsing. Adapters still exclude tool
+              // output, hooks and machine traffic.
+              if (!line.includes("NEEDED")) return;
               let record;
               try { record = JSON.parse(line.toString("utf8")); } catch { return; }
               if (applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
@@ -503,14 +491,41 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
 // Cards. A chat card answers through the same keyed relay as a snapshot card: question
 // chat.<id>, the quoted replies as options, and freeform text.
 export const chatQuestion = (key) => `chat.${key.slice("chat:".length)}`;
+const describedHint = (text, reply) => publicText(replyDescription(text, reply), 240);
 export function chatCard(ask) {
-  const options = ask.replies.map((reply, index) => ({ value: `reply-${index + 1}`, label: publicText(reply, 200), hint: "Firstmate's suggested reply" })).filter((option) => option.label);
+  let options = ask.replies.map((reply, index) => ({ value: `reply-${index + 1}`, label: publicText(reply, 200), hint: describedHint(ask.text, reply) || "Firstmate's suggested reply" })).filter((option) => option.label);
+  // A decision ask with no quoted replies still offers its explicit lettered lines.
+  // The letters are selections on this card, not suggested-reply phrases.
+  if (!options.length && ask.kind === "decision") options = publishOptions(enumeratedLetterOptions(ask.text), publicText);
   const card = { key: ask.key, type: "chat", kind: ask.kind, marker: ask.marker, summary: publicText(ask.text, Infinity) || `${ask.marker} (no text)`, replies: options.map((option) => option.label),
     source: ask.source.split("/")[0], transcript: { offset: ask.offset, part: ask.part }, clock: { label: "Asked", at: ask.at },
     answer: { question: chatQuestion(ask.key), options, recommend: null, close: null, freeform: true } };
   return { ...card, rev: shortHash(card) };
 }
-const linkedEntry = (ask) => ({ key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies: ask.replies.map((reply) => publicText(reply, 200)).filter(Boolean), clock: { label: "Asked", at: ask.at } });
+const linkedEntry = (ask) => {
+  const replies = ask.replies.map((reply) => publicText(reply, 200)).filter(Boolean);
+  const replyHints = {};
+  for (const reply of replies) {
+    const hint = describedHint(ask.text, reply);
+    if (hint) replyHints[reply] = hint;
+  }
+  return { key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies, ...(Object.keys(replyHints).length ? { replyHints } : {}), clock: { label: "Asked", at: ask.at } };
+};
+// A filed decision with no structured choices offers lettered lines from a linked decision ask.
+function withLinkedChoices(card, entries) {
+  const chatAsks = entries.map(linkedEntry);
+  const next = { ...card, chatAsks };
+  const existing = Array.isArray(next.answer?.options) ? next.answer.options : [];
+  if (next.type !== "decision" || existing.length || !next.answer) return next;
+  let best = [];
+  for (const ask of entries) {
+    if (ask.kind !== "decision") continue;
+    const options = publishOptions(enumeratedLetterOptions(ask.text), publicText);
+    if (options.length > best.length) best = options;
+  }
+  if (!best.length) return next;
+  return { ...next, answer: { ...next.answer, options: best } };
+}
 
 // Compose the served model: snapshot cards first (each carrying the chat asks linked to it),
 // then unlinked open chat asks, newest first, at most MAX_OPEN.
@@ -530,7 +545,7 @@ export function composeCallModel(base, asks, chatView) {
     const entries = linked.get(card.task);
     if (!entries) return card;
     const { rev, ...rest } = card;
-    const withAsks = { ...rest, chatAsks: entries.map(linkedEntry) };
+    const withAsks = withLinkedChoices(rest, entries);
     return { ...withAsks, rev: shortHash(withAsks) };
   });
   const chatCards = unlinked.slice(0, MAX_OPEN).map(chatCard);

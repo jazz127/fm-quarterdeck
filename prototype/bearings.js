@@ -1,3 +1,4 @@
+import { enumeratedLetterOptions, publishOptions } from "./enumerated-options.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, watch as fsWatch } from "node:fs";
@@ -288,9 +289,10 @@ export function validateSnapshot(raw) {
 
 // How a card may be answered from Quarterdeck (BEARINGS.md "Answers"). The question is
 // the same key the /bearings board sends to Firstmate's keyed-answer intake: the task id
-// for a decision, merge.<task> for a merge ask. Options, a recommendation and a close
-// mode appear only when Firstmate's row supplies them; otherwise the answer is freeform.
-// No option is ever composed here except the board's own "Merge now" for a merge ask.
+// for a decision, merge.<task> for a merge ask. Structured options, a recommendation and
+// a close mode appear only when Firstmate's row supplies them. A decision with no options
+// array can still offer explicit lettered lines from its recorded text. Otherwise the
+// answer is freeform. No other option is composed here except the board's own "Merge now".
 export const ANSWER_SLUG = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_OPTIONS = 8;
 function sourceOptions(row) {
@@ -305,9 +307,27 @@ function sourceOptions(row) {
   }
   return options;
 }
+// Recorded text only. A present options array, even an invalid one, does not fall through.
+function proseLetterOptions(row) {
+  if (Array.isArray(row.options) && row.options.length) return [];
+  const fields = ["backlogReason", "reason", "summary", "title", "backlogTitle"];
+  let best = [];
+  let bestRank = fields.length;
+  for (const [rank, field] of fields.entries()) {
+    if (typeof row[field] !== "string") continue;
+    const options = publishOptions(enumeratedLetterOptions(row[field]), publicText);
+    if (!options.length) continue;
+    if (options.length > best.length || (options.length === best.length && rank < bestRank)) {
+      best = options;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
 function decisionAnswer(row, task) {
   if (!ANSWER_SLUG.test(task)) return null;
-  const options = sourceOptions(row);
+  const structured = sourceOptions(row);
+  const options = structured.length ? structured : proseLetterOptions(row);
   const recommend = options.some((option) => option.value === row.recommend_value) ? row.recommend_value : null;
   const close = row.close === "done" || row.close === "release" ? row.close : null;
   return { question: task, options, recommend, close, freeform: true };

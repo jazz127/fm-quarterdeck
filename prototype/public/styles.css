@@ -149,6 +149,16 @@ input[type="search"]::-webkit-search-results-decoration {
 .review-note-toggle { flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--accent); padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); }
 .review-note-text,
 .review-batch > p { font-size: 12px; line-height: 1.25; }
+.review-note-text,
+.review-note-preview,
+.review-batch > p,
+.review-batch-full,
+.review-batch-label,
+.review-batch-meta time { -webkit-user-select: text; user-select: text; }
+.review-thread .review-note-copy { display: inline-flex; align-items: center; min-height: 28px; margin: 2px 0 0; padding: 0 8px; border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 650; line-height: 1.25; cursor: pointer; }
+.review-thread .review-note-copy:hover,
+.review-thread .review-note-copy:focus-visible,
+.review-thread .review-note-copy[data-copied="true"] { color: var(--accent); }
 .review-note-full { margin: 6px 0 2px; white-space: pre-wrap; }
 #review-form-close { display: none; }
 #review-form.review-form-anchored #review-form-close { display: block; margin-left: auto; min-height: 44px; }
@@ -180,7 +190,7 @@ input[type="search"]::-webkit-search-results-decoration {
 .status-pill.offline { color: var(--amber); }
 .status-pill.offline i { background: var(--amber); }
 .view-freshness { display: block; max-width: 248px; margin-top: 4px; color: var(--accent); font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.view-freshness[data-state="stale"], .view-freshness[data-state="disconnected"] { color: var(--danger); }
+.view-freshness[data-state="stale"], .view-freshness[data-state="disconnected"], .view-freshness[data-state="updating"] { color: var(--danger); }
 .view-freshness[data-state="refreshing"] { color: var(--blue); }
 .primary-nav { min-height: 0; display: grid; gap: var(--space-2); padding-bottom: var(--space-4); overflow-y: auto; }
 .primary-tab { width: 100%; min-width: 0; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px solid transparent; background: transparent; text-align: left; }
@@ -298,7 +308,7 @@ input[type="search"]::-webkit-search-results-decoration {
 .message-origin.origin-conversation { border-color: #adc5e2; background: #e7eff9; color: #244f84; }
 .message-origin.origin-thinking { border-color: #d9bd85; background: #fbf0dc; color: var(--amber); }
 .message-origin.origin-crew, .message-origin.origin-supervision { border-color: #a9cdb9; background: var(--accent-soft); color: var(--accent); }
-.message-origin.origin-steer, .message-origin.origin-branch, .message-origin.origin-tools, .message-origin.origin-harness { background: var(--surface-soft); color: var(--muted); }
+.message-origin.origin-steer, .message-origin.origin-branch, .message-origin.origin-tools, .message-origin.origin-harness, .message-origin.origin-input { background: var(--surface-soft); color: var(--muted); }
 .message-origin.origin-captain { border-color: var(--text); background: var(--text); color: var(--surface); }
 .message-state { padding-inline: 6px; border-color: var(--line-strong); background: var(--surface); color: var(--muted); font-weight: 500; }
 .message-lane { max-width: 100%; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 1px 6px; font-size: var(--text-small); overflow-wrap: anywhere; }
@@ -2552,4 +2562,299 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 @media (min-width: 721px) {
   .review-gesture-controls { grid-column: 3; }
   .review-gesture-popover { inset: auto auto 76px 16px; margin: 0; }
+}
+
+/* Overview board. Canvas field, eyebrow headings, and one control rhythm.
+   Poster cards, chips, dots, and sent hatch stay on their own rules.
+   Five status buttons fill two rows: three, then two equal cells. */
+#overview-view.feature-view {
+  background-color: var(--canvas);
+  padding-top: 22px;
+  min-height: 100%;
+}
+#overview-view .feature-head.compact-head {
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+#overview-view #fleet-source {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  margin-left: auto;
+  justify-content: flex-end;
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+#overview-view .summary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 22px;
+}
+#overview-view .metric-card {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  box-shadow: none;
+}
+#overview-view .metric-card strong {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+#overview-view .metric-card h3 {
+  margin: 8px 0 2px;
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+#overview-view .metric-card p { color: var(--muted); font-size: 12px; line-height: 1.35; }
+#overview-view .section-heading {
+  margin: 0;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+#overview-view .call-read-only {
+  display: block;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+}
+#captain-call {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: 12px;
+  row-gap: 10px;
+}
+#captain-call > #call-heading { flex: 1 1 12rem; min-width: 0; order: 1; }
+#captain-call > .call-sort { flex: 0 1 auto; margin: 0; order: 2; }
+#captain-call > .call-lifecycle-bar { order: 3; margin: 0; }
+#captain-call > #call-lifecycle-empty { order: 4; }
+#captain-call > #call-status { order: 5; }
+#captain-call > #call-cards { order: 6; }
+#captain-call > #call-coverage { order: 7; }
+#captain-call > .call-lifecycle-bar,
+#captain-call > #call-lifecycle-empty,
+#captain-call > #call-status,
+#captain-call > #call-cards,
+#captain-call > #call-coverage { flex: 1 1 100%; min-width: 0; }
+#overview-view .call-lifecycle-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+#overview-view .call-lifecycle-filter {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  flex: 1 1 auto;
+  margin: 0;
+}
+#overview-view .call-lifecycle-filter button {
+  grid-column: span 2;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1.5px solid var(--control-line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+#overview-view .call-lifecycle-filter button:nth-child(4),
+#overview-view .call-lifecycle-filter button:nth-child(5) { grid-column: span 3; }
+#overview-view .call-lifecycle-filter button:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--canvas);
+  border-color: var(--text);
+}
+#overview-view .call-lifecycle-filter button[aria-pressed="true"],
+#overview-view .call-lifecycle-filter button[aria-pressed="true"]:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--text);
+  box-shadow: 2px 2px 0 var(--text);
+}
+#overview-view .call-send-queued {
+  align-self: stretch;
+  border: 2px solid var(--text);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 2px 2px 0 var(--text);
+  font-weight: 800;
+}
+#overview-view .call-send-queued:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--text);
+}
+#overview-view .call-send-queued:disabled {
+  background: var(--surface);
+  color: var(--muted);
+  border-color: var(--control-line);
+  box-shadow: none;
+}
+#overview-view .call-sort {
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+#overview-view .call-sort select {
+  min-height: 44px;
+  border: 1.5px solid var(--control-line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+#just-landed > .call-lifecycle-bar {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-height: 44px;
+  margin: 0 0 10px;
+}
+#just-landed > .call-lifecycle-bar .section-heading { flex: 1 1 auto; min-width: 0; }
+#landed-ack-toggle {
+  border: 1.5px solid var(--control-line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 700;
+}
+#landed-ack-toggle:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--canvas);
+  border-color: var(--text);
+}
+#landed-ack-toggle[aria-pressed="true"],
+#landed-ack-toggle[aria-pressed="true"]:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--text);
+  box-shadow: 2px 2px 0 var(--text);
+}
+#overview-view .call-cards { gap: 12px; }
+#overview-view .call-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  margin: 0;
+  padding: 20px 16px;
+  border: 1.5px dashed var(--control-line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  text-align: center;
+}
+#overview-view .call-answer-fields:not([data-sent]):not([data-locked]) .call-opt {
+  background-color: var(--surface-soft);
+  border-color: var(--line-strong);
+}
+#overview-view .call-answer-fields:not([data-sent]) .call-opt:has(input:checked) {
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+#overview-view .call-thread-history { background: var(--surface-soft); border-color: var(--line-strong); }
+#overview-view .call-thread-entry { background: var(--surface); border-color: var(--line); }
+#overview-view .call-coverage { margin: 8px 0 0; }
+@media (min-width: 721px) {
+  #overview-view .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720.005px) {
+  #overview-view.feature-view { padding: 12px 12px 20px; }
+  #overview-view .feature-head { margin-bottom: 10px; }
+  #overview-view #fleet-source { flex-wrap: wrap; justify-content: flex-start; margin-left: 0; white-space: normal; row-gap: 2px; }
+  #overview-view .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  #overview-view .metric-card { display: block; padding: 8px 6px; }
+  #overview-view .metric-card strong { font-size: 22px; line-height: 1.15; }
+  #overview-view .metric-card h3 { margin: 4px 0; font-size: 10px; letter-spacing: 0.03em; line-height: 1.2; }
+  #overview-view .metric-card p { font-size: 10px; line-height: 1.25; }
+  #overview-view .section-heading { font-size: 12px; letter-spacing: 0.12em; }
+  #captain-call > .call-sort { flex-basis: 100%; }
+  #overview-view .call-sort select { flex: 1 1 auto; min-width: 0; }
+  #overview-view .overview-section-tabs {
+    gap: 0;
+    margin: 0 0 12px;
+    padding: 4px;
+    border: 2px solid var(--text);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 3px 3px 0 var(--text);
+  }
+  #overview-view .overview-section-tabs button {
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 800;
+  }
+  #overview-view .overview-section-tabs button:hover:not([aria-selected="true"]) { background: var(--canvas); }
+  #overview-view .overview-section-tabs button[aria-selected="true"],
+  #overview-view .overview-section-tabs button[aria-selected="true"]:hover {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: none;
+  }
+}
+@media (forced-colors: active) {
+  #overview-view.feature-view { background: Canvas; background-image: none; }
+  #overview-view .metric-card,
+  #overview-view .call-empty,
+  #overview-view .call-lifecycle-filter button,
+  #overview-view .overview-section-tabs,
+  #overview-view .overview-section-tabs button,
+  #landed-ack-toggle,
+  #overview-view .call-sort select,
+  #overview-view .call-opt,
+  #overview-view .call-thread-history,
+  #overview-view .call-thread-entry,
+  #overview-view .call-send-queued {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+  #overview-view .section-heading,
+  #overview-view .call-read-only,
+  #overview-view .metric-card h3,
+  #overview-view .metric-card p,
+  #overview-view #fleet-source { color: CanvasText; }
+  #overview-view .call-lifecycle-filter button[aria-pressed="true"],
+  #overview-view .overview-section-tabs button[aria-selected="true"],
+  #landed-ack-toggle[aria-pressed="true"],
+  #overview-view .call-send-queued:not(:disabled) { outline: 2px solid CanvasText; }
+  #overview-view .call-send-queued:disabled { color: GrayText; border-color: GrayText; }
 }

@@ -4,7 +4,7 @@ Bind `/api/review.version` and the UI revision label to the full clean serving c
 
 ## Layout contracts
 
-1. **Message kinds:** compare expanded, stable collapsed, hover/focus and phone states. Move pointer and focus away before measuring stable collapse. All nine named checkbox/SVG controls must retain visible bounds, selection and focus semantics; collapse never changes selection.
+1. **Message kinds:** compare expanded, stable collapsed, hover/focus and phone states. Move pointer and focus away before measuring stable collapse. All ten named checkbox/SVG controls must retain visible bounds, selection and focus semantics; collapse never changes selection.
 2. **All rail:** collapsed Included lanes places native All first and sticky at the top. Remaining controls are named icons in DOM focus order. All restores live lanes without changing kind/status filters or selecting closed history. Compact layouts retain their existing drawer behavior.
 3. **Context/history:** long context scrolls independently while history remains reachable at the rail bottom. Open history has its own bounded scroll region and sticky summary. Reach older-session controls by keyboard; repeat in tablet/phone drawers with Escape/focus restoration and safe-area clearance.
 4. **Growing dialogs:** open annotation near each viewport edge. Grow/shrink content after opening; title, close and actions stay within visual viewport/safe-area bounds. Essential content scrolls internally. Exercise keyboard viewport shrink, page/element scroll, resize and desktop/phone reparenting without losing drafts/queues. Do not send probes to real intake.
