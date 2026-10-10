@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { backlogHoldRecords, normalizeSnapshot } from '../bearings.js';
-import { createChatAskScanner, memoryStateFile, extractAsks, taskMarkers, composeCallModel } from '../chat-asks.js';
+import { createChatAskScanner, memoryStateFile, extractAsks, taskMarkers, composeCallModel, createCallSource } from '../chat-asks.js';
 const hold = (id, reason, checked = ' ') => `- [${checked}] ${id} - Choose (hold-kind: captain) (hold: fm-hold-v1:${Buffer.from(reason).toString('base64')})`;
 async function scanner(t, text) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'qd-hold-lifecycle-'));
@@ -44,12 +44,12 @@ test('normalised replies link by reason including already-answered holds on firs
   }
 });
 
-test('release/closure resolves linked holds but stale or omitted evidence never implies closure', async t => {
+test('release/closure resolves linked local holds only with fresh ledger evidence', async t => {
   const { scan, store } = await scanner(t, 'DECISION NEEDED: [task:held] choose');
   const open = backlogHoldRecords(hold('held', 'choose') + '\n  Resolution recorded by fm-captain-hold.\n  Resolution mode: released');
   assert.equal(open[0].closed, false, 'historical block cannot close a reopened hold');
-  await scan.applySnapshot([], true, open, [{ kind: 'deferred-holds', count: 1 }]);
-  await scan.applySnapshot([], true, [], [{ kind: 'decisions-bound' }]);
+  await scan.applySnapshot([], true, open);
+  await scan.applySnapshot([], true);
   assert.equal(scan.asks().length, 1);
   const released = backlogHoldRecords('- [ ] held - Work (hold-kind: parked)\n  Resolution recorded by fm-captain-hold.\n  Resolution mode: released\n\n  Captain decision:\n  free form accepted');
   await scan.applySnapshot([], false, released);
@@ -92,7 +92,7 @@ test('local chat asks stay actionable across every read-only decision matching f
     assert.deepEqual(scan.asks()[0].linkedTasks, [local.task]);
     assert.equal(composeCallModel({ ...base, cards: [local] }, scan.asks(), scan.view()).chat.linked, 1);
     await scan.applySnapshot([], true);
-    assert.deepEqual(scan.asks(), []);
+    assert.equal(scan.asks()[0].key, key);
   }
 });
 
@@ -134,4 +134,46 @@ test('a shared task attaches local asks only to its actionable card', async t =>
   assert.equal(model.cards[0].chatAsks, undefined);
   assert.deepEqual(model.cards[1].chatAsks.map(ask => ask.key), [scan.asks()[0].key]);
   assert.equal(model.chat.linked, 1);
+});
+
+test('legacy bare and qualified remote links stay open when scoped or missing on the first fresh read', async t => {
+  for (const linkedTask of ['gamma-credential', 'delta-mate/gamma-credential']) {
+    for (const present of [true, false]) {
+      const { store } = await scanner(t, 'APPROVAL NEEDED: Choose the local plan. Reply "yes".');
+      const saved = await store.read();
+      const ask = Object.values(saved.asks)[0];
+      ask.linkedTasks = [linkedTask];
+      const persisted = memoryStateFile(saved);
+      const restored = () => createChatAskScanner({ home: '/synthetic/home', store: persisted,
+        discover: async () => ({ sources: [], warnings: [] }) });
+      const base = { state: 'ready', ...decisionModel(present
+        ? [{ id: 'delta-mate/gamma-credential', owner: 'delta-mate', summary: 'Remote credential pending' }]
+        : []) };
+      const scan = restored();
+      const source = createCallSource({ hub: { current: () => base }, chat: scan });
+      await source.refresh();
+      assert.equal(scan.asks()[0].key, ask.key);
+      assert.equal(scan.view().resolved.length, 0);
+      const state = await persisted.read();
+      assert.equal(state.asks[ask.key].status, 'open');
+      assert.equal(state.tombstones[ask.key], undefined);
+      const model = source.current();
+      const standalone = model.cards.find(card => card.key === ask.key);
+      assert.equal(standalone.type, 'chat');
+      assert.ok(standalone.answer);
+      assert.equal(model.chat.linked, 0);
+      if (present) {
+        assert.equal(model.cards[0].readOnly, true);
+        assert.equal(model.cards[0].chatAsks, undefined);
+      }
+      const restarted = restored();
+      await restarted.scan();
+      await restarted.applySnapshot([], true);
+      assert.equal(restarted.asks()[0].key, ask.key);
+      assert.equal((await persisted.read()).tombstones[ask.key], undefined);
+      await restarted.resolve(ask.key, present ? 'answered' : 'dismissed');
+      assert.deepEqual(restarted.asks(), []);
+      assert.ok((await persisted.read()).tombstones[ask.key]);
+    }
+  }
 });

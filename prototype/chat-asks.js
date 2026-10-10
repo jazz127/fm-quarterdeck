@@ -462,7 +462,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
     asks: () => openAsks(),
     // Link by task id or a filed decision's quoted reply. String task ids remain supported
     // for callers with no card text. Ledger evidence also covers holds omitted by bearings.
-    async applySnapshot(cards, fresh, holds = [], omitted = []) {
+    async applySnapshot(cards, fresh, holds = []) {
       if (!state) return false;
       const evidence = fresh ? holds : [];
       cards = cards.map(card => typeof card === "string" ? { task: card } : card);
@@ -470,14 +470,11 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
       const linkable = cards.filter(card => !card.readOnly);
       const excludedTasks = new Set(cards.filter(card => card.readOnly && !linkable.some(local => local.task === card.task)).map(card => card.task));
       cards = linkable;
-      const tasks = cards.filter(card => !card.closed).map(card => card.task).filter(Boolean);
       const closed = new Map(evidence.filter(row => row.closed).map(row => [row.task, row]));
       const closure = ask => {
         const linkedTasks = ask.linkedTasks.filter(task => !excludedTasks.has(task));
         const rows = linkedTasks.map(task => closed.get(task));
         if (rows.length && rows.every(Boolean)) return { resolvedTasks: linkedTasks, resolutionSource: "data/backlog.md", holdResolutions: rows.map(row => ({ task: row.task, resolution: row.resolution })) };
-        // Missing calls can be bucketed/aged/bounded rather than answered.
-        if (fresh && !omitted.length && linkedTasks.length && !linkedTasks.some(task => tasks.includes(task))) return { resolvedTasks: linkedTasks, resolutionSource: "bearings snapshot" };
         return null;
       };
       const work = openAsks().some((ask) => ask.linkedTasks.some(task => excludedTasks.has(task)) || cards.some(card => !ask.linkedTasks.includes(card.task) && matchesHold(ask, card)))
@@ -565,7 +562,7 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
     if (base !== composedBase || signature !== composedFrom) { composed = composeCallModel(base, asks, view); composed.cards = classifyAnsweredCalls(composed.cards, answerReceipts); composed.rev = shortHash([contentRevision(composed), composed.chat]); composedBase = base; composedFrom = signature; }
     return composed;
   }
-  const applyHolds = () => { const base = hub.current(); return chat.applySnapshot(base.cards, fresh(), base.holds || [], base.omitted || []); };
+  const applyHolds = () => { const base = hub.current(); return chat.applySnapshot(base.cards, fresh(), base.holds || []); };
   const fresh = () => hub.current().state === "ready";
   let lastRev = null;
   function emit() {
