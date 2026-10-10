@@ -30,7 +30,7 @@
         </header>
         <nav class="primary-nav" aria-label="Quarterdeck sections">
           <p class="nav-caption">Workspace</p>
-          <button class="primary-tab active" type="button" data-view="overview" aria-pressed="true" title="Fleet"><span>Overview</span><small>Fleet</small></button>
+          <button class="primary-tab active" type="button" data-view="overview" aria-pressed="true" title="Captain's Call"><span>Overview <b id="call-badge" class="call-badge" hidden>0</b></span><small>Captain's Call</small></button>
           <button class="primary-tab" type="button" data-view="work" aria-pressed="false" title="Backlog &amp; projects"><span>Work split</span><small>Backlog &amp; projects</small></button>
           <div class="lane-chats-row">
             <button class="primary-tab lane-chats-tab" type="button" data-view="conversations" aria-pressed="false" aria-label="Chats" title="Transcript"><span>Fleet Chats</span><svg class="chats-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 2v-5a7.5 7.5 0 1 1 16-4.5Z"/><path d="M8 11h8M8 14h5"/></svg><small>Transcript</small></button>
@@ -149,19 +149,57 @@
           </section>
           <div class="conversation-feed">
           <div id="transcript-window-status" class="transcript-window-status" hidden><span id="transcript-window-hint">Recent source windows · Search covers loaded records.</span><button id="transcript-load-more" type="button" aria-describedby="transcript-window-hint">Load more records</button></div>
-          <div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
           <div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true"><div class="notice" role="status">Loading Fleet Chats… Reading recent messages. Older history is available on demand.</div></div>
           </div>
           <aside id="conversation-kind-panel" class="conversation-kind-panel" aria-label="Message kind filters"><div class="kind-panel-heading"><span>Message kinds</span><button id="kind-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="kind-filter-menu" aria-expanded="true" aria-label="Collapse Message kinds panel" title="Collapse Message kinds panel">›</button></div></aside>
           </div>
         </section>
 
+        <div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
         <section id="overview-view" class="product-view feature-view active" aria-label="Fleet overview">
-          <header class="feature-head compact-head"><div><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge"></span></header>
+          <header class="feature-head compact-head"><div><h1>Fleet at a glance</h1></div><span id="fleet-source" class="source-badge" aria-label="Firstmate activity"></span></header>
           <div id="summary" class="summary-grid"></div>
-          <p id="overview-state" class="notice hidden" role="status"></p>
-          <div class="section-tools"><h2 class="section-heading">Repositories → fleets → voyages</h2><div class="scan-controls"><div id="overview-status-buttons" class="status-button-filter" role="group" aria-label="Filter work by status"></div><label class="sr-only-select">Work status <select id="overview-status" aria-label="Filter work by status"><option value="all">All statuses</option></select></label><label>Sort <select id="overview-sort"><option value="name">Name</option><option value="activity">Active crew</option></select></label><button type="button" id="overview-expand">Expand all</button><button type="button" id="overview-collapse">Collapse all</button></div></div>
-          <div id="projects" class="project-grid"></div>
+          <div id="overview-section-tabs" class="overview-section-tabs" role="tablist" aria-label="Overview sections">
+            <button type="button" id="overview-tab-calls" role="tab" aria-selected="true" aria-controls="overview-primary" tabindex="0" data-overview-tab="calls">Captain's Call (0)</button>
+            <button type="button" id="overview-tab-landed" role="tab" aria-selected="false" aria-controls="overview-secondary" tabindex="-1" data-overview-tab="landed">Just landed (0)</button>
+          </div>
+          <div id="overview-columns" class="overview-columns">
+            <div id="overview-primary">
+              <p id="overview-state" class="notice hidden" role="status"></p>
+              <section id="captain-call" aria-labelledby="call-heading">
+                <h2 id="call-heading" class="section-heading">Captain's Call <span class="call-read-only">Live · answers need your confirmation</span></h2>
+                <div class="call-lifecycle-bar">
+                <div id="call-lifecycle-filter" class="call-lifecycle-filter" role="group" aria-label="Show Captain's Call cards by status">
+                  <button type="button" data-call-lifecycle="active" aria-pressed="true">Active (0)</button>
+                  <button type="button" data-call-lifecycle="queued" aria-pressed="false">Queued (0)</button>
+                  <button type="button" data-call-lifecycle="sent" aria-pressed="false">Sent (0)</button>
+                  <button type="button" data-call-lifecycle="procrastinated" aria-pressed="false">Procrastinated (0)</button>
+                  <button type="button" data-call-lifecycle="all" aria-pressed="false">All (0)</button>
+                </div>
+                <button type="button" id="call-send-queued" class="call-send-queued" hidden aria-label="Send 0 queued Captain's Call answers">Send queued (0)</button>
+                </div>
+                <p id="call-lifecycle-empty" class="call-meta" hidden></p>
+                <label class="call-sort">Sort calls <select id="call-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+                <div id="call-status" class="call-status" role="status" hidden></div>
+                <div id="call-cards" class="call-cards"><p class="call-empty" data-call-empty>Checking for Captain's Calls…</p></div>
+                <p id="call-coverage" class="call-coverage"></p>
+                <p class="call-meta">Remote homes use Firstmate's cached readings.</p>
+              </section>
+            </div>
+            <div id="overview-secondary">
+              <section id="just-landed" aria-labelledby="just-landed-heading">
+                <div class="call-lifecycle-bar">
+                  <h2 id="just-landed-heading" class="section-heading">Just landed <b id="landed-new-count" class="call-badge" hidden>0</b></h2>
+                  <button type="button" id="landed-ack-toggle" aria-pressed="false" disabled>Acknowledged (0)</button>
+                </div>
+                <p class="call-meta" data-landed-invalid hidden></p>
+                <div id="landed-cards" class="call-cards" aria-live="polite">
+                  <p class="call-empty" data-landed-empty>Checking for landings…</p>
+                </div>
+                <p class="call-meta">Remote homes use Firstmate's cached readings.</p>
+              </section>
+            </div>
+          </div>
         </section>
 
         <section id="work-view" class="product-view feature-view" aria-label="Work split">
@@ -227,6 +265,14 @@
 
         <section id="preferences-view" class="product-view feature-view" aria-label="Firstmate preferences">
           <header class="feature-head compact-head"><div><h1>Working preferences</h1><p title="Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.">Read-only behaviors from the Firstmate home record. Dates and reasons are shown only when supported by that record.</p></div><span id="preferences-source" class="source-badge">data/captain.md</span></header>
+          <form id="health-preferences-form" class="health-preferences-form">
+            <h2>Away supervision</h2>
+            <label for="away-check-in">Away check-in interval <span>(minutes)</span><input id="away-check-in" name="awayCheckInMinutes" type="number" min="1" max="1440" step="1" value="10" required></label>
+            <label for="open-note-alarm">Open note alarm <span>(minutes)</span><input id="open-note-alarm" name="openNoteAlarmMinutes" type="number" min="1" max="1440" step="1" value="15" required></label>
+            <p>Whole minutes, 1–1440. Defaults: 10 and 15. Changes apply on the next model-free health check.</p>
+            <button type="submit" disabled>Save health preferences</button>
+            <p id="health-preferences-status" role="status" aria-live="polite">Loading health preferences…</p>
+          </form>
           <p id="preferences-state" class="notice" role="status" aria-live="polite">Loading preferences…</p>
           <div class="scan-controls" aria-label="Preference navigation"><label>Show <select id="preferences-density"><option value="titles">Titles only</option><option value="reasons">Titles and reasons</option><option value="details" selected>Titles, reasons and details</option></select></label><label>Sort <select id="preferences-sort"><option value="source">Source order</option><option value="newest">Newest evidence</option><option value="oldest">Oldest evidence</option></select></label><button type="button" id="preferences-expand">Expand all</button><button type="button" id="preferences-collapse">Collapse all</button></div>
           <div id="preferences-list" class="preferences-list"></div>
@@ -289,6 +335,17 @@
     <script src="/quota-view-model.js"></script>
     <script src="/cost-view-model.js"></script>
     <script type="module" src="/shell-width.js"></script>
+    <script src="/bearings-patch.js"></script>
+    <script src="/bearings-view.js"></script>
+    <script src="/bearings-answer-form.js"></script>
+    <script src="/bearings-overflow.js"></script>
+    <script src="/bearings-dismiss.js"></script>
+    <script src="/bearings-thread-panel.js"></script>
+    <script src="/bearings-procrastinate.js"></script>
+    <script src="/bearings-landed.js"></script>
+    <script src="/overview-tabs.js"></script>
+    <script src="/call-lifecycle.js"></script>
+    <script src="/bearings-live.js"></script>
     <script type="module" src="/app.js"></script>
     <script src="/review-target.js"></script>
     <script type="module" src="/review-client.js"></script>

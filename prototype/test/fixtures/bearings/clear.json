@@ -1,0 +1,9 @@
+{
+  "schema": "fm-bearings.v1",
+  "home": "/srv/synthetic/home",
+  "generated": "2026-01-02T03:10:00Z",
+  "in_flight": [],
+  "decisions_open": [],
+  "contributions": { "known": 4, "checked": 4, "complete": true, "proven_clear": true, "unmeasured_homes": 0, "captain_omitted": 0, "captain": [] },
+  "omitted": []
+}

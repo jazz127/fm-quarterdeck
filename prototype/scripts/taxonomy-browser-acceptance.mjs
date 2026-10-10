@@ -53,11 +53,11 @@ export async function acceptance({ cmd, evaluate, until, wait, lab, head }) {
   try {
     for (const width of [1920, 1440, 834, 390, 320]) {
       await cmd("Emulation.setDeviceMetricsOverride", { width, height: width <= 390 ? 844 : 1000, deviceScaleFactor: 1, mobile: width <= 390 });
-      for (const view of ["overview", "work"]) {
+      for (const view of ["work"]) {
         await cmd("Page.navigate", { url: `${url}#${view}` });
-        await until("Boolean(document.querySelector('#projects .taxonomy-theme') && document.querySelector('#tight-work .taxonomy-theme'))");
+        await until("Boolean(document.querySelector('#tight-work .taxonomy-theme'))");
         assert.equal(await evaluate("fetch('/api/review').then(r=>r.json()).then(r=>r.version)"), head);
-        const root = view === "overview" ? "#projects" : "#tight-work";
+        const root = "#tight-work";
         const values = await evaluate(`(() => { const root=document.querySelector('${root}'); const rows=[...root.querySelectorAll('[data-task-fingerprint]')]; const kpis=[...document.querySelectorAll('#summary .metric-card')].map(n=>n.getBoundingClientRect().toJSON()); return { rows:rows.length, unique:new Set(rows.map(n=>n.dataset.taskFingerprint)).size, active:rows.filter(n=>n.dataset.status==='active').length, previous:rows.filter(n=>n.dataset.status==='previously-done').length, newly:rows.filter(n=>n.dataset.status==='newly-done').length, hierarchy:root.querySelectorAll('.taxonomy-repository .taxonomy-lane .taxonomy-theme').length, overflow:document.documentElement.scrollWidth>innerWidth, kpis, text:root.innerText }; })()`);
         assert.equal(values.rows, 12); assert.equal(values.unique, 12); assert.equal(values.active, 1); assert.equal(values.previous, 5); assert.equal(values.newly, 1); assert.ok(values.hierarchy >= 2); assert.equal(values.overflow, false);
         for (const label of ["Interface workstream", "Review iteration", "remote Main", "remote UAT", "merged PR", "Live UAT · ready for review", "Live production", "Repository unknown"]) assert.ok(values.text.includes(label), label);
@@ -107,8 +107,8 @@ export async function acceptance({ cmd, evaluate, until, wait, lab, head }) {
     assert.equal(await evaluate("[...document.querySelectorAll('#tight-work [data-status]')].filter(n=>n.dataset.status==='previously-done').length"), 6);
     await writeFile(path.join(home, "state/ready.status"), "done [at=1]: fixture recorded outcome\nworking [at=2]: renewed\ndone [at=3]: second completion\n");
     await evaluate("document.querySelector('#refresh').click()"); await until("Boolean(document.querySelector('#tight-work [data-ack-task]'))");
-    const taskSelector = `#projects .work-slice[data-task-fingerprint="${fingerprint("task.v1", repoPath, "ready")}"] a.crew-task`;
-    await evaluate("location.hash='#overview'"); await until(`Boolean(document.querySelector(${JSON.stringify(taskSelector)}))`);
+    const taskSelector = `#tight-work .work-slice[data-task-fingerprint="${fingerprint("task.v1", repoPath, "ready")}"] a.crew-task`;
+    await evaluate("location.hash='#work'"); await until(`Boolean(document.querySelector(${JSON.stringify(taskSelector)}))`);
     const target = await evaluate(`(() => { const href=document.querySelector(${JSON.stringify(taskSelector)}).getAttribute('href'); const parts=href.slice(1).split('/'); return { href, laneId:decodeURIComponent(parts[1]), taskId:decodeURIComponent(parts[3] || ''), kind:parts[2] }; })()`);
     assert.equal(target.kind, "session"); assert.equal(target.taskId, "ready");
     await evaluate(`document.querySelector(${JSON.stringify(taskSelector)}).click()`);

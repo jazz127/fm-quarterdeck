@@ -6,7 +6,7 @@ import { quotaDom } from "./helpers/quota-dom.js";
 import { createHash } from "node:crypto";
 import { parseCss, computed, element } from './helpers/css-model.mjs';
 
-const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
+const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
 test("opt-in compact headers preserve Quota markup and expose full descriptions", async () => {
@@ -27,16 +27,38 @@ test("opt-in compact headers preserve Quota markup and expose full descriptions"
 test("freshness shows only condition and time while preserving accessible evidence", () => {
   const app = ui();
   app.node(".workspace").dataset.view = "overview";
-  app.run("freshness.dashboard.lastSuccess = Date.now(); freshness.dashboard.duration = 70; freshness.dashboard.refreshing = false; renderFreshness()");
+  app.run("freshness.bearings.lastSuccess = Date.now(); freshness.bearings.duration = 70; freshness.bearings.refreshing = false; renderFreshness()");
   const reading = app.node("#view-freshness"), pill = app.node("#fleet-state");
   assert.doesNotMatch(reading.textContent, /Overview|fresh|Last success/);
   assert.equal(app.node("#fleet-state b").textContent, "fresh");
-  assert.match(reading.title, /^Overview · fresh · Last success.* · 70ms$/);
+  assert.match(reading.title, /^Captain's Call · fresh · Last success.* · 70ms$/);
   assert.equal(reading.getAttribute("aria-label"), reading.title);
   assert.equal(pill.title, reading.title);
   assert.equal(pill.getAttribute("aria-label"), reading.title);
-  app.run("freshness.dashboard.lastSuccess = null; renderFreshness()");
+  app.run("freshness.bearings.lastSuccess = null; renderFreshness()");
   assert.equal(reading.textContent, "no reading yet");
+});
+
+test("live model and observation feed the patcher, badge and independent Overview freshness", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.node('.workspace').dataset.view = 'overview';
+  app.run(`window.callHooks.onModel({rev:'first',state:'ready',cards:[{}],observedAt:new Date().toISOString(),checkedAt:new Date().toISOString(),stale:false,error:null})`);
+  assert.equal(app.run('window.callPatches.length'), 1);
+  assert.equal(app.node('#call-badge').textContent, '1');
+  assert.match(app.node('#view-freshness').title, /^Captain's Call · fresh/);
+  app.run(`window.callHooks.onObserved({rev:'first',state:'stale',observedAt:new Date().toISOString(),checkedAt:new Date().toISOString(),stale:true,error:'Snapshot failed'})`);
+  assert.equal(app.run('window.callPatches.length'), 1);
+  assert.equal(app.run('window.callObservations.length'), 1);
+  assert.match(app.node('#view-freshness').title, /Snapshot failed/);
+  app.run("window.callHooks.onConnection({state:'reconnecting'})");
+  assert.equal(app.node('#fleet-state b').textContent, 'stale');
+  app.run("window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Snapshot timed out'})");
+  assert.equal(app.node('#call-badge').textContent, '?');
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
+  app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').hidden, true);
 });
 
 test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
@@ -66,6 +88,14 @@ test("unavailable work hides controls and empty sections, then restores them", (
   for (const selector of selectors) assert.equal(app.node(selector).hidden, false);
 });
 
+test("dashboard errors remain visible after Work Split clears its unavailable state", async () => {
+  const app = ui({ fetchImpl: url => url === '/api/dashboard' ? Promise.resolve({ok:false,status:503,json:async()=>({error:'Synthetic fleet unavailable'})}) : new Promise(()=>{}) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.node('#overview-state').classList.contains('hidden'), false);
+  assert.match(app.node('#overview-state').textContent, /Synthetic fleet unavailable/);
+  assert.match(app.node('#work-state').textContent, /Work split unavailable/);
+});
+
 test("request failures use readable HTTP or network messages", async () => {
   for (const [fetchImpl, expected] of [
     [async () => ({ok: false, status: 502, json: async () => { throw new SyntaxError('HTML'); }}), 'HTTP 502'],
@@ -77,13 +107,67 @@ test("request failures use readable HTTP or network messages", async () => {
   }
 });
 
-test("fallback overview status buttons and options are sentence case", () => {
+test("Overview retains KPIs, replaces only the project tree with accessible live calls", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const overview = html.slice(html.indexOf('<section id="overview-view"'), html.indexOf('<section id="work-view"'));
+  assert.match(overview, /id="summary"/);
+  assert.ok(overview.indexOf('id="summary"') < overview.indexOf('id="overview-section-tabs"') && overview.indexOf('id="overview-section-tabs"') < overview.indexOf('id="overview-columns"'));
+  assert.match(overview, /id="overview-section-tabs"[\s\S]*role="tablist"[\s\S]*id="overview-tab-calls"[\s\S]*Captain's Call \(0\)[\s\S]*id="overview-tab-landed"[\s\S]*Just landed \(0\)/);
+  assert.match(html, /<script src="\/bearings-landed\.js"><\/script>\s*<script src="\/overview-tabs\.js"><\/script>/);
+  assert.match(overview, /id="overview-columns"/);
+  assert.match(overview, /id="overview-primary"[\s\S]*id="captain-call" aria-labelledby="call-heading"/);
+  assert.match(overview, /id="overview-secondary"[\s\S]*id="just-landed"/);
+  assert.match(overview, /id="just-landed-heading"[\s\S]*Just landed <b id="landed-new-count" class="call-badge" hidden>0<\/b>/);
+  assert.match(overview, /id="landed-ack-toggle"/);
+  assert.match(overview, /Checking for landings/);
+  assert.doesNotMatch(overview.slice(overview.indexOf('id="overview-secondary"')), /placeholder|coming soon|Charted|Procrastinate/i);
+  const landedJs = await readFile(new URL("../public/bearings-landed.js", import.meta.url), "utf8");
+  assert.match(landedJs, /No recent completions are in the current baseline\./);
+  assert.match(landedJs, /data-landed-key/);
+  assert.doesNotMatch(landedJs, /data-call-key|data-call-procrastinate/);
+  assert.match(overview, /id="call-status"[^>]*role="status"/);
+  assert.doesNotMatch(overview, /id="projects"|overview-status|Repositories →/);
   const app = ui();
-  app.run(`renderProjects([{id: 'example', name: 'Example', status: 'complete', items: [{state: 'complete'}]}, {id: 'review', name: 'Review', status: 'review', items: [{state: 'review'}]}])`);
-  assert.match(app.node("#overview-status").innerHTML, />Complete<\/option>/);
-  assert.match(app.node("#overview-status").innerHTML, />Review<\/option>/);
-  assert.match(app.node("#overview-status-buttons").innerHTML, />Complete<\/span>/);
-  assert.match(app.node("#overview-status-buttons").innerHTML, />Review<\/span>/);
+  app.run('renderCallBadge({cards:[{},{}]})');
+  assert.equal(app.node('#call-badge').textContent, '2');
+  assert.equal(app.node('#call-mobile-badge').textContent, '2');
+  assert.match(app.node('#sr-announcer').textContent, /2 Captain's Calls/);
+  app.node('#sr-announcer').textContent = '';
+  app.run('renderCallBadge({cards:[{}]})');
+  assert.equal(app.node('#sr-announcer').textContent, '');
+  app.run('renderCallBadge({cards:[]})');
+  assert.equal(app.node('#call-badge').hidden, true);
+});
+
+test("Active view shows Send queued for the staged count and the click reuses the review sender", () => {
+  const app = ui();
+  const button = app.node("#call-send-queued");
+  app.run(`callPatcher.applied = { cards: [] };
+    callLifecycleFilter = "active";
+    callAnswers = { queued: () => [] };
+    renderCallLifecycle();`);
+  assert.equal(button.hidden, true, "nothing queued keeps the button hidden");
+  app.run(`callAnswers = { queued: () => [{ phase: "confirm" }, { phase: "failed" }] };
+    callLifecycleFilter = "queued";
+    renderCallLifecycle();`);
+  assert.equal(button.hidden, true, "other status views hide it even when answers are queued");
+  app.run(`callLifecycleFilter = "active"; renderCallLifecycle();`);
+  assert.equal(button.hidden, false);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "Send queued (2)");
+  assert.equal(button.getAttribute("aria-label"), "Send 2 queued Captain's Call answers");
+  app.run(`callAnswers = { queued: () => [{ phase: "sending" }] }; renderCallLifecycle();`);
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, "Send queued (1)");
+  assert.equal(button.getAttribute("aria-label"), "Sending 1 queued Captain's Call answer");
+  app.run(`window.__sends = 0; window.quarterdeckReviewQueue = { sendCallAnswers() { window.__sends += 1; return Promise.resolve(true); }, sending() { return false; } };`);
+  button.disabled = false;
+  button.hidden = false;
+  button.dispatchEvent({ type: "click" });
+  assert.equal(app.run("window.__sends"), 1, "the header button calls the shared review sender");
+  button.disabled = true;
+  button.dispatchEvent({ type: "click" });
+  assert.equal(app.run("window.__sends"), 1, "a disabled button does not send again");
 });
 
 test("phone shell preserves navigation and leaves feed clear of fixed controls", () => {
@@ -235,6 +319,10 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage =
         const node = {
           innerHTML: "",
           textContent: "",
+          replaceChildren(...children) {
+            node.children = children;
+            node.textContent = children.map((child) => child.textContent ?? String(child)).join("");
+          },
           value: "",
           hidden: false,
           dataset: {},
@@ -265,6 +353,7 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage =
           closest() { return null; },
           getBoundingClientRect() { return { top: 0, bottom: 100, height: 100 }; },
           querySelectorAll() { return []; },
+          querySelector() { return null; },
           focus() { document.activeElement = node; },
         };
         nodes.set(selector, node);
@@ -287,7 +376,10 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage =
   document.createElement = (tag) => quotaNodes.element(tag);
   const context = vm.createContext({
     document, URL,
-    window: { location: { hash: "#lanes" }, getSelection: () => document.selection, addEventListener(name, listener) { windowListeners.set(name, listener); }, matchMedia: (query) => ({ matches: query.includes("max-width") ? compact : false, addEventListener() {} }) },
+    window: { location: { hash: "#lanes" }, callHooks: null, callPatches: [], callObservations: [],
+      bearingsPatch: { createCallPatcher: () => ({ update: model => context.window.callPatches.push(model), observe: data => context.window.callObservations.push(data) }) },
+      bearingsLive: { createBearingsLive: hooks => { queueMicrotask(() => { context.window.callHooks = hooks; }); return { start() {}, refresh() {} }; } },
+      getSelection: () => document.selection, addEventListener(name, listener) { windowListeners.set(name, listener); }, matchMedia: (query) => ({ matches: query.includes("max-width") ? compact : false, addEventListener() {} }) },
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem(key, value) { storage.set(key, value); } },
     // Leave initial network loading pending; tests inject only synthetic records.
     fetch: fetchImpl,
@@ -873,7 +965,7 @@ test("slow large lane response cannot block Overview or Quota, and refreshes do 
   app.run('showView("quota")');
   assert.match(app.node("#view-freshness").title, /^Quota · disconnected · Last success.*source unavailable/);
   app.run('showView("overview")');
-  assert.match(app.node("#view-freshness").title, /^Overview · fresh · Last success/);
+  assert.match(app.node("#view-freshness").title, /^Captain's Call · waiting · No successful reading/);
 });
 
 test("preference density, sorting and expansion persist through rendering", () => {
@@ -1101,55 +1193,6 @@ test("lane chat stream context shows the selected crews' durable task intents", 
   assert.match(html, /Task intent not recorded\./);
   assert.doesNotMatch(html, /Firstmate|Readable response/);
   assert.match(css, /\.context-task-intent[^}]+font-size: var\(--text-small\)/s);
-});
-
-test("overview renders lane and per-crew task intents with honest fallbacks", () => {
-  const app = ui();
-  app.run(`renderProjects(${JSON.stringify([{
-    id: "alpha", name: "Alpha", status: "active", mission: "Legacy mission", intent: "Run Alpha operations",
-    agents: 2, progress: 35, items: [
-      { title: "alpha-worker", state: "working", taskIntent: "Implement the current command summary" },
-      { title: "unrecorded-worker", state: "working" },
-    ],
-  }])})`);
-  const html = app.node("#projects").innerHTML;
-  assert.match(html, /Run Alpha operations/);
-  assert.match(html, /alpha-worker/);
-  assert.match(html, /Implement the current command summary/);
-  assert.match(html, /Task intent not recorded\./);
-  assert.doesNotMatch(html, /Legacy mission/);
-  assert.match(html, /data-open-lane="alpha"/);
-  assert.match(html, /data-open-session="alpha-worker"/);
-  assert.match(css, /\.crew-task > span:last-child[^}]+overflow-wrap: anywhere/s);
-});
-
-test("overview agent status filter groups active states and shows only matching crew across refreshes", () => {
-  const app = ui();
-  const projects = [
-    { id: "alpha", name: "Alpha", status: "active", agents: 2, progress: 30, items: [
-      { title: "working-agent", state: "working" }, { title: "blocked-agent", state: "blocked" },
-    ] },
-    { id: "beta", name: "Beta", status: "active", agents: 1, progress: 10, items: [
-      { title: "active-agent", state: "active" }, { title: "decision-agent", state: "needs-decision" },
-    ] },
-  ];
-  app.run(`renderProjects(${JSON.stringify(projects)})`);
-  assert.match(app.node("#overview-status").innerHTML, /value="blocked"/);
-  assert.match(app.node("#overview-status").innerHTML, /value="needs-decision"/);
-  app.node("#overview-status").dispatchEvent({ type: "change", target: { value: "active" } });
-  assert.match(app.node("#projects").innerHTML, /working-agent/);
-  assert.match(app.node("#projects").innerHTML, /active-agent/);
-  assert.doesNotMatch(app.node("#projects").innerHTML, /blocked-agent|decision-agent/);
-  app.node("#overview-status").dispatchEvent({ type: "change", target: { value: "blocked" } });
-  assert.match(app.node("#projects").innerHTML, /blocked-agent/);
-  assert.doesNotMatch(app.node("#projects").innerHTML, /working-agent|active-agent|decision-agent|data-open-lane="beta"/);
-  app.run(`renderProjects(${JSON.stringify(projects)})`);
-  assert.equal(app.node("#overview-status").value, "blocked");
-  app.run(`renderProjects(${JSON.stringify([{ ...projects[0], items: [{ title: "working-agent", state: "working" }] }])})`);
-  assert.match(app.node("#projects").innerHTML, /No agents match this status/);
-  assert.match(app.node("#overview-status").innerHTML, /value="blocked"/);
-  app.node("#overview-status").dispatchEvent({ type: "change", target: { value: "all" } });
-  assert.match(app.node("#projects").innerHTML, /working-agent/);
 });
 
 test("fresh thinking default follows actual native content, without creating messages", () => {
@@ -1744,9 +1787,9 @@ test("open header details popovers dismiss on Escape and outside click", () => {
 test("Phase 2.5 responsive, typography, and accessibility polish constraints", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 
-  // Overview summary and projects do not have live-region attributes
+  // Overview KPI summary does not have live-region attributes
   assert.doesNotMatch(html, /id="summary"[^>]*aria-live/);
-  assert.doesNotMatch(html, /id="projects"[^>]*aria-live/);
+  assert.doesNotMatch(html, /id="call-cards"[^>]*aria-live/);
 
   // Terminology disambiguation: transcript picker refers to disk transcript files, context rail refers to task history
   assert.match(html, /Disk transcript file/);
@@ -2110,35 +2153,6 @@ test("Preferences alignment, quiet count, and truthful source links", () => {
   assert.match(listHtml, /Source: data\/captain\.md:12-25/);
 });
 
-test("Overview card and navigation corrections: selectable copy-safe intent, dedicated open button, task tooltips", () => {
-  const app = ui();
-  app.run(`renderProjects(${JSON.stringify([
-    {
-      id: "example-store",
-      name: "Example Store",
-      status: "active",
-      intent: "Build multi-agent store catalog and cart",
-      agents: 8,
-      progress: 68,
-      items: [
-        { title: "task-412", state: "working", taskIntent: "Synchronize cart state with disk session" },
-      ],
-    },
-  ])})`);
-
-  const html = app.node("#projects").innerHTML;
-  // Dedicated button instead of entire card being a button
-  assert.match(html, /<div class="project-head">/);
-  assert.match(html, /<button class="project-open" type="button" data-open-lane="example-store"/);
-  assert.match(html, /Open Fleet Chat →/);
-
-  // Copy-safe intent paragraph
-  assert.match(html, /<p class="lane-intent">Build multi-agent store catalog and cart<\/p>/);
-
-  // Task item has title hover tooltip
-  assert.match(html, /title="Synchronize cart state with disk session"/);
-});
-
 test("sidebar quota strip displays all active subscriptions including Grok, Codex, and AGY without masking", () => {
   const app = ui();
   const data = {
@@ -2386,8 +2400,8 @@ test("emitted taxonomy task links select the exact task through the canonical ro
       lane: { id: "ui", name: "UI workstream" }, theme: { id: "review", name: "Review", kind: "iteration" },
       sourceState: "done", status: "newly-done", taskIntent: "Recorded intent", chatLaneId: laneId,
       completionFingerprint: "b".repeat(64), completionAttention: "newly-done", evidence: [], taxonomyOptions: [] };
-    app.run(`renderWorkSplit(${JSON.stringify({ items: [item] })}); renderProjects([])`);
-    for (const root of ["#projects", "#tight-work"]) {
+    app.run(`renderWorkSplit(${JSON.stringify({ items: [item] })})`);
+    for (const root of ["#tight-work"]) {
       const href = /<a href="([^"]+)" class="crew-task"/.exec(app.node(root).innerHTML)?.[1];
       assert.ok(href, "the actual rendered task anchor exists");
       app.run(`window.location.hash = ${JSON.stringify(href)}; applyRoute();`);
@@ -2404,12 +2418,12 @@ test("emitted taxonomy task links select the exact task through the canonical ro
   }
 });
 
-test("Overview and Work Split omit singleton taxonomy wrappers, preserve filters, completion attention and direct links once", () => {
+test("Work Split omits singleton taxonomy wrappers, preserves filters, completion attention and direct links once", () => {
   const app = ui();
   const item = (id, status, extras = {}) => ({ id, name: id, taskFingerprint: id.repeat(64).slice(0, 64), repositoryId: "repo", repository: "Repository", lane: { id: "ui", name: "UI workstream" }, theme: { id: "iteration", name: "Review iteration", kind: "iteration" }, sourceState: status, status, taskIntent: "Recorded intent", chatLaneId: "legacy-project", completionFingerprint: status.includes("done") ? "c".repeat(64) : null, completionSourceFingerprint: "f".repeat(64), completionAttention: status.includes("done") ? status : null, evidence: [], taxonomyOptions: [], ...extras });
   const data = { items: [item("a", "active"), item("b", "waiting"), item("c", "newly-done"), item("d", "previously-done", { evidence: [{ badge: "remote Main", commit: "a".repeat(40) }], delivery: "Ready for review · deployment unknown" }), item("e", "cleanup", { completionAttention: "newly-done", completionFingerprint: "e".repeat(64), retained: true })] };
-  app.run(`renderWorkSplit(${JSON.stringify(data)}); renderProjects([])`);
-  for (const selector of ["#projects", "#tight-work"]) {
+  app.run(`renderWorkSplit(${JSON.stringify(data)})`);
+  for (const selector of ["#tight-work"]) {
     const html = app.node(selector).innerHTML;
     assert.match(html, /taxonomy-repository/);
     assert.doesNotMatch(html, /taxonomy-lane|taxonomy-theme/);
@@ -2419,12 +2433,13 @@ test("Overview and Work Split omit singleton taxonomy wrappers, preserve filters
     assert.match(html, /remote Main/); assert.match(html, /deployment unknown/);
     assert.match(html, /data-review-id="(?:work|overview):task:/);
   }
-  app.run("workPhase='active'; renderWorkSplit(); overviewStatus='newly-done'; renderProjects()");
+  app.run("workPhase='active'; renderWorkSplit()");
   assert.equal((app.node("#tight-work").innerHTML.match(/data-task-fingerprint=/g) || []).length, 1);
-  assert.equal((app.node("#projects").innerHTML.match(/data-task-fingerprint=/g) || []).length, 2);
-  app.run("overviewStatus='all'; hierarchyOpen.set('overview:repo', false); renderProjects()");
-  assert.match(app.node("#projects").innerHTML, /data-tree-key="overview:repo"[^>]*>\s*<summary>/);
-  assert.doesNotMatch(app.node("#projects").innerHTML.split("<summary>")[0], / open/);
+  app.run("workPhase='newly-done'; renderWorkSplit()");
+  assert.equal((app.node("#tight-work").innerHTML.match(/data-task-fingerprint=/g) || []).length, 2);
+  app.run("workPhase='all'; hierarchyOpen.set('work:repo', false); renderWorkSplit()");
+  assert.match(app.node("#tight-work").innerHTML, /data-tree-key="work:repo"[^>]*>\s*<summary>/);
+  assert.doesNotMatch(app.node("#tight-work").innerHTML.split("<summary>")[0], / open/);
   app.run(`renderSummary({activeAgents:1,workCounts:{active:9,'captain-action':2,'newly-done':3,'previously-done':4}})`);
   assert.equal((app.node("#summary").innerHTML.match(/metric-card/g) || []).length, 3);
   assert.match(app.node("#summary").innerHTML, /<strong>1<\/strong>[\s\S]*Verified workers/);
@@ -2434,7 +2449,7 @@ test("visible taxonomy siblings independently control lane and theme wrappers wi
   const app = ui();
   const item = (id, laneId, themeId, status = "active", repositoryId = "repo") => ({ id, name: id, taskFingerprint: id, repositoryId, repository: repositoryId, lane: { id: laneId, name: laneId }, theme: { id: themeId, name: themeId, kind: "theme" }, status, evidence: [], taxonomyOptions: [], chatLaneId: "linked-lane" });
   const a = item("a", "one", "first"), b = item("b", "two", "first", "waiting"), c = item("c", "one", "second", "waiting");
-  const render = (items) => app.run(`hierarchyHtml(${JSON.stringify(items)}, 'overview')`);
+  const render = (items) => app.run(`hierarchyHtml(${JSON.stringify(items)}, 'work')`);
   const counts = (html) => ["lane", "theme"].map((level) => (html.match(new RegExp(`taxonomy-${level} panel`, "g")) || []).length);
   assert.deepEqual(counts(render([a])), [0, 0], "one lane / one theme");
   assert.deepEqual(counts(render([a, b])), [2, 0], "many lanes, one theme per effective parent");
@@ -2444,17 +2459,17 @@ test("visible taxonomy siblings independently control lane and theme wrappers wi
   const groups = app.run(`groupHierarchy(${JSON.stringify([a, b, c])})`);
   assert.equal(groups[0].lanes.size, 2);
   assert.equal(groups[0].lanes.get("one").themes.size, 2, "data hierarchy remains intact");
-  for (const scope of ["overview", "work"]) {
-    app.run(`hierarchyOpen.set('${scope}:repo:one', false); hierarchyOpen.set('${scope}:repo:one:first', false); renderWorkSplit(${JSON.stringify({ items: [a, b, c] })}); renderProjects([])`);
-    const selector = scope === "overview" ? "#projects" : "#tight-work";
-    app.run(scope === "overview" ? "overviewStatus='active'; renderProjects()" : "workPhase='active'; renderWorkSplit()");
+  for (const scope of ["work"]) {
+    app.run(`hierarchyOpen.set('${scope}:repo:one', false); hierarchyOpen.set('${scope}:repo:one:first', false); renderWorkSplit(${JSON.stringify({ items: [a, b, c] })})`);
+    const selector = "#tight-work";
+    app.run("workPhase='active'; renderWorkSplit()");
     const filtered = app.node(selector).innerHTML;
     assert.deepEqual(counts(filtered), [0, 0]);
     assert.match(filtered, /data-task-fingerprint="a"/);
     assert.match(filtered, /#lanes\/linked-lane\/session\/a/);
     assert.doesNotMatch(filtered, /data-task-fingerprint="[bc]"/);
     assert.equal(app.run(`hierarchyOpen.get('${scope}:repo:one')`), false);
-    app.run(scope === "overview" ? "overviewStatus='all'; renderProjects()" : "workPhase='all'; renderWorkSplit()");
+    app.run("workPhase='all'; renderWorkSplit()");
     const restored = app.node(selector).innerHTML;
     assert.deepEqual(counts(restored), [2, 2]);
     for (const key of [`${scope}:repo:one`, `${scope}:repo:one:first`]) {
@@ -2465,10 +2480,10 @@ test("visible taxonomy siblings independently control lane and theme wrappers wi
   assert.equal(render([]), '<p class="empty panel">No work matches these filters.</p>');
 });
 
-test("Overview and Work Split visual organization: horizontal repository scrolling, clear hierarchy, card item separation, and responsive containment", () => {
+test("Work Split visual organization: horizontal repository scrolling, clear hierarchy, card item separation, and responsive containment", () => {
   // Horizontal repository scrolling deck on desktop/tablet
-  assert.match(css, /#projects:has\(\.taxonomy-node\),\s*#tight-work:has\(\.taxonomy-node\) \{[\s\S]*?display: flex;/);
-  assert.match(css, /@media \(min-width: 721px\) \{[\s\S]*?#projects:has\(\.taxonomy-node\),\s*#tight-work:has\(\.taxonomy-node\) \{[\s\S]*?flex-direction: row;[\s\S]*?overflow-x: auto;[\s\S]*?scroll-snap-type: x proximity;/);
+  assert.match(css, /#tight-work:has\(\.taxonomy-node\) \{[\s\S]*?display: flex;/);
+  assert.match(css, /@media \(min-width: 721px\) \{[\s\S]*?#tight-work:has\(\.taxonomy-node\) \{[\s\S]*?flex-direction: row;[\s\S]*?overflow-x: auto;[\s\S]*?scroll-snap-type: x proximity;/);
   assert.match(css, /\.taxonomy-node\.taxonomy-repository \{[\s\S]*?clamp\(360px, 42vw, 560px\)[\s\S]*?scroll-snap-align: start;/);
   assert.match(css, /\.taxonomy-node\.taxonomy-repository:only-child \{[\s\S]*?max-width: 100%;/);
 
@@ -2558,10 +2573,10 @@ test("Visible status button filters: replace dropdown reliance with accessible b
     { taskFingerprint: "t1", id: "t-1", name: "Task 1", repositoryId: "r1", repository: "Repo 1", lane: { id: "l1", name: "Lane 1" }, theme: { id: "th1", name: "Theme 1", kind: "theme" }, status: "active", evidence: [], taxonomyOptions: [] },
     { taskFingerprint: "t2", id: "t-2", name: "Task 2", repositoryId: "r1", repository: "Repo 1", lane: { id: "l1", name: "Lane 1" }, theme: { id: "th1", name: "Theme 1", kind: "theme" }, status: "waiting", evidence: [], taxonomyOptions: [] },
   ];
-  app.run(`workSplitData = { items: ${JSON.stringify(sampleItems)} }; renderProjects(); renderWorkSplit();`);
+  app.run(`workSplitData = { items: ${JSON.stringify(sampleItems)} }; renderWorkSplit();`);
 
-  // Overview status buttons rendered
-  const overviewBtnsHtml = app.node("#overview-status-buttons").innerHTML;
+  // Work Split status buttons rendered (Overview has Captain's Call instead).
+  const overviewBtnsHtml = app.node("#work-phase-buttons").innerHTML;
   assert.match(overviewBtnsHtml, /data-status-value="all"/);
   assert.match(overviewBtnsHtml, /data-status-value="active"/);
   assert.match(overviewBtnsHtml, /data-status-value="waiting"/);
@@ -2580,7 +2595,7 @@ test("Visible status button filters: replace dropdown reliance with accessible b
   assert.match(overviewBtnsHtml, /<span class="status-btn-label">Previously done<\/span> <span class="filter-count">0<\/span>/);
 
   // Full accessible names in title and aria-label
-  assert.match(overviewBtnsHtml, /title="All statuses: 2" aria-label="All statuses: 2"/);
+  assert.match(overviewBtnsHtml, /title="All phases: 2" aria-label="All phases: 2"/);
   assert.match(overviewBtnsHtml, /title="Active: 1" aria-label="Active: 1"/);
   assert.match(overviewBtnsHtml, /title="Waiting \/ external delay: 1" aria-label="Waiting \/ external delay: 1"/);
   assert.match(overviewBtnsHtml, /title="Retained \/ cleanup: 0" aria-label="Retained \/ cleanup: 0"/);
@@ -2611,10 +2626,10 @@ test("Visible status button filters: replace dropdown reliance with accessible b
     assert.ok(labelMatch[1].trim().length > 0, "Button label must be non-empty readable text, not numbers only");
   }
 
-  // Synchronized update from overviewStatus change
-  app.run(`overviewStatus = "active"; renderProjects();`);
-  assert.equal(app.node("#overview-status").value, "active");
-  assert.match(app.node("#overview-status-buttons").innerHTML, /class="status-filter-btn active"[^>]*data-status-value="active"[^>]*aria-pressed="true"/);
+  // Synchronized update from Work Split phase change
+  app.run(`workPhase = "active"; renderWorkSplit();`);
+  assert.equal(app.node("#work-phase").value, "active");
+  assert.match(app.node("#work-phase-buttons").innerHTML, /class="status-filter-btn active"[^>]*data-status-value="active"[^>]*aria-pressed="true"/);
 
   // Synchronized update from workPhase change
   app.run(`workPhase = "waiting"; renderWorkSplit();`);
@@ -2625,6 +2640,13 @@ test("Visible status button filters: replace dropdown reliance with accessible b
 test("Overview and Work Split wide-screen viewport utilization: scoped width expansion without indiscriminate sprawl", () => {
   // Scoped width expansion rules
   assert.match(css, /#overview-view > \*,\s*#work-view > \* \{[\s\S]*?max-width:\s*100%;/);
+  assert.match(css, /\.overview-columns \{ display: grid; grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); gap: 22px; align-items: start; \}/);
+  assert.match(css, /@media \(max-width: 720\.005px\) \{[\s\S]*?\.overview-columns \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.overview-section-tabs \{ display: none; \}/);
+  assert.match(css, /@media \(max-width: 720\.005px\) \{\n  \.call-card \{ padding: 14px 12px 12px; \}[\s\S]*?\.overview-section-tabs \{ display: flex; /);
+  assert.doesNotMatch(css, /#overview-secondary \{ display: none; \}/);
+  assert.match(css, /\.call-card \.call-head-pill\.landed-ack \{ min-height: 44px; \}/);
+  assert.match(css, /#landed-ack-toggle \{ min-height: 44px;/);
   assert.match(css, /#work-view section \{[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%;/);
   assert.match(css, /#work-view section > p\.muted \{[\s\S]*?max-width:\s*80ch;/);
 
@@ -2902,4 +2924,13 @@ test("stale scope-only quota preserves compact eligibility, focus and fourth-row
       assert.equal(surface.querySelector('[role="progressbar"]'), null);
     }
   }
+});
+
+test("bearings badge uses the held card's rendered lifecycle without counting removed source cards", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.run(`callPatcher.applied = {cards:[{key:'decision:held',answered:true},{key:'decision:removed'}]}; renderCallBadge({state:'ready',cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run(`renderCallBadge({state:'stale',stale:true,cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
+  assert.equal(app.node('#call-badge').textContent, '1 · stale');
 });

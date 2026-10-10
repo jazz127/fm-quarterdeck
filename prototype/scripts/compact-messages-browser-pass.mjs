@@ -174,6 +174,11 @@ try {
       await until("document.querySelector('#header-reading-options').open");
       assert.equal(await evaluate("document.querySelector('#header-reading-options-toggle').getAttribute('aria-expanded')"),'true');
       assert.equal(await evaluate("!!document.querySelector('.feed-pagination').closest('#header-reading-options')"),true);
+      // Responsive reflow/header focus can scroll the feed before its scroll
+      // handler updates jump-to-latest.disabled. Do not snapshot tab order in
+      // that gap: establish a known reading position and await its control state.
+      await evaluate("document.querySelector('#messages').scrollTop=0");
+      await until("document.querySelector('#messages').scrollTop===0 && !document.querySelector('#jump-to-latest').disabled");
       const popupOrder=await evaluate("[...document.querySelector('#header-reading-options').querySelectorAll('button:not(:disabled)')].map(n=>n.id||'close')");
       for(const id of popupOrder) {
         assert.equal(await evaluate("document.activeElement.id||'close'"),id);

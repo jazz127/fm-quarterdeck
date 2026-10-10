@@ -16,7 +16,14 @@ test("default document is the full-height conversation product", async () => {
   assert.match(html, /class="[^"]*\bconversation\b/);
   assert.match(html, /class="context-rail"/);
   assert.match(html, /data-view="overview"/);
-  assert.match(html, /<span>Overview<\/span>/);
+  assert.match(html, /id="fleet-source" class="source-badge" aria-label="Firstmate activity"/);
+  const activityView = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.match(activityView, /seen\.textContent = `Last seen/);
+  assert.match(activityView, /beat\.textContent = `Watcher/);
+  assert.doesNotMatch(activityView, /Last activity seen/);
+  assert.match(html, /<span>Overview <b id="call-badge"/);
+  assert.match(html, /<small>Captain's Call<\/small>/);
+  for (const name of ['patch', 'view', 'live']) assert.ok(html.includes(`<script src="/bearings-${name}.js"></script>`));
   assert.match(html, /data-view="work"/);
   assert.match(html, /id="tight-work"/);
   assert.match(html, /id="large-work"/);
@@ -414,7 +421,10 @@ test("server starts and serves validated configured fleet data", async (context)
   const { port } = server.address();
 
   const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
-  assert.deepEqual(health, { ok: true, service: "fm-quarterdeck" });
+  assert.equal(health.ok, true);
+  assert.equal(health.service, "fm-quarterdeck");
+  assert.equal(health.status, "degraded");
+  assert.equal(health.bearings.state, "loading");
 
   const dashboard = await fetch(`http://127.0.0.1:${port}/api/dashboard`).then((response) => response.json());
   assert.equal(dashboard.fleet.source, "configured status");
@@ -539,6 +549,12 @@ test("live lanes and fleet are derived from a fake FM_HOME", async (context) => 
 
   const dashboard = await fetch(`http://127.0.0.1:${port}/api/dashboard`).then((response) => response.json());
   assert.equal(dashboard.fleet.source, "Firstmate home");
+  for (const activity of [data.firstmateActivity, dashboard.firstmateActivity]) {
+    assert.deepEqual(Object.keys(activity).sort(), ["heartbeatAt", "lastTurnAt", "lastWakeAt", "readAt", "watcherBeatAt"]);
+    assert.equal(activity.lastWakeAt, null);
+    assert.equal(activity.watcherBeatAt, null);
+    assert.ok(Number.isFinite(Date.parse(activity.readAt)));
+  }
   assert.equal(dashboard.fleet.summary.activeAgents, 0, "meta files and captain decisions are not executing workers");
   assert.equal(dashboard.fleet.summary.openDecisions, 1);
   assert.equal(dashboard.fleet.projects[0].name, "Alpha");

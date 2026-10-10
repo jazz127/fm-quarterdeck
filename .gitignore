@@ -4,6 +4,7 @@ __pycache__/
 expenses/.expense_tracker.lock
 prototype/data/review-receipts/
 prototype/data/agent-state.json*
+prototype/data/quarterdeck-preferences.json*
 # Synthetic first-run homes, never installed Firstmate state
 prototype/data/onboarding-test-*/
 .taxonomy-lab/

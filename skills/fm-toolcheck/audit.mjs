@@ -5,14 +5,22 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
+import { quarterdeckReport } from './quarterdeck.mjs';
 
 const args = process.argv.slice(2);
-if (args.includes('--help')) { console.log('Usage: node skills/fm-toolcheck/audit.mjs --firstmate-root /path/to/firstmate [--releases]'); process.exit(0); }
-const idx = args.indexOf('--firstmate-root');
-if (idx < 0 || !args[idx + 1] || args.some((a, i) => !['--firstmate-root', '--releases'].includes(a) && i !== idx + 1)) {
-  console.error('Specify --firstmate-root and optionally --releases'); process.exit(2);
+if (args.includes('--help')) { console.log('Usage: node skills/fm-toolcheck/audit.mjs --firstmate-root /path/to/firstmate [--quarterdeck-root /path/to/fm-quarterdeck] [--releases]'); process.exit(0); }
+const options = {};
+for (let i = 0; i < args.length; i++) {
+  const key = args[i];
+  if (options[key] || !['--firstmate-root', '--quarterdeck-root', '--releases'].includes(key)) { console.error('Invalid or duplicate audit option'); process.exit(2); }
+  if (key === '--releases') options[key] = true;
+  else if (!args[i + 1] || !path.isAbsolute(args[i + 1])) { console.error('Audit roots must be explicit absolute paths'); process.exit(2); }
+  else options[key] = args[++i];
 }
-const root = path.resolve(args[idx + 1]);
+if (!options['--firstmate-root']) { console.error('Specify --firstmate-root'); process.exit(2); }
+const root = path.resolve(options['--firstmate-root']);
+const selectedCheckout = path.resolve(options['--quarterdeck-root'] || path.join(root, 'projects/fm-quarterdeck'));
+const checkout = real(selectedCheckout) || selectedCheckout;
 const bootstrap = fs.readFileSync(path.join(root, 'bin/fm-bootstrap.sh'), 'utf8');
 // Parse ONLY the install_cmd case arms, not lists of all platform requirements or watched tools.
 const installBody = bootstrap.match(/^install_cmd\(\) \{([\s\S]*?)^\}/m)?.[1];
@@ -193,3 +201,12 @@ for (const name of names) {
   console.log('  Upgrade plan: review hashes, provenance, local modifications and compatibility separately; obtain approval before any change');
 }
 if (!count) console.log('No bootstrap-declared tools with explicit Kunchenguid ownership proof found; no general tools substituted.');
+const quarterdeck = await quarterdeckReport(root, checkout, git);
+console.log('\nQuarterdeck integration (fm-quarterdeck; read-only)');
+console.log(`  Checkout: ${quarterdeck.checkout}; local main=${quarterdeck.main || 'unknown (no fetch)'}`);
+console.log(`  Installed pin: ${quarterdeck.installedRevision || 'not installed or unverified'}`);
+console.log(`  status: ${JSON.stringify(quarterdeck.status)}`);
+console.log(`  verify: ${JSON.stringify(quarterdeck.verify)}`);
+console.log(`  Drift: ${quarterdeck.problems.join('; ') || 'none detected'}`);
+console.log(`  Exact reinstall command (review only; NEVER executed): ${quarterdeck.reinstall}`);
+console.log('  Requires approval, reviewed clean checkout on the reported main revision and preserved private config. Changed/unknown artifacts refuse blind uninstall; reconcile with their recorded original owner first. No install, removal or fetch performed.');

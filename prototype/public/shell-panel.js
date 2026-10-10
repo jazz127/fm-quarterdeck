@@ -113,8 +113,16 @@ const mobileDock = document.createElement("nav");
 mobileDock.className = "mobile-dock";
 mobileDock.setAttribute("aria-label", "Quick navigation");
 const quotaGaugeSvg = '<svg class="mobile-quota-gauge" aria-hidden="true" viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5a8 8 0 0 1 15 0"/><path d="M12 16.5 17 10"/><circle cx="12" cy="16.5" r="1.5" fill="currentColor" stroke="none"/></svg>';
-mobileDock.innerHTML = `<button type="button" data-mobile-view="overview"><span aria-hidden="true">▦</span>Overview</button><button type="button" data-mobile-view="conversations" class="mobile-lanes" aria-haspopup="dialog" aria-controls="lane-options" aria-expanded="false" aria-label="Fleet; tap again for fleet and kind filters"><span aria-hidden="true">☷</span>Fleet</button><button type="button" class="mobile-dock-quota" aria-haspopup="dialog" aria-controls="mobile-quota-sheet" aria-expanded="false" aria-label="Quota · n/a"><span class="mobile-quota-mark" aria-hidden="true">${quotaGaugeSvg}</span><span class="mobile-dock-quota-label">Quota</span></button>`;
+mobileDock.innerHTML = `<button type="button" data-mobile-view="overview"><span aria-hidden="true">▦</span>Overview <b id="call-mobile-badge" class="call-badge" hidden>0</b></button><button type="button" data-mobile-view="conversations" class="mobile-lanes" aria-haspopup="dialog" aria-controls="lane-options" aria-expanded="false" aria-label="Fleet; tap again for fleet and kind filters"><span aria-hidden="true">☷</span>Fleet</button><button type="button" class="mobile-dock-quota" aria-haspopup="dialog" aria-controls="mobile-quota-sheet" aria-expanded="false" aria-label="Quota · n/a"><span class="mobile-quota-mark" aria-hidden="true">${quotaGaugeSvg}</span><span class="mobile-dock-quota-label">Quota</span></button>`;
 document.body.append(mobileDock);
+// If the first model beat shell initialization, copy its already-rendered count.
+const callBadge = document.querySelector('#call-badge');
+const mobileCallBadge = mobileDock.querySelector('#call-mobile-badge');
+if (callBadge && mobileCallBadge) {
+  mobileCallBadge.textContent = callBadge.textContent;
+  mobileCallBadge.hidden = callBadge.hidden;
+  mobileCallBadge.setAttribute('aria-label', callBadge.getAttribute('aria-label') || 'Captain\'s Calls');
+}
 const quotaSheet = document.createElement("dialog");
 quotaSheet.className = "mobile-sheet mobile-quota-sheet";
 quotaSheet.id = "mobile-quota-sheet";

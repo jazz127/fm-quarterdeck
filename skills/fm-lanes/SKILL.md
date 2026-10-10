@@ -31,6 +31,10 @@ An implementation slice, worker, branch, task ID, or isolated copy is not a thir
 5. **One Topic Per Block:** Every sentence inside a block must belong to that lane; a reminder or question about another project or decision goes in its own sequential block, never appended to the current one.
 6. **Multiple Lanes:** You may report on multiple distinct projects in a single output by using sequential lane blocks.
 
+## Mechanical syntax preflight
+
+The Quarterdeck-owned `scripts/check-lane-envelopes.mjs` (resolve the repository two parents above this skill directory) validates complete replies via stdin. Use it before sending when available; exit 0 is syntax-only, not proof of topic relevance or ownership. Follow `docs/FIRSTMATE-INTEGRATIONS.md` for approved pinning and optional harness integration. It never rewrites text, picks a lane or installs itself. Historical transcript routing remains unchanged.
+
 ## Examples
 
 ### Correct Usage (Rolling up multiple crewmates)

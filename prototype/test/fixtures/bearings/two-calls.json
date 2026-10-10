@@ -1,0 +1,33 @@
+{
+  "schema": "fm-bearings.v1",
+  "home": "/srv/synthetic/home",
+  "generated": "2026-01-02T03:04:05Z",
+  "prs": "not requested",
+  "in_flight": [
+    { "id": "alpha-call", "kind": "task", "state": "working", "repo": "/srv/synthetic/checkouts/alpha-repo", "name": "Alpha call", "doing": "waiting" },
+    { "id": "beta-merge", "kind": "task", "state": "working", "repo": "/srv/synthetic/checkouts/beta-repo.git", "name": "Beta merge", "doing": "waiting" }
+  ],
+  "decisions_open": [
+    { "id": "alpha-call", "key": "alpha-call", "verb": "captain-hold", "summary": "Pick the alpha rollout window: Report: /srv/synthetic/home/data/alpha/report.md", "owner": "(main)" },
+    { "id": "gamma-credential", "key": "gamma-credential", "verb": "captain-hold", "summary": "Provide the gamma sandbox credential", "owner": "delta-mate" }
+  ],
+  "contributions": {
+    "scope": "owned contributions per home",
+    "known": 12,
+    "checked": 11,
+    "counts": { "captain": 2, "fleet": 1, "maintainer": 0, "nobody": 9 },
+    "complete": false,
+    "proven_clear": false,
+    "unmeasured_homes": 0,
+    "captain_omitted": 0,
+    "captain": [
+      { "task": "beta-merge", "url": "https://example.invalid/synthetic/beta-repo/pull/7", "kind": "pr", "reason": "checks green; merge approval needed", "hold": null, "checked_at": "2026-01-02T03:00:00Z", "owner": "(main)" },
+      { "task": "alpha-call", "url": "https://example.invalid/synthetic/alpha-repo/pull/3", "kind": "pr", "reason": "checks green; merge approval needed", "hold": "alpha-call", "checked_at": "2026-01-02T03:00:00Z", "owner": "(main)" }
+    ]
+  },
+  "omitted": [
+    { "surface": "backlog item bodies", "reveal": "--fields bodies" },
+    { "surface": "captain holds bucketed blocked, dated, or aged: 2", "reveal": "--all-decisions" },
+    { "surface": "live PR discovery + checks", "reveal": "--include-prs" }
+  ]
+}

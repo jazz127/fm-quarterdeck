@@ -33,7 +33,11 @@ test("new and legacy state variables read the same existing owner; conflicting o
     assert.equal(response.status, 200);
     assert.deepEqual((await response.json()).lanes[0].acknowledgements, state.acknowledgements);
     assert.equal(childOwner, file);
-    assert.deepEqual(await (await fetch(`${base}/api/health`)).json(), { ok: true, service: "fm-quarterdeck" });
+    const health = await (await fetch(`${base}/api/health`)).json();
+    assert.equal(health.ok, true);
+    assert.equal(health.service, "fm-quarterdeck");
+    assert.equal(health.status, "degraded");
+    assert.equal(health.bearings.state, "loading");
     assert.equal(await readFile(file, "utf8"), bytes);
   }
   assert.throws(() => createServer({ FM_QUARTERDECK_STATE_PATH: file, FM_AGENTOS_STATE_PATH: path.join(root, "other.json") }, { revisionResolver }), /Conflicting Quarterdeck state owners/);
