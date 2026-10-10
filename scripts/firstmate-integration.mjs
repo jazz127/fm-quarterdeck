@@ -8,7 +8,7 @@ import path from 'node:path';
 import { hookEntry } from './captain-ask-hook-install.mjs';
 
 const source = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const skills = ['fmqd-lanes', 'fmqd-quarterdeck-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
+const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
 // Prior discovery names are inspection-only; the saved journal owns removal.
 const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
 const knownSkills = [...skills, ...legacySkills];

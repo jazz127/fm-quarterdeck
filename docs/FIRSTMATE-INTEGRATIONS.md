@@ -7,7 +7,7 @@ A skill in source is not activated in a Firstmate home. These integrations are o
 | fmqd-lanes | Captain-facing project/theme/General display envelopes; not authority, destination or work ownership | `skills/fmqd-lanes/SKILL.md` |
 | fmqd-toolcheck | Read-only scoped audit of public Kunchenguid-owned tools declared by installed bootstrap; no installs/upgrades | `skills/fmqd-toolcheck/`, [TOOLCHECK.md](TOOLCHECK.md) |
 | fmqd-quartermaster | Explicit advisory outsider review of loops, regressions, architecture and waste; bounded investigations need existing authority, workers gain no delegation authority | `skills/fmqd-quartermaster/SKILL.md` |
-| fmqd-quarterdeck-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fmqd-quarterdeck-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
+| fmqd-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fmqd-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
 | Captain ask Stop hook | Code-enforced structured task markers against selected-home open captain holds; bounded diagnostic fail-open, no model or stock Firstmate edits | `scripts/captain-ask-stop-hook.mjs`, `scripts/captain-ask-hook-install.mjs` |
 | Mechanical helpers | Opt-in lane syntax check, receipt-proven note reply+ack, owned standalone restart after landing; no automatic installation or shared takeover | `scripts/check-lane-envelopes.mjs`, `scripts/quarterdeck-note-close.mjs`, `scripts/quarterdeck-watch.mjs` |
 | Tier-aware delivery | Future Firstmate integration must independently implement/validate the [branch contract](branching-and-preview-model.md) | Not implied by UI labels |
@@ -127,7 +127,7 @@ interruption: prove its owner is gone first. Unrecognized/conflicting destinatio
 refuse adoption even if they look similar. A new pin requires uninstall, then
 install; the operator owns that deliberate two-step update window.
 
-Quarterdeck skill discovery now uses `fmqd-lanes`, `fmqd-quarterdeck-health`,
+Quarterdeck skill discovery now uses `fmqd-lanes`, `fmqd-health`,
 `fmqd-quartermaster` and `fmqd-toolcheck`. The previous names `fm-lanes`,
 `fm-quarterdeck-health`, `fm-quartermaster` and `fm-toolcheck` remain only as
 compatibility evidence in inspection, immutable onboarding templates and migration

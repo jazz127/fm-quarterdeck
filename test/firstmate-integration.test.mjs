@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 
-const skills = ['fmqd-lanes', 'fmqd-quarterdeck-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
+const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
 // Synthetic prior-release discovery names; ownership schema and rollback stay v1.
 const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
 

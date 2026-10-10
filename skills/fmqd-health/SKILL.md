@@ -1,5 +1,5 @@
 ---
-name: fmqd-quarterdeck-health
+name: fmqd-health
 description: Initialize or consume Quarterdeck with a persistent health watcher; on /afk, away mode or quiet supervision, keep the dashboard active and make occasional health check-ins.
 user-invocable: true
 ---

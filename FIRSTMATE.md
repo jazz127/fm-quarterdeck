@@ -59,7 +59,7 @@ preference record; it does not recursively load this reference.
   Never enable Funnel, open public listeners or weaken origin/revision guards.
   Server-side reachability is not proof of a separate user's device access;
   disclose that gap. Follow [launch ownership](docs/tailscale-launch.md) and the
-  [health skill](skills/fmqd-quarterdeck-health/SKILL.md) for exact procedures.
+  [health skill](skills/fmqd-health/SKILL.md) for exact procedures.
 
 ## Lane envelopes and captain calls
 
