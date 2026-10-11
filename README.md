@@ -148,6 +148,8 @@ cd prototype && npm test
 CHROMIUM=/absolute/path/to/chromium npm run test:browser
 # Optional durable desktop/phone review screenshots (synthetic spare-port candidate):
 SCREENSHOT_DIR=/absolute/private/proof node scripts/review-annotation-format-browser-pass.mjs
+# Focused mocked desktop/phone quota age and five-minute source demand:
+node scripts/quota-age-refresh-browser-pass.mjs
 # From repository root:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s expenses
 node --test test/*.test.mjs
