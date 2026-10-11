@@ -252,8 +252,8 @@ FM_QUARTERDECK_TEST_STOCK_ROOT=/absolute/private/stock-export \
   node --test --test-name-pattern='stock follow-on' test/quarterdeck-health.test.mjs
 ```
 
-The test verifies the exported `bin/` SHA-256 tree digest against the assertion in
-[`test/quarterdeck-health.test.mjs`](../test/quarterdeck-health.test.mjs)
+The test verifies the exported `bin/` SHA-256 tree digest
+`5767c03d05550e1c51b253ba5349f58f6de6410f4b1a15ade1f5bd5f00697597`
 (sorted relative filenames, NUL, file bytes, NUL). It copies these unchanged
 scripts into one temporary synthetic home, uses an empty fake tmux surface as
 in stock `tests/wake-helpers.sh`, and registers the actual health checker with

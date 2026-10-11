@@ -45,7 +45,7 @@ The server requires a clean committed checkout and pins its startup revision. Co
 
 - Keep one coherent change per pull request. Explain the problem, resulting behavior and any contract or migration impact using the PR template.
 - For behavior fixes, include a regression that fails before the fix and passes after it. Exercise reload, retries, delivery identity and long histories when affected. Source-string assertions alone do not establish browser behavior; run the browser gate for UI changes and include relevant viewport evidence.
-- Preserve the application in `prototype/`, file/integration contracts, private state ownership and graceful handling of unavailable integrations. Installation and optional push follow the [existing contracts](README.md#install-quarterdeck); offline caching, framework migrations and public multi-user hosting are outside the current source-preview scope.
+- Preserve the application in `prototype/`, file/integration contracts, private state ownership and graceful handling of unavailable integrations. PWA work, framework migrations and public multi-user hosting are outside the current source-preview scope.
 - Keep private runtime files, generated profiles, logs, credentials, local Git metadata and task scratch out of the diff. Use `git diff --check` and inspect both staged and unstaged changes.
 - List commands actually run and results. Mark unavailable real-environment checks explicitly; never equate synthetic acceptance with live Firstmate integration or production readiness.
 
