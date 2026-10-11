@@ -48,10 +48,19 @@ const deadline = setTimeout(() => { console.error('Quota age acceptance deadline
 try {
   const port = await waitForBrowserPort(chrome, profile, { spawnError: () => spawnError, diagnostics: () => diagnostics });
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
-  for (const [width, height, surface] of [[1280, 900, '#sidebar-quota'], [390, 844, '#mobile-quota-sheet']]) {
-    mode = 'fresh'; clock += 300000;
-    await browser('newpage', `http://127.0.0.1:${server.address().port}/#quota`);
+  // Keep the selected owned target across viewport changes; closing it leaves
+  // axi without a selected page for the next navigation.
+  await browser('newpage', 'about:blank');
+  await evaluate(`() => { if(location.href !== 'about:blank')throw Error('unexpected selected fixture target'); return 'owned fixture selected'; }`);
+  const viewports = process.argv.includes('--phone-only') ? [[390, 844, '#mobile-quota-sheet']]
+    : [[1280, 900, '#sidebar-quota'], [390, 844, '#mobile-quota-sheet']];
+  for (const [width, height, surface] of viewports) {
+    mode = 'fresh'; clock += 300000; refreshed = clock; calls = 0;
+    reader = createQuotaReader({ run, now: () => clock, maxAge: '5m' });
+    const target = `http://127.0.0.1:${server.address().port}/#quota`;
+    await browser('open', target);
     await browser('resize', String(width), String(height));
+    await evaluate(`() => { if(location.href !== ${JSON.stringify(target)} || innerWidth !== ${width} || innerHeight !== ${height})throw Error('selected target or viewport mismatch'); return 'target and viewport verified'; }`);
     await until(`document.querySelector('#quota-providers .quota-card') && !document.querySelector('#quota-providers .quota-staleness')`);
     if (width < 720) await evaluate(`() => { document.querySelector('.mobile-dock-quota').click(); return 'opened'; }`);
     await setClock(clock);
@@ -85,12 +94,12 @@ try {
     // A second visible-demand event at the same clock must not schedule another source execution.
     await evaluate(`() => { document.dispatchEvent(new Event('visibilitychange')); document.dispatchEvent(new Event('visibilitychange')); return 'visibility events'; }`);
     assert.equal(calls, before + 1);
-    await browser('closepage', '1');
+    console.log(`Quota ${width}px age, source execution, failure, reuse and recovery checkpoints passed`);
   }
   mode = 'fail'; reader = createQuotaReader({ run, now: () => clock, maxAge: '5m' });
-  await browser('newpage', `http://127.0.0.1:${server.address().port}/#quota`);
+  await browser('open', `http://127.0.0.1:${server.address().port}/#quota`);
   await until(`document.querySelector('#quota-providers').textContent.includes('Quota unavailable')`);
-  console.log('Exact-head desktop/phone age boundary, visible red stale age, five-minute source execution, failure, cached old data, recovery and unavailable acceptance passed');
+  console.log('Exact-head selected viewport age boundary, visible red stale age, five-minute source execution, failure, cached old data, recovery and unavailable acceptance passed');
 } finally {
   clearTimeout(deadline);
   await browser('stop').catch(() => {});
