@@ -59,6 +59,7 @@ const STATIC_FILES = new Map([
   ["/notifications-ui.js", ["notifications-ui.js", "text/javascript; charset=utf-8"]],
   ["/notifications-worker.js", ["notifications-worker.js", "text/javascript; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/chat-ask-extraction.js", ["chat-ask-extraction.js", "text/javascript; charset=utf-8"]],
   ["/sidebar-version.js", ["sidebar-version.js", "text/javascript; charset=utf-8"]],
   ["/work-hierarchy.js", ["work-hierarchy.js", "text/javascript; charset=utf-8"]],
   ["/bulk-controls.js", ["bulk-controls.js", "text/javascript; charset=utf-8"]],
@@ -1126,7 +1127,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/notifications-ui.js", "/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/inbox-pending.js", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/bearings-work.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/notifications-ui.js", "/", "/app.js", "/chat-ask-extraction.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/inbox-pending.js", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/bearings-work.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
   // Live Captain's Call streams (host only; previews poll /api/bearings?since).
   const streamOptions = { heartbeatMs: 20000, recycleMs: 600000, maxStreams: 16, ...bearingsStream };
   const streams = new Set();
