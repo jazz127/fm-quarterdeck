@@ -16,6 +16,8 @@ const tag = 'fm-quarterdeck';
 const marker = '<!-- fm-quarterdeck:integration:v1 -->';
 const endMarker = '<!-- /fm-quarterdeck:integration:v1 -->';
 const pinTagFile = 'fm-quarterdeck.json';
+// Shared modules under public/ that pinned readers import (the Stop hook via chat-asks.js).
+const pinnedPublic = new Set(['prototype/public/chat-ask-extraction.js']);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -107,7 +109,7 @@ async function pinSource(home, revision) {
     const [, mode, blob, name] = match;
     // This is an integration pin, not a second dashboard deployment. Keep
     // shared producer readers, but omit UI assets, tests and browser tooling.
-    if (/^prototype\/(?:public|test|scripts|data)\//.test(name)) continue;
+    if (/^prototype\/(?:public|test|scripts|data)\//.test(name) && !pinnedPublic.has(name)) continue;
     const bytes = git(source, ['cat-file', 'blob', blob]);
     const value = { bytes: bytes.toString('base64'), mode: mode === '100755' ? 0o700 : 0o600 };
     const current = await capture(root, name);
