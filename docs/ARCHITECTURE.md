@@ -34,18 +34,7 @@ Task inbox records are internal steers. Outcomes use recorded epochs. Optional e
 
 ## Message classes
 
-| Kind | Meaning | Default |
-| --- | --- | --- |
-| captain | Stored human turns/notes | on |
-| conversation | Firstmate replies / main mirrors, including inbox replies | on |
-| narration | Pre-tool Firstmate progress | off |
-| supervision | Durable fleet outcome notes | on |
-| thinking | Native stored assistant thinking only | on when available |
-| branch | Crew branch replies | off |
-| crew | Worker status/outbox records | off |
-| tools | Tool calls/results and shell output | off |
-| steer | Internal worker inbox instructions | off |
-| harness | Displayed framework notices | off |
+The [transcript authorship contract](../prototype/TRANSCRIPTS.md#authorship) owns Captain verification, unverified session input and message-kind preferences; the [bounded display contract](../prototype/TRANSCRIPTS.md#bounded-display-contract) owns default visibility. `prototype/public/message-kinds.js` supplies the shared browser catalog. Transcript user roles alone do not establish Captain authorship.
 
 Lane/kind/source/task/search filters intersect. Search is debounced and escaped. Source windows bound transfer while 200-record pages bound DOM work; diagnostics distinguish those limits. Tool density is a synthetic workload consideration, not a public record of an installation's activity.
 

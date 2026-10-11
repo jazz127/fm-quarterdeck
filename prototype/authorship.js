@@ -8,7 +8,8 @@ import { parseReviewNote } from "./review-note.js";
 // its text, clock and record identity, but is shown as unverified input, never as the
 // Captain's and never relabelled Firstmate. Lane routing does not depend on authorship.
 
-// One message kind for every unverified input. It is outside the default feed.
+// API inputs share one kind; selected primary input has a separate display filter
+// whose visibility never changes authorship (TRANSCRIPTS.md "Authorship").
 export const UNVERIFIED_INPUT = Object.freeze({ role: "input", state: "input", kind: "input" });
 
 const SESSION_INPUT_AUTHOR = { "main Claude": "Claude session input" };

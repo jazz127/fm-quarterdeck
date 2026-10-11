@@ -47,7 +47,7 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Those tabs are one segmented control: a single ink border and hard shadow, with the selected tab in the accent fill.
 - Second mates occupy a separate section below the columns, outside all four phone tab panels, so they stay visible on every tab. [Work taxonomy](WORK-TAXONOMY.md#explicit-three-level-navigation) owns their sources and visibility.
 - Chat asks keep a double left border at the same width as other cards, so the mark does not indent the card. Also asked in chat stacks on its own line and does not widen the context column.
-- A decision title is the filed hold's full reason when one is recorded. Also asked in chat is a smaller secondary line, and a `[task:...]` marker is omitted. Reply phrases from that ask are option choices under the reason.
+- Decision title and board-text precedence follow [rich cards](BEARINGS.md#rich-cards-and-upstream-data-gap). Also asked in chat is a smaller secondary line, and a `[task:...]` marker is omitted. Reply phrases from that ask are option choices under the reason.
 - Captain's Call answer forms separate source context from input with a quiet rule; option cards use native radios, a textual Recommended chip and visible keyboard focus. All call buttons and option targets are at least 44px high. Confirmation and receipt panels retain readable text (disabled fields use muted ink, not whole-form opacity), and phone actions wrap without overflow.
 - A lettered choice uses the same radio row.
   The letter is the label, and the line's description sits under it.
