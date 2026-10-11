@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises
 import os from 'node:os';
 import path from 'node:path';
 import { readUnreadableChildren } from '../unreadable-child-records.js';
-import { projectUnderwayRecords } from '../underway-records.js';
+import { currentPipeline, projectUnderwayRecords, workerSpawnTime } from '../underway-records.js';
 import { readConfinedFile } from '../private-runtime.js';
 import { backlogWorkRepos, contentRevision, createBearingsHub, normalizeSnapshot } from '../bearings.js';
 import { composeCallModel } from '../chat-asks.js';
@@ -45,6 +45,106 @@ async function unreadableFixture(run) {
   };
   try { await run({ root, now, snapshot, put, addHome }); } finally { await rm(root, { recursive: true, force: true }); }
 }
+
+test('worker start is the producer incarnation timestamp, never a task date or estimated clock', () => {
+  const observed = '2026-01-02T12:00:00.000Z';
+  const epoch = Date.parse('2026-01-02T11:00:00.000Z') / 1000;
+  assert.equal(workerSpawnTime(`s${epoch}.123.7`, observed), '2026-01-02T11:00:00.000Z');
+  assert.equal(workerSpawnTime(`s${epoch + 1800}.124.8`, observed), '2026-01-02T11:30:00.000Z');
+  for (const generation of [null, 'sample-generation', String(epoch), `s${epoch}.0.7`, `s${epoch}.123.32768`, `s${epoch + 7200}.123.7`, 's9999999999999.123.7']) {
+    assert.equal(workerSpawnTime(generation, observed), null);
+  }
+  assert.equal(workerSpawnTime(`s${epoch}.123.7`, undefined), null);
+});
+
+test('pipeline position uses only fresh attributed current workflow evidence and keeps omitted substeps unknown', () => {
+  const now = Date.parse('2026-01-02T12:00:00.000Z');
+  const state = (value, detail, extra = {}) => ({ state: value, source: 'run-step', detail, observed_at: new Date(now).toISOString(), freshness: 'fresh', ...extra });
+  const pipeline = current => currentPipeline(current, { now });
+  assert.deepEqual(pipeline(state('working', 'validating (running) · run: sample-run')), { position: 'validating', substep: null, milestones: [] });
+  assert.equal(pipeline(state('working', 'validating (fixing)')).position, 'validating');
+  assert.equal(pipeline(state('working', 'ci running')).position, 'checks');
+  for (const step of ['review', 'test', 'docs', 'lint']) assert.equal(pipeline(state('parked', `parked at ${step}: 2 finding(s)`)).substep, step);
+  assert.equal(pipeline(state('done', 'run passed: PR open')).position, 'PR open');
+  assert.deepEqual(pipeline(state('done', 'checks green: PR ready for review (still monitoring for merge/close)')),
+    { position: 'ready for review', substep: null, milestones: ['checks green'] });
+  assert.equal(pipeline(state('done', 'checks green: PR held for merge (ci monitor ended)')).position, 'awaiting merge');
+  assert.equal(pipeline(state('done', 'run passed: PR merged')).position, 'merged');
+  for (const current of [
+    state('working', 'validating (running)', { source: 'status-log' }),
+    state('working', 'harness busy (implementing)', { source: 'pane' }),
+    state('unknown', 'run records disagree; run ids: sample-run'),
+    state('done', 'run passed: PR state unknown (forge read skipped)'),
+    state('done', 'run completed'), state('done', 'ci running'),
+    state('working', 'validating (running)', { freshness: 'stale' }),
+    state('working', 'validating (running)', { observed_at: new Date(now - 301000).toISOString() }),
+    state('working', 'validating (running)', { observed_at: new Date(now + 1000).toISOString() }),
+    state('working', 'validating (running)', { observed_at: null }),
+  ]) assert.equal(pipeline(current).position, 'unknown');
+  assert.equal(currentPipeline(state('working', 'validating (running)'), { now, cached: true }).position, 'unknown');
+});
+
+test('worker start and pipeline renderer localizes the stable instant and discloses missing fields accessibly', () => {
+  const dom = callDom(), context = vm.createContext({ window: {}, document: dom.document });
+  vm.runInContext(readFileSync(new URL('../public/bearings-work.js', import.meta.url), 'utf8'), context);
+  const at = '2026-01-02T11:00:00.000Z';
+  const card = { type: 'underway', title: 'Build sample', home: 'home-alpha', task: 'home-alpha/build', startedAt: at,
+    pipeline: { position: 'ready for review', substep: null, milestones: ['checks green'] } };
+  const node = dom.document.createElement('article'); node.innerHTML = context.window.bearingsWork.cardHtml(card);
+  assert.equal(node.querySelector('time').getAttribute('datetime'), at);
+  assert.equal(node.querySelector('time').getAttribute('title'), `Current worker spawn time: ${at}`);
+  assert.match(node.querySelector('[data-work-pipeline]').textContent, /Pipeline: ready for review.*completed milestone: checks green/);
+  assert.ok(node.querySelector('[data-work-start]').textContent.includes(new Date(at).toLocaleString()));
+  vm.runInContext(`Date.prototype.toLocaleString = function () { return 'viewer local date and time'; }`, context);
+  assert.match(context.window.bearingsWork.startedHtml(at), /viewer local date and time/);
+  assert.equal(context.window.bearingsWork.startedHtml('2026-01-02'), 'Worker started: unknown');
+  assert.equal(context.window.bearingsWork.pipelineText({ position: 'validating', substep: null }), 'Pipeline: validating · substep unknown');
+  assert.match(context.window.bearingsWork.cardHtml({ ...card, startedAt: null, pipeline: null }), /Worker started: unknown.*Pipeline: unknown/s);
+});
+
+test('readable and unreadable registered children retain membership while optional start/pipeline evidence obeys the same generation guards', async () => {
+  await unreadableFixture(async ({ snapshot, now, addHome, put }) => {
+    const unreadable = await addHome('home-alpha'), readable = await addHome('home-beta');
+    const spawn = `s${Math.floor(now / 1000) - 60}.123.7`;
+    for (const home of [unreadable, readable]) await put(home, 'state/build.meta', `endpoint_task_id=build\nkind=ship\nspawn_gen=${spawn}\nbackend=orca\nterminal=sample-terminal\n`);
+    readable.current.state = 'active_child_work'; readable.invalidity = { kind: null, ids: [] }; readable.reconcile_inventory = { kind: null, ids: [] };
+    readable.provenance.summary_valid = true; readable.provenance.trust = 'complete';
+    readable.active_children = [{ id: 'build', name: 'Readable sample', kind: 'ship', state: 'working', source: 'run-step', doing: 'validating (running)' }];
+    readable.endpoints[0].state = 'working'; readable.endpoints[0].source = 'run-step';
+    const project = async options => projectUnderwayRecords(snapshot, await readUnreadableChildren(snapshot, { now, ...options }));
+    const work = await project();
+    assert.equal(work.rows[0].startedAt, new Date(now - 60000).toISOString());
+    assert.equal(work.rows[0].stage, 'running (state not readable)'); assert.equal(work.rows[0].pipeline.position, 'unknown');
+    assert.equal(work.rows[1].startedAt, new Date(now - 60000).toISOString()); assert.equal(work.rows[1].pipeline.position, 'validating');
+    await rm(path.join(readable.home, 'state/build.meta'));
+    const missing = await project();
+    assert.equal(missing.rows.length, 2); assert.equal(missing.rows[1].startedAt, null); assert.equal(missing.rows[1].pipeline.position, 'unknown');
+    await put(readable, 'state/build.meta', `endpoint_task_id=build\nkind=ship\nspawn_gen=${spawn}\nbackend=orca\nterminal=sample-terminal\n`);
+    const changed = await project({ read: async file => {
+      const bytes = await readConfinedFile(file);
+      if (file === path.join(readable.home, 'state/build.meta')) await put(readable, 'state/build.meta', `endpoint_task_id=build\nkind=ship\nspawn_gen=s${Math.floor(now / 1000) - 30}.124.8\nbackend=orca\nterminal=sample-terminal\n`);
+      return bytes;
+    } });
+    assert.equal(changed.rows.length, 2); assert.equal(changed.rows[1].startedAt, null); assert.equal(changed.rows[1].pipeline.position, 'unknown');
+    readable.freshness.status = 'cached';
+    const stale = await project(); assert.equal(stale.rows[1].pipeline.position, 'unknown'); assert.equal(stale.rows[1].startedAt, null);
+  });
+});
+
+test('main-home delivery and scout rows preserve identity with honest missing time/workflow data', () => {
+  const now = new Date().toISOString(), epoch = Math.floor(Date.parse(now) / 1000) - 60;
+  const working = { state: 'working', source: 'run-step', detail: 'ci running', freshness: 'fresh', observed_at: now };
+  const snapshot = { schema: 'fm-fleet-snapshot.v1', generated: now, tasks: [
+    { id: 'build', kind: 'ship', mode: 'delivery', spawn_gen: `s${epoch}.123.7`, current_state: working },
+    { id: 'notes', kind: 'scout', spawn_gen: 'legacy-token', current_state: { ...working, source: 'pane', detail: 'harness busy' }, pr: { url: 'https://example.invalid/sample/app/pull/7' } },
+    { id: 'changed', kind: 'ship', spawn_gen: `s${epoch}.123.8`, current_state: { state: 'unknown', source: 'none', detail: 'task generation changed during snapshot' } },
+  ], secondmate_current: { registry: { available: true }, records: [] } };
+  const work = projectUnderwayRecords(snapshot);
+  assert.equal(work.rows[0].pipeline.position, 'checks'); assert.ok(work.rows[0].startedAt);
+  assert.equal(work.rows[1].pipeline.position, 'unknown'); assert.equal(work.rows[1].startedAt, null);
+  assert.equal(work.rows[2].startedAt, null); assert.equal(work.rows[2].pipeline.position, 'unknown');
+  assert.deepEqual(work.rows.map(row => row.id), ['build', 'notes', 'changed']);
+});
 
 test('unreadable-state projection retains matching in-flight work with exact label, reason and cross-home identity', async () => {
   await unreadableFixture(async ({ snapshot, now, addHome }) => {

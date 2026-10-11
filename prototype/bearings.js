@@ -591,7 +591,12 @@ function workSection(raw, source, section) {
     rows.push(withRev({ key: `${section}:${owner || ""}:${id}`, type: section, task: id, title,
       repo: repoName(row.repo), owner,
       ...(section === "underway" ? { home: owner === "(main)" ? "Main home" : owner,
-        stage: publicText(row.quarterdeckStage, Infinity) || "Stage unavailable" } : {}),
+        stage: publicText(row.quarterdeckStage, Infinity) || "Stage unavailable",
+        startedAt: isoDate(row.startedAt),
+        pipeline: row.pipeline && ["unknown", "validating", "checks", "validation decision", "ready for review", "awaiting merge", "merged", "PR open"].includes(row.pipeline.position)
+          ? { position: row.pipeline.position, substep: ["review", "test", "docs", "lint"].includes(row.pipeline.substep) ? row.pipeline.substep : null,
+            milestones: Array.isArray(row.pipeline.milestones) && row.pipeline.milestones.includes("checks green") ? ["checks green"] : [] }
+          : { position: "unknown", substep: null, milestones: [] } } : {}),
       kind: warning ? "warning" : section === "charted" ? "queued" : token(row.kind),
       state: section === "underway" ? token(row.state) : null,
       doing: section === "underway" ? publicText(row.doing, Infinity) : null,

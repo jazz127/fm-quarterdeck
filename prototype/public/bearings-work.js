@@ -2,6 +2,18 @@
 window.bearingsWork = (() => {
   const labels = { underway: "Underway", charted: "Charted Next" };
   const escape = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+  function startedHtml(at) {
+    const time = typeof at === "string" && /^\d{4}-\d\d-\d\dT/.test(at) && Number.isFinite(Date.parse(at)) ? new Date(at) : null;
+    return time ? `Worker started: <time datetime="${escape(time.toISOString())}" title="Current worker spawn time: ${escape(time.toISOString())}">${escape(time.toLocaleString())}</time>`
+      : "Worker started: unknown";
+  }
+  function pipelineText(pipeline) {
+    const position = pipeline?.position || "unknown", notes = [];
+    if (["validating", "validation decision"].includes(position)) notes.push(`substep ${pipeline?.substep || "unknown"}`);
+    if (["checks", "PR open"].includes(position)) notes.push("check result unknown");
+    if (pipeline?.milestones?.length) notes.push(`completed milestone: ${pipeline.milestones.join(", ")}`);
+    return `Pipeline: ${position}${notes.length ? " · " + notes.join(" · ") : ""}`;
+  }
   function cardHtml(card) {
     const underway = card.type === "underway";
     const badge = underway ? card.stage || "Stage unavailable" : card.kind === "warning" ? "Needs repair" : "Waiting";
@@ -10,6 +22,7 @@ window.bearingsWork = (() => {
     return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${escape(badge)}</span>${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${clock ? `<span class="call-age">${escape(clock)}</span>` : ""}</header>
       <h3>${escape(card.title)}</h3>
       ${underway ? `<p class="call-meta" data-work-home>Home: ${escape(card.home || "Home unavailable")}</p>` : ""}
+      ${underway ? `<p class="call-meta" data-work-start>${startedHtml(card.startedAt)}</p><p class="call-meta" data-work-pipeline>${escape(pipelineText(card.pipeline))}</p>` : ""}
       ${detail ? `<p class="call-meta">${escape(detail)}</p>` : ""}
       ${card.blockedBy ? `<p class="call-meta">Blocked by: ${escape(card.blockedBy)}</p>` : ""}
       <p class="call-meta">${escape([underway ? card.kind : card.owner, card.task].filter(Boolean).join(" · "))}</p>
@@ -68,5 +81,5 @@ window.bearingsWork = (() => {
     render();
     return { count, update(next) { model = next; render(); }, observe(freshness) { model = { ...model, ...freshness }; render(); } };
   }
-  return { createController, cardHtml };
+  return { createController, cardHtml, startedHtml, pipelineText };
 })();
