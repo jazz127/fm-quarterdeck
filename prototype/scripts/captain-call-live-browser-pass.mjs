@@ -495,7 +495,14 @@ try {
       return 'native keyboard link activation and next focus';
     }`);
     const work = exec('chrome-devtools-axi', ['run'], { env, timeout: 45000, maxBuffer: 1024 * 1024 });
-    work.child.stdin.end(`await page.click('[data-call-key="decision:alpha-call"] .call-thread-text a[href="https://example.invalid/acme/example-app/guide"]'); console.log('thread link activated');`);
+    work.child.stdin.end(`
+      const snapshot = await page.snapshot();
+      const link = snapshot.split('\\n').filter(line => line.includes('link "https://example.invalid/acme/example-app/guide"')).at(-1);
+      const ref = link?.match(/uid=(\\S+)/)?.[1];
+      if (!ref) throw Error('recorded reply link accessibility reference missing');
+      await page.click('@' + ref);
+      console.log('native thread link activated');
+    `);
     results.push((await work).stdout);
     await evaluate(`() => {
       const activations = window.__linkActivations.splice(0);
