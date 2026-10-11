@@ -238,7 +238,7 @@ test("desktop control and persistent review footer keep gesture and action order
 
 test("composer uses one Send and places the existing Annotate action beside desktop controls", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send<\/button><\/div><\/form>/);
+  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" form="review-form" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send<\/button><\/div><\/form>/);
   assert.match(css, /\.review-actions \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.review-actions button \{ min-width: 0;/);
   const review = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
