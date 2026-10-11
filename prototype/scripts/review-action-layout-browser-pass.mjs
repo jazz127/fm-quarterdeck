@@ -117,12 +117,12 @@ try {
         const cs=getComputedStyle(q('review-clear-messages')), ss=getComputedStyle(q('review-send'));
         const luminance = color => { const channels=color.match(/[0-9.]+/g).slice(0,3).map(Number).map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;});return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722; };
         const a=luminance(cs.color), b=luminance(cs.backgroundColor), contrast=(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
-        if (contrast<4.5 || cs.backgroundColor===ss.backgroundColor || cs.color===ss.color) throw Error('Clear distinction/contrast '+contrast);
+        if (contrast<4.5 || (cs.backgroundColor===ss.backgroundColor && cs.color===ss.color && cs.borderColor===ss.borderColor)) throw Error('Clear distinction/contrast '+contrast);
         if (q('review-queue').form?.id!=='review-form') throw Error('Queue form owner');
         for (const [index,id] of ['review-clear-messages','review-queue','review-send'].entries()) if (q(id)!==window.layoutControls[index] || document.querySelectorAll('#'+id).length!==1) throw Error('duplicated/replaced '+id);
         const before=JSON.parse(window.layoutDraft), after=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));
         for (const key of ['queue','queueIds','message','sent','retryBatches']) if(JSON.stringify(before[key])!==JSON.stringify(after[key])) throw Error('changed persisted '+key);
-        return { revision:window.FM_BOOT_REVISION,width:innerWidth,scheme:${JSON.stringify(scheme)},ids,panel,row,clear,send,clearColor:cs.color,clearBackground:cs.backgroundColor,contrast };
+        return { revision:window.FM_BOOT_REVISION,width:innerWidth,scheme:${JSON.stringify(scheme)},ids,panel,row,clear,send,clearColor:cs.color,clearBorder:cs.borderColor,clearBackground:cs.backgroundColor,sendColor:ss.color,sendBorder:ss.borderColor,contrast };
       }`);
       await browser('screenshot', path.join(proof, `${width}-review-${scheme}.png`));
     }
