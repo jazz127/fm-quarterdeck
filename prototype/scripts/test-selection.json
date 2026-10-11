@@ -23,6 +23,7 @@
     "test/health-preferences-ui.test.js",
     "test/history-limits.test.js",
     "test/history-reader.test.js",
+    "test/history-validation-observer.test.js",
     "test/inbox-batcher.test.js",
     "test/inbox-pending-ui.test.js",
     "test/layout-correction.test.js",
