@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import { claudeProjectDirectory } from '../prototype/claude-transcript.js';
 
+import { frontmatterModel } from './helpers/declarative.mjs';
+
 const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
 // Synthetic prior-release discovery names; ownership schema and rollback stay v1.
 const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
@@ -80,7 +82,7 @@ test('canonical skill directories and frontmatter declare only the four fmqd nam
   assert.deepEqual((await readdir(root)).sort(), [...skills].sort());
   for (const name of skills) {
     const body = await readFile(new URL(`${name}/SKILL.md`, root), 'utf8');
-    assert.match(body, new RegExp(`^---\nname: ${name}\n`));
+    assert.equal(frontmatterModel(body).name, name);
   }
 });
 

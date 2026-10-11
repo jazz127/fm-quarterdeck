@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { htmlModel } from "./helpers/html-model.mjs";
+import { parseCss, computed, element } from "./helpers/css-model.mjs";
 
 const script = await readFile(new URL("../public/review-target.js", import.meta.url), "utf8") + "\n" + await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
 const openSent = (page, open) => { const sent = page.element("review-sent"); sent.open = open; sent.listeners.toggle(); };
@@ -301,49 +303,80 @@ test("phone Review tab sends the queue, not the hidden composer text; Message ta
   assert.equal(p.state().sent.length, 2);
 });
 
-test("review panel keeps desktop Sent/Queued sections and phone Message/Review tabs, split at the 720px breakpoint", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
-  const start = html.indexOf('<aside id="review-panel"');
-  const panel = html.slice(start, html.indexOf("</aside>", start));
-  // Desktop: collapsed Sent over always-visible Queued.
-  assert.match(panel, /<details id="review-sent"(?![^>]*\bopen\b)[^>]*>\s*<summary id="review-sent-summary"[^>]*><span>Sent<\/span> <span id="review-sent-count"/);
-  assert.match(panel, /<section id="review-queued"[^>]*>[\s\S]*Queued <span id="review-queued-count"[\s\S]*id="review-thread"/);
-  assert.ok(panel.indexOf('id="review-sent"') < panel.indexOf('id="review-queued"'), "Sent stacks above Queued");
-  // Phone: the original Message/Review tabs and one combined history thread.
-  assert.match(panel, /id="review-conversation-tab"[^>]*>Message<[\s\S]*id="review-history-tab"[^>]*aria-controls="review-phone-thread"[^>]*>Review</);
-  assert.match(panel, /id="review-phone-thread"[^>]*hidden/);
-  // Hidden by default (desktop); revealed only inside the phone breakpoint.
-  const phoneAt = css.indexOf("@media (max-width: 720px)");
-  assert.match(css.slice(0, phoneAt), /^\.review-tabs, #review-phone-thread \{ display: none; \}/m);
-  const phoneCss = css.slice(phoneAt);
-  assert.match(phoneCss, /\.review-panel \.review-tabs \{ display: flex/);
-  assert.match(phoneCss, /\.review-panel \.review-sent, \.review-panel \.review-queued \{ display: none/);
-  assert.match(phoneCss, /\.review-panel header:has\(\.review-tabs\) > strong \{ display: none; \}/);
-  assert.match(phoneCss, /\[data-review-tab="review"\] #review-phone-thread:not\(\[hidden\]\)/);
-  // The desktop header title still shrinks and wraps beside Close.
-  assert.match(css, /\.review-panel header > strong \{[^}]*flex: 1 1 0;[^}]*min-width: 0;[^}]*overflow-wrap: anywhere/);
-  assert.match(css, /\.review-header-actions \{[^}]*flex: 0 0 auto/);
-  const batchCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
-  assert.match(batchCss, /\.review-batch > summary \{[^}]*font-size: 12px;[^}]*line-height: 1\.25;[^}]*white-space: nowrap/);
-  assert.match(batchCss, /\.review-note-text,\n\.review-batch > p \{ font-size: 12px; line-height: 1\.25; \}/);
-  assert.match(batchCss, /\.review-note-text,\n\.review-note-preview,\n\.review-batch > p,\n\.review-batch-full,\n\.review-batch-label,\n\.review-batch-meta time \{[^}]*-webkit-user-select: text; user-select: text; \}/);
-  assert.doesNotMatch(batchCss, /\.review-note-full \{[^}]*font-size:/);
-  assert.match(batchCss, /\.review-batch-label \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap/);
-  assert.match(batchCss, /\.review-batch\[open\] > summary \.review-batch-full \{[^}]*white-space: normal/);
-  assert.doesNotMatch(css.slice(0, phoneAt), /header:has\(\.review-tabs\)/);
+test("review panel keeps desktop history and phone tabs at the 720px breakpoint", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  const rules = parseCss(await readFile(new URL('../public/shell-panel.css', import.meta.url), 'utf8'));
+  const sent = html.one('#review-sent'), queued = html.one('#review-queued');
+  assert.equal(html.one('#review-panel').attrs.hidden, '');
+  assert.equal(html.one('#review-panel-toggle').attrs['aria-controls'], 'review-panel');
+  assert.equal(html.one('#review-panel-toggle').attrs.hidden, undefined);
+  assert.equal(sent.tag, 'details');
+  assert.equal(sent.attrs.open, undefined);
+  assert.equal(queued.tag, 'section');
+  assert.equal(sent.parent, queued.parent);
+  assert.ok(sent.parent.children.indexOf(sent) < queued.parent.children.indexOf(queued));
+  assert.equal(html.one('#review-conversation-tab').textContent, 'Message');
+  assert.equal(html.one('#review-history-tab').textContent, 'Review');
+  assert.equal(html.one('#review-history-tab').attrs['aria-controls'], 'review-phone-thread');
+  assert.equal(html.one('#review-phone-thread').attrs.hidden, '');
+  const tabs = html.one('.review-tabs');
+  assert.equal(computed(rules, tabs, 721).display, 'none');
+  assert.equal(computed(rules, html.one('#review-phone-thread'), 721).display, 'none');
+  for (const width of [360, 390, 720]) {
+    assert.equal(computed(rules, tabs, width).display, 'flex');
+    assert.equal(computed(rules, sent, width).display, 'none');
+    assert.equal(computed(rules, queued, width).display, 'none');
+    assert.equal(computed(rules, html.one('#review-panel header > strong'), width).display, 'none');
+  }
+  const title = computed(rules, html.one('#review-panel header > strong'), 721);
+  assert.equal(title.flex, '1 1 0');
+  assert.equal(title['min-width'], '0');
+  assert.equal(title['overflow-wrap'], 'anywhere');
+  assert.equal(computed(rules, html.one('.review-header-actions'), 721).flex, '0 0 auto');
 });
 
-test("compact review keeps its receipt summary and accessible history in the Sent section", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
-  const client = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
-  assert.match(html, /id="review-sent-summary" aria-label="Sent batches, 0"/);
-  assert.match(html, /id="review-inline-summary" aria-hidden="true"/);
-  assert.match(css, /\.mobile-dock \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(css, /\.review-sent:not\(\[open\]\) > \.review-thread \{ display: none/);
-  assert.match(client, /el\("review-inline-summary"\)\.textContent = compactSummary/);
-  assert.match(client, /if \(sentOpen\) void refreshStatuses\(\)/);
+test("review text remains selectable and expanded batch labels wrap", async () => {
+  const rules = parseCss(await readFile(new URL('../public/styles.css', import.meta.url), 'utf8'));
+  const batch = element('details', ['review-batch']);
+  const summary = element('summary', [], {}, batch);
+  const full = element('span', ['review-batch-full'], {}, summary);
+  const label = element('span', ['review-batch-label'], {}, summary);
+  const meta = element('span', ['review-batch-meta'], {}, summary);
+  const time = element('time', [], {}, meta);
+  const text = element('p', ['review-note-text']);
+  const preview = element('p', ['review-note-preview']);
+  const note = element('p', [], {}, batch);
+  for (const width of [360, 390, 1280]) {
+    for (const node of [text, preview, note, full, label, time]) {
+      const style = computed(rules, node, width);
+      assert.equal(style['user-select'], 'text');
+      assert.equal(style['-webkit-user-select'], 'text');
+    }
+    for (const node of [summary, text, note]) {
+      const style = computed(rules, node, width);
+      assert.equal(style['font-size'], '12px');
+      assert.equal(style['line-height'], '1.25');
+    }
+    assert.equal(computed(rules, summary, width)['white-space'], 'nowrap');
+    assert.equal(computed(rules, label, width)['text-overflow'], 'ellipsis');
+    assert.equal(computed(rules, label, width)['white-space'], 'nowrap');
+    batch.attrs.open = '';
+    assert.equal(computed(rules, full, width)['white-space'], 'normal');
+    delete batch.attrs.open;
+  }
+});
+
+test("compact review exposes an accessible receipt summary and hides collapsed history", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  assert.equal(html.one('#review-sent-summary').attrs['aria-label'], 'Sent batches, 0');
+  assert.equal(html.one('#review-inline-summary').attrs['aria-hidden'], 'true');
+  const rules = parseCss(await readFile(new URL('../public/shell-panel.css', import.meta.url), 'utf8'));
+  const sent = element('details', ['review-sent']);
+  const thread = element('div', ['review-thread'], {}, sent);
+  assert.equal(computed(rules, thread, 1280).display, 'none');
+  sent.attrs.open = '';
+  assert.notEqual(computed(rules, thread, 1280).display, 'none');
+  assert.equal(computed(rules, element('nav', ['mobile-dock']), 390)['grid-template-columns'], 'repeat(4, minmax(0, 1fr))');
 });
 
 test("phone visual viewport keeps composer above keyboard and restores navigation reserve", async () => {
@@ -844,11 +877,16 @@ test("Review relocates the same actions in Clear/Queue/Send order and restores M
     assert.equal(p.context.document.activeElement, send, "moving a focused Send retains focus");
     assert.deepEqual(p.state(), before, "layout moves leave all persisted composer state intact");
   }
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(html, /id="review-queue"[^>]*form="review-form"/);
-  assert.ok(html.indexOf('id="review-history-actions"') > html.indexOf('id="review-form"'));
-  for (const id of [clear.id, queue.id, send.id]) assert.equal(html.split(`id="${id}"`).length - 1, 1);
-  const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
-  assert.match(css, /#review-clear-messages \{ background: var\(--surface\); color: var\(--danger\); border-color: var\(--danger\); \}/);
-  assert.match(css, /#review-history-actions button \{ min-height: 44px; \}/);
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  assert.equal(html.one('#review-queue').attrs.form, 'review-form');
+  for (const id of [clear.id, queue.id, send.id]) assert.equal(html.all(`#${id}`).length, 1);
+  const rules = parseCss(await readFile(new URL('../public/styles.css', import.meta.url), 'utf8'));
+  const clearStyle = computed(rules, html.one('#review-clear-messages'));
+  assert.equal(clearStyle.background, 'var(--surface)');
+  assert.equal(clearStyle.color, 'var(--danger)');
+  assert.equal(clearStyle['border-color'], 'var(--danger)');
+  const actionsOwner = element('div', [], {}, null, 'review-history-actions');
+  for (const width of [360, 390, 721, 1280]) {
+    assert.equal(computed(rules, element('button', [], {}, actionsOwner), width)['min-height'], '44px');
+  }
 });

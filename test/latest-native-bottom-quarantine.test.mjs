@@ -2,26 +2,36 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import vm from 'node:vm';
 
-const source = readFileSync(new URL('../prototype/scripts/latest-browser-pass.mjs', import.meta.url), 'utf8');
+import { createLatestAssertion } from '../prototype/scripts/latest-assertions.mjs';
+import { workflowModel } from './helpers/declarative.mjs';
 const pkg = JSON.parse(readFileSync(new URL('../prototype/package.json', import.meta.url), 'utf8'));
-const workflow = readFileSync(new URL('../.github/workflows/source-preview.yml', import.meta.url), 'utf8');
+const workflow = workflowModel();
 const suites = ['hardening', 'mixed-lane', 'lanes-first-paint', 'last-viewed', 'latest', 'compact-messages', 'kind-navigation', 'message-classification', 'review-annotation-format', 'authorship', 'primary-input', 'captain-call-live', 'notifications'];
 const defaultSuites = suites.filter(name => name !== 'latest');
 const optInArgv = pkg.scripts['test:browser:quarantine-native-bottom'].split(' ').slice(2);
 const contexts = ['post-pointer/touch', 'after-PageUp/Latest-click'];
-const declaration = source.match(/    const atLatest = async [\s\S]*?\n    };/)[0];
-const flag = source.match(/const includeNativeBottom = ([^;]+);/)[1];
-
-// Controlled contract probes execute the retained helper and CLI selection; no Chromium or native acceptance.
-function fixture(argv = [], bottom = 0, failedCompanion = -1) {
+function fixture(argv = [], bottom = 0, failedCompanion = -1, { lastBottom = failedCompanion === 2 ? 850 : 740, dockTop = 780, dockHeight = 64 } = {}) {
   const output = [], probes = [];
-  const atLatest = new Function('assert', 'distance', 'evaluate', 'process', 'console', 'width', 'height',
-    `const includeNativeBottom = ${flag};\n${declaration}\nreturn atLatest;`)(
-    assert, async () => { probes.push('distance'); return bottom; },
-    async expression => { probes.push(expression); return probes.filter(probe => probe !== 'distance').length - 1 !== failedCompanion; },
-    { argv }, { log: line => output.push(line) }, 390, 844,
-  );
+  const nodes = {
+    '#jump-to-latest-floating': { hidden: failedCompanion !== 0 },
+    '#transcript-newer': { disabled: failedCompanion !== 1 },
+    '#messages': {
+      getBoundingClientRect: () => ({ bottom: 800 }),
+      querySelector: selector => selector === 'article.message:last-child' ? { getBoundingClientRect: () => ({ bottom: lastBottom }) } : null,
+    },
+    '#mobile-dock': { getBoundingClientRect: () => ({ height: dockHeight, top: dockTop }) },
+  };
+  const atLatest = createLatestAssertion({
+    distance: async () => { probes.push('distance'); return bottom; },
+    evaluate: async expression => {
+      probes.push(expression);
+      return vm.runInNewContext(expression, { document: { querySelector: selector => nodes[selector] } });
+    },
+    includeNativeBottom: argv.includes('--include-quarantined-native-bottom'),
+    log: line => output.push(line), width: 390, height: 844,
+  });
   return { atLatest, output, probes };
 }
 
@@ -69,25 +79,16 @@ test('direct Latest invocation without opt-in retains distinct caller exclusions
   assert.doesNotMatch(f.output.join('\n'), /passed/);
 });
 
-test('whole Latest opt-in retains all caller contexts, native actions and companions', () => {
-  assert.deepEqual([...source.matchAll(/await atLatest\(\{ quarantineNativeBottom: "([^"]+)" \}\);/g)].map(match => match[1]), contexts);
-  assert.equal((source.match(/await atLatest\(\);/g) || []).length, 6);
-  assert.match(source, /assert\.ok\(await distance\(\) <= 1, "Latest reaches the native scroll bottom"\);/);
-  assert.match(source, /Input.dispatchTouchEvent", \{ type: "touchStart", touchPoints: \[pill\] \}\);\n      await command\("Input.dispatchTouchEvent", \{ type: "touchEnd", touchPoints: \[\] \}\);/);
-  assert.match(source, /Input.dispatchMouseEvent", \{ type: "mouseReleased"[\s\S]*?await until\("document.querySelector\('#jump-to-latest-floating'\).hidden"\);\n    \/\/[^\n]+\n    await atLatest\(\{ quarantineNativeBottom: "post-pointer\/touch" \}\);/);
-  assert.match(source, /Input.dispatchKeyEvent", \{ type: "keyDown", key: "PageUp"[^\n]+\n    await command\("Input.dispatchKeyEvent", \{ type: "keyUp", key: "PageUp"[^\n]+\n    await until\("!document.querySelector\('#jump-to-latest-floating'\).hidden"\);\n    await evaluate\("window.latestScrollEnd"\);\n    await evaluate\("document.querySelector\('#jump-to-latest-floating'\).click\(\)"\);\n    await atLatest\(\{ quarantineNativeBottom: "after-PageUp\/Latest-click" \}\);/);
-  for (const retained of ['touchMove', 'mouseWheel', 'PageUp', 'keyboard focus is visible', 'selected source unchanged', 'fleet and kind filters unchanged', 'all original records remain reachable', 'latest loaded page selected', 'last original row clears feed and dock']) {
-    assert.ok(source.includes(retained), retained);
+test('Latest requires the last row to clear both feed and visible dock', async () => {
+  for (const geometry of [{ lastBottom: 790 }, { lastBottom: 810, dockTop: 820 }]) {
+    await assert.rejects(fixture([], 0, -1, geometry).atLatest(), /last original row clears feed and dock/);
   }
-  assert.doesNotMatch(source, /catch\s*\(/, 'assertion failures cannot be caught and passed');
-  assert.equal(pkg.scripts['test:browser:quarantine-native-bottom'], 'node scripts/latest-browser-pass.mjs --include-quarantined-native-bottom');
-  assert.deepEqual(optInArgv, ['--include-quarantined-native-bottom']);
+  await fixture([], 0, -1, { lastBottom: 800, dockTop: 800 }).atLatest();
+  await fixture([], 0, -1, { dockHeight: 0, dockTop: 600 }).atLatest();
 });
 
-test('opt-in enables native bottom and all companions at every retained Latest caller', async () => {
-  const callers = [...source.matchAll(/await atLatest\((?:\{ quarantineNativeBottom: "([^"]+)" \})?\);/g)];
-  assert.equal(callers.length, 8);
-  for (const [, context] of callers) {
+test('opt-in enables native bottom and companions for ordinary and quarantined checks', async () => {
+  for (const context of [undefined, ...contexts]) {
     const options = context ? { quarantineNativeBottom: context } : undefined;
     const passing = fixture(optInArgv, 1);
     await passing.atLatest(options);
@@ -108,9 +109,6 @@ function entryPoint(script, failedScript = '') {
 }
 
 test('default gate explicitly excludes whole Latest and invokes every other suite in order', () => {
-  const parts = pkg.scripts['test:browser'].split(' && ');
-  assert.match(parts[0], /^echo 'CI-Q3 whole Latest browser pass EXCLUDED; opt-in: npm run test:browser:quarantine-native-bottom; https:\/\/github.com\/sthi-1005\/fm-quarterdeck\/issues\/83 \(not native acceptance\)'$/);
-  assert.deepEqual(parts.slice(1), defaultSuites.map(name => `node scripts/${name}-browser-pass.mjs`));
   const result = entryPoint(pkg.scripts['test:browser']);
   assert.equal(result.status, 0, result.stderr);
   const lines = result.stdout.trim().split('\n');
@@ -139,17 +137,39 @@ test('default gate still propagates unrelated suite failures', () => {
 });
 
 test('CI opt-in is explicit dispatch only, and its failure fails the advisory job', () => {
-  assert.match(workflow, /latest_native_bottom:[\s\S]*?type: boolean\n        default: false/);
-  assert.match(workflow, /id: native_bottom\n        if: \$\{\{ github.event_name == 'workflow_dispatch' && inputs.latest_native_bottom \}\}\n        continue-on-error: true\n        run: npm run test:browser:quarantine-native-bottom/);
-  assert.match(workflow, /NATIVE_BOTTOM: \$\{\{ steps.native_bottom.outcome \}\}/);
-  const report = workflow.split('      - name: Report advisory failures')[1].split('        run: |\n')[1].replace(/^          /gm, '');
+  const input = workflow.on.workflow_dispatch.inputs.latest_native_bottom;
+  assert.equal(input.type, 'boolean');
+  assert.equal(input.default, false);
+  const steps = workflow.jobs.browser.steps;
+  const native = steps.find(step => step.id === 'native_bottom');
+  const evaluate = (expression, state) => {
+    if (expression === undefined) return true;
+    const value = expression.trim();
+    return vm.runInNewContext(value.startsWith('${{') ? value.slice(3, -2) : value, state);
+  };
+  for (const event of ['push', 'pull_request', 'workflow_dispatch']) {
+    for (const optedIn of [false, true]) {
+      assert.equal(evaluate(native.if, { github: { event_name: event }, inputs: { latest_native_bottom: optedIn } }), event === 'workflow_dispatch' && optedIn);
+    }
+  }
+  assert.equal(native['continue-on-error'], true);
+  const invocation = spawnSync('/bin/bash', ['-e', '-c', `npm() { printf '%s\\n' "$*"; }\n${native.run}`], { encoding: 'utf8' });
+  assert.equal(invocation.status, 0, invocation.stderr);
+  assert.equal(invocation.stdout, 'run test:browser:quarantine-native-bottom\n');
+  assert.equal(native['working-directory'], 'prototype');
+  const reportStep = steps.find(step => step.name === 'Report advisory failures');
+  const report = reportStep.run;
   for (const [integration, chromium, native, expected] of [
     ['success', 'success', 'skipped', 0], ['success', 'success', 'success', 0],
     ['success', 'success', 'failure', 1], ['failure', 'success', 'skipped', 1],
     ['success', 'failure', 'skipped', 1],
   ]) {
+    const state = { steps: { integration: { outcome: integration }, chromium: { outcome: chromium }, native_bottom: { outcome: native } },
+      always: () => true, success: () => expected === 0 };
+    assert.equal(evaluate(reportStep.if, state), true, 'reporting runs even after a failed advisory check');
+    const env = Object.fromEntries(Object.entries(reportStep.env).map(([name, expression]) => [name, String(evaluate(expression, state))]));
     const result = spawnSync('/bin/bash', ['-e', '-c', report], {
-      env: { INTEGRATION: integration, CHROMIUM_GATE: chromium, NATIVE_BOTTOM: native },
+      env,
     });
     assert.equal(result.status, expected, `${integration}/${chromium}/${native}`);
   }

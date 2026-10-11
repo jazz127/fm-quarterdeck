@@ -1,5 +1,6 @@
 // Offline Latest regression and desktop/tablet/phone reading-intent acceptance.
 import assert from "node:assert/strict";
+import { createLatestAssertion } from "./latest-assertions.mjs";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -57,19 +58,7 @@ try {
       return {hidden:button.hidden,width:r.width,height:r.height,inside:r.left>=feed.left && r.right<=feed.right && r.bottom<=feed.bottom,
         clearDock:!dock?.height || r.bottom<=dock.top,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===button};
     })()`);
-    const atLatest = async ({ quarantineNativeBottom = false } = {}) => {
-      if (!quarantineNativeBottom || includeNativeBottom) {
-        assert.ok(await distance() <= 1, "Latest reaches the native scroll bottom");
-      } else {
-        console.log(`${width}x${height}: CI-Q3 ${quarantineNativeBottom} native-bottom assertion EXCLUDED; https://github.com/sthi-1005/fm-quarterdeck/issues/83 (not native acceptance)`);
-      }
-      assert.equal(await evaluate("document.querySelector('#jump-to-latest-floating').hidden"), true);
-      assert.equal(await evaluate("document.querySelector('#transcript-newer').disabled"), true, "latest loaded page selected");
-      assert.ok(await evaluate(`(() => {const f=document.querySelector('#messages'), r=f.getBoundingClientRect();
-        const last=f.querySelector('article.message:last-child').getBoundingClientRect();
-        const dock=document.querySelector('#mobile-dock')?.getBoundingClientRect();
-        return last.bottom<=r.bottom && (!dock?.height || last.bottom<=dock.top);})()`), "last original row clears feed and dock");
-    };
+    const atLatest = createLatestAssertion({ distance, evaluate, width, height, includeNativeBottom });
     await atLatest();
     // This assertion fails on the original 60px tolerance, before any new control is needed.
     await scrollUp(50);

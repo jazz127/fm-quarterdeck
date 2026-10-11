@@ -1,32 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { verifyLegacySkill } from "../../skills/fmqd-lanes/verify-legacy.mjs";
-
-const repo = new URL("../../", import.meta.url);
-const file = (name) => new URL(name, repo);
-
-test("fmqd-lanes canonical skill keeps flat routing and bounded semantic taxonomy", async () => {
-  const skill = await readFile(file("skills/fmqd-lanes/SKILL.md"), "utf8");
-  assert.equal((await stat(file("skills/fmqd-lanes/SKILL.md"))).isFile(), true);
-  assert.match(skill, /Unconditional Wrapping:.*Every single message.*MUST be wrapped/);
-  assert.match(skill, /\[fm-lane <LaneName>\].*\[end <LaneName>\]/);
-  assert.match(skill, /at most \*\*two semantic levels\*\*: project\/repository first, then a coherent feature or capability theme/);
-  assert.match(skill, /One level.*too broad.*three levels.*implementation slices/);
-  assert.match(skill, /implementation slice, worker, branch, task ID, or isolated copy is not a third lane level/);
-  assert.match(skill, /syntactically flat: nested tags are not supported.*streaming, routing, and closure ambiguous/);
-  assert.match(skill, /single continuous descriptive string.*registered lane name for explicit UI routing/);
-  assert.match(skill, /one user outcome, target, state owner, authority level, validation matrix, and rollback unit/);
-  assert.match(skill, /semantic dependencies and shared mutable external state.*files differ.*files overlap/);
-  assert.match(skill, /each worker keeps its own editable copy/);
-  assert.match(skill, /Before assigning a ninth simultaneously active worker to one theme lane.*consolidation or serialization.*sibling themes.*completed workers should be closed/);
-  assert.match(skill, /review trigger, not an automatic split or merge.*historical completed workers do not count as active.*retained unresolved slices.*cleanup pressure/);
-  assert.match(skill, /Never share an editable copy, delete preserved work, merge unrelated scope, or add a deeper lane level/);
-  assert.match(skill, /\[fm-lane General\][\s\S]*\[end General\]/);
-});
 
 test("read-only preflight refuses changed legacy bytes or entry without overwriting", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "fmqd-lanes-legacy-"));

@@ -6,6 +6,7 @@ import { quotaDom } from "./helpers/quota-dom.js";
 import { callDom } from "./helpers/call-dom.js";
 import { createHash } from "node:crypto";
 import { parseCss, computed, element } from './helpers/css-model.mjs';
+import { htmlModel } from './helpers/html-model.mjs';
 
 const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
 const script = `${extraction}\n${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${(await readFile(new URL("../public/app.js", import.meta.url), "utf8")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "")}`;
@@ -116,26 +117,26 @@ test("request failures use readable HTTP or network messages", async () => {
   }
 });
 
-test("Overview retains KPIs, replaces only the project tree with accessible live calls", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const overview = html.slice(html.indexOf('<section id="overview-view"'), html.indexOf('<section id="work-view"'));
-  assert.match(overview, /id="summary"/);
-  assert.ok(overview.indexOf('id="summary"') < overview.indexOf('id="overview-section-tabs"') && overview.indexOf('id="overview-section-tabs"') < overview.indexOf('id="overview-columns"'));
-  assert.match(overview, /id="overview-section-tabs"[\s\S]*role="tablist"[\s\S]*id="overview-tab-calls"[\s\S]*Captain's Call \(0\)[\s\S]*id="overview-tab-landed"[\s\S]*Just landed \(0\)/);
-  assert.match(html, /<script src="\/bearings-landed\.js"><\/script>\s*<script src="\/bearings-work\.js"><\/script>\s*<script src="\/overview-tabs\.js"><\/script>/);
-  assert.match(overview, /id="overview-columns"/);
-  assert.match(overview, /id="overview-primary"[\s\S]*id="captain-call" aria-labelledby="call-heading"/);
-  assert.match(overview, /id="overview-secondary"[\s\S]*id="just-landed"/);
-  assert.match(overview, /id="just-landed-heading"[\s\S]*Just landed <b id="landed-new-count" class="call-badge" hidden>0<\/b>/);
-  assert.match(overview, /id="landed-ack-toggle"/);
-  assert.match(overview, /Checking for landings/);
-  assert.doesNotMatch(overview.slice(overview.indexOf('id="overview-secondary"')), /placeholder|coming soon|Procrastinate/i);
-  const landedJs = await readFile(new URL("../public/bearings-landed.js", import.meta.url), "utf8");
-  assert.match(landedJs, /No recent completions are in the current baseline\./);
-  assert.match(landedJs, /data-landed-key/);
-  assert.doesNotMatch(landedJs, /data-call-key|data-call-procrastinate/);
-  assert.match(overview, /id="call-status"[^>]*role="status"/);
-  assert.doesNotMatch(overview, /id="projects"|overview-status|Repositories →/);
+test("Overview retains KPIs, phone tabs, live calls, work and second mates", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  const overview = html.one('#overview-view');
+  const sections = html.all('#overview-view [id]');
+  const position = id => sections.findIndex(node => node.id === id);
+  for (const id of ['summary', 'overview-section-tabs', 'overview-columns']) assert.ok(position(id) >= 0);
+  assert.ok(position('summary') < position('overview-section-tabs'));
+  assert.ok(position('overview-section-tabs') < position('overview-columns'));
+  assert.equal(html.one('#overview-section-tabs').attrs.role, 'tablist');
+  for (const [id, title] of [['calls', "Captain's Call"], ['landed', 'Just landed'], ['underway', 'Underway'], ['charted', 'Charted Next']]) {
+    assert.equal(html.one(`#overview-tab-${id}`).textContent, `${title} (0)`);
+  }
+  assert.equal(html.one('#captain-call').parent.id, 'overview-primary');
+  assert.equal(html.one('#captain-call').attrs['aria-labelledby'], 'call-heading');
+  assert.equal(html.one('#just-landed').parent.id, 'overview-secondary');
+  assert.equal(html.one('#call-status').attrs.role, 'status');
+  assert.equal(html.one('#landed-new-count').attrs.hidden, '');
+  assert.ok(html.one('#landed-ack-toggle'));
+  assert.equal(html.one('#projects'), null);
+  assert.equal(html.one('#secondmates-section').parent, overview);
 });
 
 test("Overview call counts announce increases and hide the empty badge", () => {
@@ -261,34 +262,37 @@ test("mobile feature headings share compact top spacing, including quota overrid
   assert.match(css, /#quota-view\.feature-view \{ padding-top: var\(--space-4\); \}/);
 });
 
-test("desktop control and persistent review footer keep gesture and action order without a hover button", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const review = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
-  assert.match(html, /id="refresh"[^>]*>↻ <span>Refresh<\/span><\/button>[\s\S]*class="review-gesture"/);
-  assert.match(html, /class="alt-icon">Alt<\/span><svg class="mouse-icon"/);
-  assert.match(css, /\.review-gesture:has\(input:checked\) \.alt-icon \{ opacity: \.35; \}/);
-  assert.match(css, /\.review-gesture:has\(input:checked\) \{ border-color: #9ff0e0; background: #0a6f60; color: white; \}/);
-  assert.match(css, /@media \(min-width: 721px\) \{[\s\S]*#review-pick \{ display: none !important; \}/);
-  assert.match(html, /<footer id="desktop-review-footer"[\s\S]*id="review-panel-toggle"[\s\S]*<\/footer>/);
-  assert.match(review, /destination\.insertBefore\(form, el\("review-panel-toggle"\)\)/);
-  assert.match(review, /destination\.insertBefore\(form, el\("review-state"\)\)/);
-  assert.match(html, /id="review-message"[\s\S]*id="review-queue"[\s\S]*id="review-send"[\s\S]*id="review-panel-toggle"/);
-  assert.match(css, /\.lane-list \{ grid-column: 1; grid-row: 1 \/ 3; \}/);
-  assert.match(css, /#desktop-review-footer \{ grid-column: 2 \/ -1; grid-row: 2;/);
-  assert.match(html, /id="review-message"[^>]*placeholder="Message firstmate"/);
-  assert.match(review, /el\("lanes"\)\.append\(banner\)/);
-  const preview = await readFile(new URL("../public/preview-selector.js", import.meta.url), "utf8");
-  assert.match(preview, /destination\.insertBefore\(box, destination\.firstChild\)/);
-  assert.match(css, /#desktop-review-footer \{ display: contents; \}/);
+test("desktop review footer and gesture controls retain declarative placement", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  const rules = parseCss(css);
+  const footer = html.one('#desktop-review-footer');
+  assert.equal(html.one('#review-panel-toggle').parent, footer);
+  assert.equal(html.one('#review-message').attrs.placeholder, 'Message firstmate');
+  const gesture = html.one('.review-gesture');
+  const input = html.one('#review-toggle');
+  input.states = ['checked'];
+  assert.equal(computed(rules, gesture, 1280).background, '#0a6f60');
+  assert.equal(computed(rules, html.one('.alt-icon'), 1280).opacity, '.35');
+  assert.equal(computed(rules, html.one('#review-pick'), 1280).display, 'none');
+  assert.equal(computed(rules, html.one('.lane-list'), 1280)['grid-column'], '1');
+  assert.equal(computed(rules, footer, 1280)['grid-row'], '2');
 });
 
-test("composer uses one Send and places the existing Annotate action beside desktop controls", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" form="review-form" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send<\/button><\/div><\/form>/);
-  assert.match(css, /\.review-actions \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(css, /\.review-actions button \{ min-width: 0;/);
-  const review = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
-  assert.match(review, /phoneReview\?\.matches \? document\.querySelector\("\.review-header-actions"\) : document\.querySelector\("#review-form \.review-actions"\)/);
+test("composer declares one Send and a queue submit control bound to its form", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  const queue = html.one('#review-queue'), send = html.one('#review-send');
+  assert.equal(html.all('#review-send').length, 1);
+  assert.equal(queue.attrs.type, 'submit');
+  assert.equal(queue.attrs.form, 'review-form');
+  assert.equal(queue.attrs['aria-label'], 'Queue message (Enter)');
+  assert.equal(send.attrs.type, 'button');
+  assert.equal(send.attrs['data-hint'], 'Ctrl/Cmd+Enter');
+  assert.equal(send.textContent, 'Send');
+  assert.equal(queue.parent, send.parent);
+  assert.equal(queue.parent.parent.id, 'review-form');
+  const rules = parseCss(css);
+  assert.equal(computed(rules, send.parent, 1280)['grid-template-columns'], 'repeat(2, minmax(0, 1fr))');
+  assert.equal(computed(rules, send, 1280)['min-width'], '0');
 });
 
 test("mobile icons preserve desktop text and accessible names", async () => {
@@ -1481,24 +1485,26 @@ test("thinking and tool records use compact native disclosure controls", () => {
   assert.match(css, /\.compact-record \.message-body summary[^}]+min-height: 44px/s);
 });
 
-test("Phase 2.6 compact rows, bounded tools, and two-row mobile controls", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(css, /\.compact-record \+ \.compact-record \{ margin-top: calc\(12px - var\(--space-5\)\); \}/);
-  assert.match(css, /\.message\.kind-tools \.message-content \{ max-height: 440px; overflow-y: auto;/);
-  // D3.1 moved feed-actions into conversation-head ahead of transcript diagnostics.
-  const actions = html.slice(html.indexOf('<div class="feed-actions"'), html.indexOf('<div class="conversation-head-actions"'));
-  const diagnostics = html.slice(html.indexOf('id="transcript-details"'), html.indexOf('<div class="conversation-body"'));
-  assert.doesNotMatch(actions, /id="transcript-session"/);
-  assert.match(diagnostics, /id="transcript-session"/);
-  const mobile = css.slice(css.indexOf('@media (max-width: 720px)'));
-  assert.match(mobile, /\.feed-actions \.transcript-search \{ flex: 1 1 0; min-width: 0;/);
-  assert.match(mobile, /\.feed-pagination \{ width: 100%;/);
-  assert.match(mobile, /\.kind-filter-popover \{ right: 0; left: auto;/);
-  assert.doesNotMatch(mobile, /right: -48px/);
-  assert.match(mobile, /\.task-filter-chip button \{ width: 44px; height: 44px;/);
-  assert.match(mobile, /\.lane-chats-row \{[^}]+grid-template-columns: minmax\(0, 1fr\) 48px 104px/s);
-  assert.match(mobile, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
-  assert.match(mobile, /\.primary-nav > \.primary-tab\[data-view="work"\] \{ grid-column: 2; grid-row: 2; \}/);
+test("bounded tools and mobile controls retain semantic layout", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  assert.ok(html.one('#transcript-details #transcript-session'));
+  assert.equal(html.one('.feed-actions').children.some(node => node.id === 'transcript-session'), false);
+  const rules = parseCss(css);
+  const tools = element('article', ['message', 'kind-tools']);
+  const content = element('div', ['message-content'], {}, tools);
+  assert.equal(computed(rules, content, 1280)['max-height'], '440px');
+  assert.equal(computed(rules, content, 1280)['overflow-y'], 'auto');
+  for (const width of [360, 390]) {
+    const search = computed(rules, html.one('.transcript-search'), width);
+    assert.equal(search.flex, '1 1 0');
+    assert.equal(search['min-width'], '0');
+    assert.equal(computed(rules, html.one('.feed-pagination'), width).width, '100%');
+    assert.equal(computed(rules, html.one('.kind-filter-popover'), width).right, '0');
+    assert.equal(computed(rules, html.one('.kind-filter-popover'), width).left, 'auto');
+    const clear = computed(rules, html.one('#task-filter-clear'), width);
+    assert.equal(clear.width, '44px');
+    assert.equal(clear.height, '44px');
+  }
 });
 
 test("responsive context is an accessible escape-dismissable drawer, never below the feed", async () => {
@@ -1824,16 +1830,16 @@ test("search debounces input and highlights matches safely across markdown and r
 });
 
 test("screen reader live regions prevent flood and announce status concisely", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  const feed = html.one('#messages');
+  assert.equal(feed.attrs.tabindex, '-1');
+  assert.equal(feed.attrs['aria-label'], 'Conversation feed, oldest to newest');
+  assert.equal(feed.attrs['aria-busy'], 'true');
+  assert.equal(feed.attrs['aria-live'], undefined);
+  const announcer = html.one('#sr-announcer');
+  assert.equal(announcer.attrs['aria-live'], 'polite');
+  assert.equal(announcer.attrs['aria-atomic'], 'true');
 
-  // Verify aria-live is removed from #messages
-  assert.match(html, /<div id="messages" class="messages" tabindex="-1" aria-label="Conversation feed, oldest to newest" aria-busy="true">/);
-  assert.doesNotMatch(html, /id="messages"[^>]*aria-live/);
-
-  // Verify dedicated announcer exists
-  assert.match(html, /<div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"><\/div>/);
-
-  // Verify app announces concise feed summary to #sr-announcer on render
   const app = ui();
   seed(app, [lane("alpha", [record({ text: "First record" })])]);
   app.run("renderFeed();");
@@ -2018,7 +2024,6 @@ test("Phase 2.5 responsive, typography, and accessibility polish constraints", a
   // Mobile pagination text unconstrained without 150px clamp
   assert.match(css, /@media \(max-width: 720px\)[\s\S]+\.feed-pagination span \{ max-width: none;/);
 });
-
 
 test("Preferences route renders escaped read-only records with honest date and reason labels", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
@@ -3153,12 +3158,11 @@ test("phone fleet and kind tabs follow arrow, Home and End keys", () => {
 });
 
 test("second-mate selector belongs to Message kinds and follows its desktop disclosure", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const kinds = html.match(/<details[^>]*id="kind-filter-menu"[\s\S]*?<\/details>/)[0];
-  const fleets = html.slice(html.indexOf('<div id="lane-filter-controls"'), html.indexOf('<div id="lane-filter-rows"'));
-  assert.match(kinds, /class="lane-status-control message-origin-control"[\s\S]*id="secondmate-filter"/);
-  assert.doesNotMatch(fleets, /secondmate-filter/);
-  assert.equal((html.match(/id="secondmate-filter"/g) || []).length, 1);
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  assert.equal(html.all('#secondmate-filter').length, 1);
+  assert.ok(html.one('#kind-filter-menu #secondmate-filter'));
+  assert.equal(html.one('#lane-filter-controls #secondmate-filter'), null);
+  assert.ok(html.one('.lane-status-control.message-origin-control > #secondmate-filter'));
   const panel = element('aside', [], { 'data-collapsed': 'true' }, null, 'conversation-kind-panel');
   const control = element('label', ['lane-status-control', 'message-origin-control'], {}, panel);
   const rules = parseCss(css);
@@ -3250,4 +3254,18 @@ test("older-history disclosure persists at the maximum window without offering a
   assert.equal(app.node("#transcript-window-status").hidden, false, "delivered mate sources disclose truncation too");
   render([{ ...source, omittedBytes: 0 }], [], 8, false);
   assert.equal(app.node("#transcript-window-status").hidden, true, "complete history has no truncation warning");
+});
+
+test("expense renderer emits every mobile label beside its ledger value", () => {
+  const app = ui();
+  app.run(`renderExpenses({source:'Synthetic ledger',entryCount:1,overall:[],entries:[{
+    id:'example',date:'2030-01-02',projectName:'Example project',category:'Hosting',
+    amount:'12.34',currency:'AUD',description:'Synthetic hosting charge',confidence:'Invoice'
+  }]})`);
+  const html = htmlModel(`<table>${app.node('#expense-entries').innerHTML}</table>`, { fragment: true });
+  const labels = ['Date', 'Project', 'Category', 'Amount', 'Currency', 'Description / note', 'Confidence / basis'];
+  const values = ['2030-01-02', 'Example project', 'Hosting', '12.34', 'AUD', 'Synthetic hosting charge', 'Invoice'];
+  assert.deepEqual(html.all('td').map(cell => cell.attrs['data-label']), labels);
+  assert.deepEqual(html.all('.expense-cell-label').map(label => label.textContent), labels);
+  assert.deepEqual(html.all('td').map((cell, index) => cell.textContent.trim()), labels.map((label, index) => label + values[index]));
 });

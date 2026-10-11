@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { parseCss, computed, element } from './helpers/css-model.mjs';
+import { htmlModel } from './helpers/html-model.mjs';
 
 const css = parseCss(await readFile(new URL('../public/styles.css', import.meta.url), 'utf8'));
 const shellCss = parseCss(await readFile(new URL('../public/shell-panel.css', import.meta.url), 'utf8'));
-const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
-const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
 
 test('skip link is the first control and the main stage can take focus', () => {
-  assert.match(html, /<body>\s*<a class="skip-link" href="#main-stage">Skip to content<\/a>/);
-  assert.match(html, /<div class="main-stage" id="main-stage" tabindex="-1">/);
+  const first = html.one('body').children.find(node => node.tag !== '#text');
+  assert.equal(first.tag, 'a');
+  assert.equal(first.attrs.href, '#main-stage');
+  assert.equal(first.textContent, 'Skip to content');
+  assert.equal(html.one('#main-stage').attrs.tabindex, '-1');
   const link = element('a', ['skip-link']);
   assert.equal(computed(css, link).position, 'absolute');
   link.states = ['focus'];
@@ -20,8 +23,10 @@ test('skip link is the first control and the main stage can take focus', () => {
 });
 
 test('fleet info control has a name that is not the glyph', () => {
-  assert.match(html, /id="lane-filter-info"[^>]*aria-label="About included fleets"/);
-  assert.match(html, /id="lane-filter-info"[^>]*>\s*<span aria-hidden="true">i<\/span>/);
+  assert.equal(html.one('#lane-filter-info').attrs['aria-label'], 'About included fleets');
+  const glyph = html.one('#lane-filter-info > span');
+  assert.equal(glyph.attrs['aria-hidden'], 'true');
+  assert.equal(glyph.textContent, 'i');
 });
 
 test('phone touch targets that were under 44px meet the minimum at 360 and 390', () => {
@@ -54,9 +59,6 @@ test('phone touch targets that were under 44px meet the minimum at 360 and 390',
 });
 
 test('phone expense ledger stacks instead of forcing a 980px sideways scroll', () => {
-  assert.match(app, /class="expense-cell-label">Date<\/span>/);
-  assert.match(app, /data-label="Description \/ note"/);
-  assert.match(app, /data-label="Confidence \/ basis"/);
   const table = element('table', ['expense-table']);
   const label = element('span', ['expense-cell-label']);
   const sort = element('button', [], {}, element('th', [], {}, element('tr', [], {}, element('thead', [], {}, table))));
@@ -80,15 +82,19 @@ test('narrow overview labels can wrap at 360 and 390', () => {
   assert.notEqual(computed(css, tab, 720)['font-size'], '12px');
 });
 
-test('reduced motion removes leftover transitions and animations', async () => {
-  const source = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
-  const start = source.lastIndexOf('@media (prefers-reduced-motion: reduce)');
-  const block = source.slice(start, source.indexOf('\n}', start) + 2);
-  for (const selector of ['.quota-badge', '.quota-accordion-summary::after', '.taxonomy-node > summary::before', '.jump-to-latest', '.work-slice button[data-ack-task]']) {
-    assert.match(block, new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+test('reduced motion removes leftover transitions and animations', () => {
+  const badge = element('i', ['quota-badge']);
+  const accordion = element('summary', ['quota-accordion-summary']); accordion.pseudo = 'after';
+  const taxonomy = element('summary', [], {}, element('details', ['taxonomy-node'])); taxonomy.pseudo = 'before';
+  const latest = element('button', ['jump-to-latest']);
+  const ack = element('button', [], { 'data-ack-task': 'slice' }, element('li', ['work-slice']));
+  for (const node of [badge, accordion, taxonomy, latest, ack]) {
+    for (const width of [360, 390, 1280]) {
+      const style = computed(css, node, width, 1000, { reducedMotion: true });
+      assert.equal(style.transition, 'none', `${node.tag} ${width}`);
+      assert.equal(style.animation, 'none', `${node.tag} ${width}`);
+    }
   }
-  assert.match(block, /transition: none;/);
-  assert.match(block, /animation: none;/);
 });
 
 test('navigation collapse control stays a 44px target on the phone shell', () => {

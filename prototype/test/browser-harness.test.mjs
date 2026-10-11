@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { acquireFixturePage, browserCpuRate, cleanupBrowserProfile, waitForBrowserPort } from "../scripts/browser-harness.mjs";
 
 const runningBrowser = () => ({ exitCode: null, signalCode: null });
@@ -27,7 +28,14 @@ function hostedBrowser({ newpageError = unselected, created = [fixtureUrl], sele
     if (args[0] === "selectpage") { if (selectable) selected = args[1]; return "selected\n"; }
     if (args[0] === "eval") {
       const state = { href: pages.find((page) => page.id === selected)?.url, revision, navigation: "navigate", ...document };
-      return state.href === fixtureUrl && state.revision === revision && state.navigation === "navigate" ? "result: own fresh fixture document\n" : `result: ${JSON.stringify(state)}\n`;
+      const evaluate = vm.runInNewContext(`(${args[1]})`, {
+        document: { readyState: 'complete' },
+        location: { href: state.href },
+        window: { FM_BOOT_REVISION: state.revision },
+        performance: { getEntriesByType: type => type === 'navigation' ? [{ type: state.navigation }] : [] },
+        setTimeout,
+      });
+      return `result: ${await evaluate()}\n`;
     }
     throw Error(`unexpected ${args[0]}`);
   };
@@ -46,6 +54,12 @@ test("a selected newpage still lists, selects and verifies the same own target",
   const { browser, calls } = hostedBrowser({ newpageError: "" });
   assert.equal(await acquireFixturePage(browser, fixtureUrl, revision), "2");
   assert.deepEqual(calls.slice(0, 5), ["pages", `newpage ${fixtureUrl}`, "pages", "selectpage 2", "pages"]);
+});
+
+test("freshness follows the requested URL and revision for another fixture", async () => {
+  const url = 'http://127.0.0.1:4101/#work', servedRevision = 'c'.repeat(40);
+  const { browser } = hostedBrowser({ created: [url], document: { revision: servedRevision } });
+  assert.equal(await acquireFixturePage(browser, url, servedRevision), '2');
 });
 
 test("a fresh page beside a same-URL original selects only the newly created target", async () => {

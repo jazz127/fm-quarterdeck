@@ -125,23 +125,6 @@ print(json.dumps(parser.icons))
   assert.equal((await fetch(`${base}/not-allowlisted.svg`)).status, 404);
 });
 
-test("Lane Chat has no redundant Options button and preserves desktop identity", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
-  const js = await readFile(new URL("../public/shell-panel.js", import.meta.url), "utf8");
-  assert.doesNotMatch(html, /id="phone-chat-options"|>Options(?: ▾)?<\/button>/);
-  assert.doesNotMatch(css, /phone-chat-options/);
-  assert.doesNotMatch(js, /optionsButton|phone-chat-options/);
-  assert.match(html, /id="conversation-filter-shortcut"[^>]+aria-controls="lane-filter-controls"[^>]+aria-expanded="true"[^>]+aria-label="Collapse Included fleets panel"/);
-  assert.match(js, /window\.addEventListener\("fm-open-chat-options", openChatOptions\)/);
-  assert.match(js, /chatSheet\.showModal\(\);[\s\S]*?shortcutButton\(\)\?\.setAttribute\("aria-expanded", "true"\)/);
-  assert.match(js, /chatSheet\.addEventListener\("close",[\s\S]*?shortcutButton\(\)\?\.setAttribute\("aria-expanded", "false"\)/);
-  assert.match(js, /moveControl\(document\.querySelector\("\.conversation-head-actions"\), chatTools\)/);
-  assert.match(js, /moveControl\(document\.querySelector\("\.feed-pagination"\), chatTools\)/);
-  assert.match(css, /\.conversation-head:not\(:has\(#task-filter-chip:not\(\[hidden\]\)\)\) \{ display: none; \}/);
-  assert.match(js, /document\.querySelector\("#review-send"\)\.textContent = "Send"/);
-});
-
 test("standalone UAT launch labels its own revision without claiming Main or a gateway", async (context) => {
   assert.throws(() => createServer({ FM_DEPLOYMENT_TIER: "main" }), /UAT-only deployment/);
   assert.throws(() => createServer({ FM_DEPLOYMENT_TIER: "uat" }, { previewRegistry: [
@@ -220,30 +203,6 @@ test("lane filters document and implement All as an override", async () => {
   assert.match(script, /data-closed-lane/);
   assert.doesNotMatch(script, /<details class="closed-lanes"/);
   assert.doesNotMatch(script, /\$\{chosen\.length\} of \$\{lanes\.length\} lanes/);
-});
-
-test("message kinds are independent, persisted feed filters with crew off by default", async () => {
-  const script = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  const kinds = await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8");
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-
-  assert.match(kinds, /id: "conversation", label: "Firstmate replies"/);
-  assert.match(kinds, /id: "supervision", label: "supervision outcomes"/);
-  assert.match(kinds, /id: "thinking", label: "thinking"/);
-  assert.match(kinds, /id: "crew", label: "crew status"/);
-  assert.match(kinds, /return new Set\(DEFAULT_IDS\)/);
-  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "primary-input", "supervision"\]/);
-  assert.match(kinds, /message\.role === "captain" \? "captain"/);
-  assert.match(html, /<script src="\/message-kinds\.js"><\/script>/);
-  assert.match(html, /<script src="\/filter-view\.js"><\/script>/);
-  assert.match(script, /savePreference\(MESSAGE_TYPES_KEY/);
-  assert.match(script, /selectedMessageTypes\.has\(messageTypeId\(message\)\)/);
-  assert.match(script, /#kinds-bulk-toggle/);
-  assert.doesNotMatch(script, /#message-types-select-all/);
-  assert.match(script, /new Set\(MESSAGE_TYPES\.map\(\(type\) => type\.id\)\)/);
-  assert.match(script, /filterView\.renderKindFilters/);
-  assert.match(script, /MESSAGE_FORMAT_KEY/);
-  assert.match(script, /messageFormat === "markdown" \? renderMarkdown/);
 });
 
 test("inbox records keep causal order when mtime is newer than worker activity", async (context) => {

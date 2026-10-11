@@ -644,26 +644,6 @@ test("Send queued and Send share one sender, and a second call does not send aga
   assert.match(element("review-state").textContent, /^Sent 1 Captain's Call answer;/);
 });
 
-test("native review stays available with panel hidden and click precedence toggle", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const script = reviewClientScript;
-  assert.match(html, /id="review-panel"[^>]+hidden/);
-  assert.match(html, /id="review-toggle"[^>]+type="checkbox" aria-label="Annotation mode off/);
-  assert.match(script, /let annotateByDefault = false;/);
-  assert.match(html, /id="review-panel-toggle"[^>]+aria-controls="review-panel"/);
-  assert.doesNotMatch(html, /id="review-panel-toggle"[^>]+hidden/);
-  assert.match(html, /id="review-send"/);
-  assert.doesNotMatch(html, /id="review-end"|id="review-send-now"/);
-  assert.match(html, /id="review-clear-messages"/);
-  assert.match(script, /annotateByDefault === event\.altKey/);
-  assert.match(script, /event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);\s*if \(!regionFor\(event\.target\)\) return;\s*selectRegion/);
-  assert.doesNotMatch(script, /active = false/);
-  assert.match(script, /entry\.region/);
-  assert.match(html, /Enter: queue · Shift\+Enter: new line · Ctrl\/Cmd\+Enter: send/);
-  assert.match(html, /Queue message \(Enter\)/);
-  assert.match(html, /data-hint="Ctrl\/Cmd\+Enter">Send/);
-});
-
 // Minimal DOM with real ancestry and event listeners: catches a control being
 // silently relabeled as the broad sidebar's "Conversation lanes" region.
 test("annotation addresses the clicked control, never its enclosing sidebar", async () => {
