@@ -60,7 +60,7 @@ test('one post-pointer/touch caller is quarantined; all other Latest contexts an
     assert.ok(source.includes(retained), retained);
   }
   assert.doesNotMatch(source, /catch\s*\(/, 'assertion failures cannot be caught and passed');
-  const suites = ['hardening', 'mixed-lane', 'lanes-first-paint', 'last-viewed', 'latest', 'compact-messages', 'kind-navigation', 'message-classification', 'review-annotation-format', 'authorship', 'captain-call-live', 'notifications'];
+  const suites = ['hardening', 'mixed-lane', 'lanes-first-paint', 'last-viewed', 'latest', 'compact-messages', 'kind-navigation', 'message-classification', 'review-annotation-format', 'authorship', 'primary-input', 'captain-call-live', 'notifications'];
   assert.equal(pkg.scripts['test:browser'], suites.map(name => `node scripts/${name}-browser-pass.mjs`).join(' && '));
   assert.equal(pkg.scripts['test:browser:quarantine-native-bottom'], 'node scripts/latest-browser-pass.mjs --include-quarantined-native-bottom');
 });

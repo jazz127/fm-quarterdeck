@@ -1117,7 +1117,7 @@ test("redesigned feed retains default visibility, live-lane safety and causal or
     record({ kind: "thinking", text: "Thinking record" }),
     record({ role: "captain", author: "Captain", text: "Driving prompt" }),
   ]), lane("archive", [record({ text: "Closed record" })], true)]);
-  assert.equal(app.run("Array.from(selectedMessageTypes).join(',')"), "captain,conversation,supervision");
+  assert.equal(app.run("Array.from(selectedMessageTypes).join(',')"), "captain,conversation,primary-input,supervision");
   assert.equal(app.run("messagesForSelection().map(m => m.text).join('|')"), "Driving prompt|Readable response");
   app.run('selectedMessageTypes = new Set(MESSAGE_TYPES.map(type => type.id)); renderFeed();');
   assert.equal(app.run("messagesForSelection().map(m => m.text).join('|')"), "Driving prompt|Thinking record|Readable response|Crew status");
@@ -1223,6 +1223,28 @@ test("fleet notes are default-on, captain has its own toggle, and steers stay in
   app.run('selectedMessageTypes.delete("captain"); selectedMessageTypes.add("steer"); renderFeed()');
   assert.doesNotMatch(app.node("#messages").innerHTML, /Captain chat/);
   assert.match(app.node("#messages").innerHTML, /origin-steer/);
+});
+
+test("primary input display retains unverified labels, filters and explicit opt-outs", () => {
+  const app = ui();
+  app.run(`renderLanes({lanes:[${JSON.stringify(lane("general", [
+    record({ role: "input", kind: "input", state: "input", author: "Claude session input", text: "Synthetic primary question", primaryHumanInput: true, recordId: "primary", transcriptSessionId: "selected" }),
+    record({ role: "input", kind: "input", author: "Inbox note", text: "Synthetic unproven note", recordId: "note" }),
+  ]))}],transcript:{sessions:[],warnings:[]}})`);
+  const feed = () => app.node("#messages").innerHTML;
+  assert.match(feed(), /Synthetic primary question/);
+  assert.match(feed(), /<strong>Claude session input<\/strong><span class="message-origin origin-primary-input">primary session input \(unverified\)<\/span>/);
+  assert.doesNotMatch(feed(), /Synthetic unproven note|origin-captain/);
+  app.run('selectedMessageTypes.delete("primary-input"); renderFeed()');
+  assert.doesNotMatch(feed(), /Synthetic primary question/);
+  assert.equal(app.node("#primary-input-filter-status").hidden, false);
+  app.node("#show-primary-input").dispatchEvent({ type: "click" });
+  assert.match(feed(), /Synthetic primary question/);
+  assert.equal(app.node("#primary-input-filter-status").hidden, true);
+  app.run('selectedTranscriptSession="other"; renderFeed()');
+  assert.doesNotMatch(feed(), /Synthetic primary question/);
+  app.run('selectedTranscriptSession=""; transcriptQuery="unmatched"; renderFeed()');
+  assert.doesNotMatch(feed(), /Synthetic primary question/);
 });
 
 test("unverified input is its own default-hidden kind, and a confirmed send refreshes the loaded fleet log", async () => {

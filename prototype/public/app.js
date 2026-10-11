@@ -11,7 +11,7 @@ const escapeHtml = (value) => String(value)
 const stateLabel = (state) => state.replaceAll("-", " ");
 const statusChoiceLabel = (state) => stateLabel(state).replace(/^./, (letter) => letter.toUpperCase());
 const money = ({ currency, amount }) => `${currency} ${amount}`;
-const { KEY: MESSAGE_TYPES_KEY, TYPES: MESSAGE_TYPES, LEGACY_KEY: MESSAGE_TYPES_LEGACY_KEY, stored: storedMessageTypes, typeId: messageTypeId, label: messageTypeLabel, icon: messageTypeIcon, svg: messageTypeSvg } = window.messageKinds;
+const { KEY: MESSAGE_TYPES_KEY, TYPES: MESSAGE_TYPES, hasStored: hasStoredMessageTypes, stored: storedMessageTypes, typeId: messageTypeId, label: messageTypeLabel, icon: messageTypeIcon, svg: messageTypeSvg } = window.messageKinds;
 const MESSAGE_FORMAT_KEY = "fm-agentos-message-format-v1";
 const { normalize: normalizeMessageFontSize, stored: storedMessageFontSize, rem: messageFontSizeRem, step: stepMessageFontSizeValue, bounds: messageFontSizeBounds, persist: persistMessageFontSize } = window.messageFontSizePrefs;
 let messageFontSize = storedMessageFontSize();
@@ -244,7 +244,7 @@ function kindJumpScope() {
   // Default native-thinking detection may change as older records arrive; an
   // explicit kind preference must still cancel any superseded navigation.
   try {
-    if (localStorage.getItem(MESSAGE_TYPES_KEY) === null && localStorage.getItem(MESSAGE_TYPES_LEGACY_KEY) === null) parts[3] = parts[3].filter(id => id !== "thinking");
+    if (!hasStoredMessageTypes()) parts[3] = parts[3].filter(id => id !== "thinking");
   } catch {}
   return JSON.stringify(parts);
 }
@@ -584,13 +584,13 @@ window.fmChatViewContext = function (served) {
   };
 };
 
-function messagesForSelection() {
+function messagesForSelection({ ignoreKinds = false } = {}) {
   const visibleLanes = selectedLanes();
   const merged = new Map();
   for (const lane of visibleLanes) {
     const occurrences = new Map();
     for (const message of lane.messages) {
-      if (!selectedMessageTypes.has(messageTypeId(message))) continue;
+      if (!ignoreKinds && !selectedMessageTypes.has(messageTypeId(message))) continue;
       if (selectedSessionId && message.taskId !== selectedSessionId) continue;
       if (selectedTranscriptSession && message.transcriptSessionId !== selectedTranscriptSession) continue;
       if (selectedSecondmate && message.secondmateId !== selectedSecondmate) continue;
@@ -783,6 +783,8 @@ function renderFeed() {
   }
 
   const messages = messagesForSelection();
+  $("#primary-input-filter-status").hidden = selectedMessageTypes.has("primary-input") ||
+    !messagesForSelection({ ignoreKinds: true }).some((message) => messageTypeId(message) === "primary-input");
   kindRecordIndices.clear();
   fleetRecordIndices.clear();
   messages.forEach((message, index) => {
@@ -948,7 +950,7 @@ function renderLanes(data) {
   lanesLoadError = "";
   $("#messages").setAttribute("aria-busy", "false");
   try {
-    if (localStorage.getItem(MESSAGE_TYPES_KEY) === null && localStorage.getItem(MESSAGE_TYPES_LEGACY_KEY) === null) {
+    if (!hasStoredMessageTypes()) {
       if (lanes.some((lane) => lane.messages.some((message) => message.kind === "thinking"))) selectedMessageTypes.add("thinking");
       else selectedMessageTypes.delete("thinking");
       renderMessageTypeFilters();
@@ -1012,6 +1014,7 @@ function renderLanesError(message) {
   updateKindNavigation();
   $("#messages").setAttribute("aria-busy", "false");
   $("#transcript-window-status").hidden = true;
+  $("#primary-input-filter-status").hidden = true;
   $("#transcript-summary").textContent = "Transcript unavailable";
   const infoTrigger = $("#transcript-details summary");
   if (infoTrigger) {
@@ -2533,6 +2536,12 @@ $("#message-type-filters").addEventListener("change", (event) => {
   if (!(input instanceof HTMLInputElement)) return;
   if (input.checked) selectedMessageTypes.add(input.value);
   else selectedMessageTypes.delete(input.value);
+  savePreference(MESSAGE_TYPES_KEY, [...selectedMessageTypes]);
+  renderMessageTypeFilters();
+  renderFeed();
+});
+$("#show-primary-input").addEventListener("click", () => {
+  selectedMessageTypes.add("primary-input");
   savePreference(MESSAGE_TYPES_KEY, [...selectedMessageTypes]);
   renderMessageTypeFilters();
   renderFeed();
