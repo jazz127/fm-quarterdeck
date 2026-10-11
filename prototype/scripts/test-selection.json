@@ -62,6 +62,7 @@
     "test/dev-reload.test.js",
     "test/git-identity.test.js",
     "test/health-preferences.test.js",
+    "test/history-admission.test.js",
     "test/inbox.test.js",
     "test/lane-markers.test.js",
     "test/lane-payload.test.js",
