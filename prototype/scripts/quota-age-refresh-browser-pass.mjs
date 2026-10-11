@@ -9,6 +9,7 @@ import { createServer } from '../server.js';
 import { createQuotaReader } from '../quota.js';
 import { waitForBrowserPort, cleanupBrowserProfile } from './browser-harness.mjs';
 
+const expectedHead = (await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: new URL('../..', import.meta.url) })).stdout.trim();
 const temp = await mkdtemp(path.join(os.tmpdir(), 'quota-age-'));
 const profile = path.join(temp, 'profile');
 await mkdir(profile);
@@ -50,7 +51,15 @@ try {
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
   // Keep the selected owned target across viewport changes; closing it leaves
   // axi without a selected page for the next navigation.
-  await browser('newpage', 'about:blank');
+  // The new-page command stamps a snapshot before returning. Duplicate blank
+  // URLs leave its selected routing unset; explicitly select the owned startup
+  // target listed by the supported pages API instead.
+  const pages = await browser('pages');
+  const owned = [...pages.matchAll(/^\s*(\d+),about:blank,(?:true|false)\s*$/gm)];
+  assert.equal(owned.length, 1, 'one owned startup target must be listed');
+  await browser('selectpage', owned[0][1]);
+  const selected = await browser('pages');
+  assert.ok(selected.split('\n').some(line => line.trim() === `${owned[0][1]},about:blank,true`), 'actual owned target must be selected');
   await evaluate(`() => { if(location.href !== 'about:blank')throw Error('unexpected selected fixture target'); return 'owned fixture selected'; }`);
   const viewports = process.argv.includes('--phone-only') ? [[390, 844, '#mobile-quota-sheet']]
     : [[1280, 900, '#sidebar-quota'], [390, 844, '#mobile-quota-sheet']];
@@ -60,7 +69,7 @@ try {
     const target = `http://127.0.0.1:${server.address().port}/#quota`;
     await browser('open', target);
     await browser('resize', String(width), String(height));
-    await evaluate(`() => { if(location.href !== ${JSON.stringify(target)} || innerWidth !== ${width} || innerHeight !== ${height})throw Error('selected target or viewport mismatch'); return 'target and viewport verified'; }`);
+    await evaluate(`() => { if(location.href !== ${JSON.stringify(target)} || innerWidth !== ${width} || innerHeight !== ${height} || window.FM_BOOT_REVISION !== ${JSON.stringify(expectedHead)})throw Error('selected target, viewport or serving revision mismatch'); return 'target and viewport verified'; }`);
     await until(`document.querySelector('#quota-providers .quota-card') && !document.querySelector('#quota-providers .quota-staleness')`);
     if (width < 720) await evaluate(`() => { document.querySelector('.mobile-dock-quota').click(); return 'opened'; }`);
     await setClock(clock);
