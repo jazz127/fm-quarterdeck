@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { acquireFixturePage } from './browser-harness.mjs';
 
 export async function captureStaticReplyLinks({ browser, evaluate, base, head, proof }) {
   const selectedPage = async () => (await browser('pages')).match(/^\s*(\d+),[^\n]+,true\s*$/m)?.[1];
@@ -10,8 +11,7 @@ export async function captureStaticReplyLinks({ browser, evaluate, base, head, p
   assert.ok(original, 'retain the original fixture page');
   try {
     for (const width of [820, 390]) {
-      await browser('newpage', `${base}/#overview`);
-      const fresh = await selectedPage();
+      const fresh = await acquireFixturePage(browser, `${base}/#overview`, head);
       assert.ok(fresh && fresh !== original, 'geometry needs a genuinely fresh page');
       try {
         await browser('resize', String(width), '844');

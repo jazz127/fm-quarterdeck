@@ -1,12 +1,14 @@
 // Headless UI evidence only. Permission, subscription and server enrollment are mocked.
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "../server.js";
-import { waitForBrowserPort, cleanupBrowserProfile } from "./browser-harness.mjs";
+import { acquireFixturePage, waitForBrowserPort, cleanupBrowserProfile } from "./browser-harness.mjs";
+
+const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: path.resolve(import.meta.dirname, "../.."), encoding: "utf8" }).trim();
 
 const temp = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-notification-ui-")), profile = path.join(temp, "profile");
 await mkdir(profile);
@@ -33,7 +35,7 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
   const port = await waitForBrowserPort(chrome, profile, { spawnError: () => spawnError, diagnostics: () => diagnostics });
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
-  await browser("newpage", `http://127.0.0.1:${server.address().port}/#preferences`);
+  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#preferences`, head);
   await evaluate(`async () => {
     for (let n = 0; n < 150; n++) {
       const status = document.querySelector('[data-notification-status]');

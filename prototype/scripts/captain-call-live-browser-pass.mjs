@@ -10,7 +10,7 @@ import { claudeProjectDirectory } from '../claude-transcript.js';
 import { captureKpiGeometry } from './kpi-geometry.mjs';
 import { captureStaticReplyLinks } from './card-reply-links-static-proof.mjs';
 import { capturePendingUpdates } from './call-pending-update-acceptance.mjs';
-import { waitForBrowserPort, cleanupBrowserProfile } from './browser-harness.mjs';
+import { acquireFixturePage, waitForBrowserPort, cleanupBrowserProfile } from './browser-harness.mjs';
 const root = path.resolve(import.meta.dirname, '../..');
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(), '', 'serve a clean committed candidate');
@@ -202,7 +202,7 @@ try {
   if (process.argv.includes('--pending-update-only')) {
     await capturePendingUpdates({ browser, evaluate, until, base: `http://127.0.0.1:${server.address().port}`, head, proof, raw, change, server });
   } else {
-  await browser('newpage', `http://127.0.0.1:${server.address().port}/#overview`);
+  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
   // Deterministic transport races in the real page realm, isolated from the UI's feed.
   await evaluate(`async () => {
