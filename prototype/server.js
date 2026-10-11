@@ -820,6 +820,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),
         events: [],
+        eventsLoaded: false,
         eventSource,
         activityAt: lastSteer && (!statusActivity || lastSteer > statusActivity) ? lastSteer : statusActivity,
       };
@@ -833,11 +834,12 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
     };
     raiseActivity([...captainNotes, ...outboxMessages]);
+    const displayedProjects = new Set(projects.filter(({ id }) => id !== "general").map(({ name }) => name));
     const orderedTasks = [...tasks].sort((a, b) => String(b.activityAt?.toISOString() || null).localeCompare(String(a.activityAt?.toISOString() || null)));
     // History loading is independent of live execution and completion attention.
-    const requestedTasks = new Set(sessionIds.slice(0, 60));
+    const requestedTasks = new Set(sessionIds.slice(0, 60).filter((id) => displayedProjects.has(byTask.get(id)?.projectName)));
     const visibleTasks = new Set(requestedTasks);
-    for (const project of projects) {
+    for (const project of projects.filter((project) => displayedProjects.has(project.name))) {
       const ordered = publicSessions(orderedTasks.filter((task) => task.projectName === project.name));
       for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
       for (const session of ordered) if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
@@ -847,8 +849,13 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     // shows are read, requested first, then open work, then newest, so an unshown or
     // older task cannot spend the event budget the shown ones need.
     const admission = (session) => requestedTasks.has(session.id) ? 0 : ["done", "failed"].includes(session.state) ? 2 : 1;
-    if (includeHistory) for (const { id } of publicSessions(orderedTasks.filter((task) => visibleTasks.has(task.id) && task.eventSource)).sort((a, b) => admission(a) - admission(b))) {
+    if (includeHistory) for (const { id } of publicSessions(orderedTasks.filter((task) => visibleTasks.has(task.id))).sort((a, b) => admission(a) - admission(b))) {
       const task = byTask.get(id);
+      // Registered parent-channel history is owned/read only by the mate adapter.
+      if (!task.eventSource) {
+        task.eventsLoaded = secondmates.sources.find(({ id }) => id === task.id)?.loaded ?? true;
+        continue;
+      }
       const { statusName, size, mtime } = task.eventSource;
       // An empty log is fully read; nonempty history the budget cannot reach is not loaded.
       const window = size ? await reader.recent(path.join(resolvedHome, "state", statusName)) : null;

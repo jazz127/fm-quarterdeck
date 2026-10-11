@@ -1,5 +1,6 @@
 {
   "deterministic": [
+    "test/bearings-scoped-decisions.test.js",
     "test/answered-calls.test.js",
     "test/bearings-answer-form.test.js",
     "test/bearings-dismiss.test.js",
@@ -62,6 +63,7 @@
     "test/dev-reload.test.js",
     "test/git-identity.test.js",
     "test/health-preferences.test.js",
+    "test/history-admission.test.js",
     "test/inbox.test.js",
     "test/lane-markers.test.js",
     "test/lane-payload.test.js",

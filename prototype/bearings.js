@@ -475,6 +475,16 @@ async function addBoardEvidence(output, home) {
 }
 
 // Every section uses the same authoritative snapshot and live transport.
+// Stock child holds use home/task ids, with the owning home and local key recorded
+// separately. Preserve only that exact agreement; these are not local answer slugs.
+function decisionId(row) {
+  if (!object(row) || typeof row.id !== "string") return null;
+  if (TASK_ID.test(row.id)) return row.id;
+  return typeof row.owner === "string" && TASK_ID.test(row.owner)
+    && typeof row.key === "string" && TASK_ID.test(row.key)
+    && row.id === `${row.owner}/${row.key}` ? row.id : null;
+}
+
 function callSection(raw) {
   const repos = new Map();
   for (const row of Array.isArray(raw.in_flight) ? raw.in_flight : []) {
@@ -484,7 +494,7 @@ function callSection(raw) {
   const cards = [];
   const decided = new Set();
   for (const row of raw.decisions_open) {
-    const id = object(row) && typeof row.id === "string" && TASK_ID.test(row.id) ? row.id : null;
+    const id = decisionId(row);
     // Keep the complete ask: choices and recommendations may exist only in this text.
     const summary = id && publicText(row.summary, Infinity);
     if (!id || !summary || decided.has(id)) { invalid += 1; continue; }

@@ -6,6 +6,14 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 
 ## Source and authority
 
+Stock child-home decisions retain their exact `home/task` identity when the snapshot's
+`owner` and local `key` agree. Identical local task names in different homes remain
+separate cards. These calls show the existing answer-in-chat hint: a child hold is not
+a selected-home keyed answer. Their thread notes and Quarterdeck-only procrastination
+retain the scoped card identity; neither changes a Firstmate hold.
+Parking refuses an update that would exceed its existing state-size bound and preserves
+the previously readable state.
+
 - Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run.
 - It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The snapshot's own documented observational cache refresh is the only fleet-side write, the same as a plain `/bearings`.
 - Each snapshot run may also read the selected home's `.lavish/bearings-board.html` when that path is a regular file of at most 1 MiB. The read is UTF-8 text. Quarterdeck takes the JSON inside `<script id="bearings-data" type="application/json">` and checks `schema` `fm-bearings-board.v1`, a non-empty `home`, a timestamp `generated`, and an array `captains_call`. A raw `<` in that block is rejected, matching the builder's `\u003c` escape, so the block cannot be closed early. The page is never executed. A missing file, symlink, oversized file, bad encoding, or failed check leaves options on the snapshot path below. How a fresh card becomes choices is owned by Answers.
