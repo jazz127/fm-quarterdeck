@@ -800,3 +800,55 @@ test("Annotate follows the composer at tablet widths and uses the same draft acr
     assert.deepEqual(p.state().queue, before.queue);
   }
 });
+
+test("Review relocates the same actions in Clear/Queue/Send order and restores Message across widths", async () => {
+  const h = harness(), p = h.page(); await tick();
+  p.q("Synthetic queued note");
+  p.element("review-message").value = "Synthetic retained draft";
+  const before = p.state();
+  const queue = p.element("review-queue"), send = p.element("review-send"), clear = p.element("review-clear-messages");
+  const annotate = p.element("review-select-location");
+  for (const id of ["review-queue", "review-send", "review-clear-messages", "review-select-location"]) p.element(id).id = id;
+  function container(children = []) {
+    const owner = { children, get firstChild() { return this.children[0]; },
+      insertBefore(node, reference) {
+        if (node.parentElement) node.parentElement.children.splice(node.parentElement.children.indexOf(node), 1);
+        const index = this.children.indexOf(reference);
+        this.children.splice(index < 0 ? this.children.length : index, 0, node);
+        node.parentElement = this;
+        if (p.context.document.activeElement === node) p.context.document.activeElement = null;
+      }, append(node) { this.insertBefore(node, null); } };
+    for (const node of children) node.parentElement = owner;
+    return owner;
+  }
+  const actions = container([queue, send, annotate]), history = container([clear]);
+  Object.defineProperty(queue, "nextSibling", { get: () => queue.parentElement.children[queue.parentElement.children.indexOf(queue) + 1] });
+  send.focus = () => { p.context.document.activeElement = send; };
+  p.context.document.querySelector = (selector) => selector === "#review-form .review-actions" ? actions : { textContent: "" };
+  Object.assign(p.element("review-history-actions"), history);
+  const historyOwner = p.element("review-history-actions");
+  clear.parentElement = historyOwner;
+  for (const width of [1440, 820, 390, 820, 390, 1440]) {
+    p.setDesktop(width > 720);
+    p.element("review-panel").hidden = false;
+    vm.runInContext('setReviewTab("review")', p.context);
+    assert.deepEqual(historyOwner.children.map(node => node.id), width > 720 ? [clear.id, queue.id, send.id] : [clear.id, send.id]);
+    assert.equal(queue.parentElement, width > 720 ? historyOwner : actions);
+    assert.equal(send.parentElement, historyOwner);
+    assert.equal(actions.children.includes(annotate), true);
+    send.focus();
+    p.element("review-panel").hidden = true;
+    vm.runInContext('placeReviewActions()', p.context);
+    assert.deepEqual(actions.children.map(node => node.id), [queue.id, send.id, annotate.id]);
+    assert.deepEqual(historyOwner.children.map(node => node.id), [clear.id]);
+    assert.equal(p.context.document.activeElement, send, "moving a focused Send retains focus");
+    assert.deepEqual(p.state(), before, "layout moves leave all persisted composer state intact");
+  }
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /id="review-queue"[^>]*form="review-form"/);
+  assert.ok(html.indexOf('id="review-history-actions"') > html.indexOf('id="review-form"'));
+  for (const id of [clear.id, queue.id, send.id]) assert.equal(html.split(`id="${id}"`).length - 1, 1);
+  const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /#review-clear-messages \{ background: var\(--surface\); color: var\(--danger\); border-color: var\(--danger\); \}/);
+  assert.match(css, /#review-history-actions button \{ min-height: 44px; \}/);
+});

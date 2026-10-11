@@ -59,6 +59,28 @@ function setReviewTab(tab) {
   syncReviewScrollLock();
   el("review-phone-thread").hidden = !phone || tab !== "review";
   el("review-history-actions").hidden = phone && tab !== "review";
+  placeReviewActions();
+}
+// Relocate the existing controls; Queue keeps its explicit composer form owner.
+// Closing Review or returning to Message restores the original composer order.
+function placeReviewActions() {
+  const actions = document.querySelector("#review-form .review-actions");
+  const history = el("review-history-actions");
+  if (!actions?.insertBefore || !history?.append) return;
+  const phone = Boolean(phoneReview?.matches);
+  const reviewing = !el("review-panel").hidden && (!phone || activeReviewTab === "review");
+  const queueButton = el("review-queue");
+  const sendButton = el("review-send");
+  const focused = document.activeElement;
+  const destination = reviewing ? history : actions;
+  if (reviewing && !phone) {
+    if (queueButton.parentElement !== history) history.append(queueButton);
+  } else if (queueButton.parentElement !== actions) actions.insertBefore(queueButton, actions.firstChild);
+  if (sendButton.parentElement !== destination) {
+    if (reviewing) history.append(sendButton);
+    else actions.insertBefore(sendButton, queueButton.nextSibling);
+  }
+  if ((focused === sendButton || (focused === queueButton && !phone)) && document.activeElement !== focused) focused.focus();
 }
 function endPicking() {
   pickingRegion = false;
@@ -243,6 +265,7 @@ syncReviewViewport();
 function panel(open) {
   if (open) closeAnnotation();
   el("review-panel").hidden = !open;
+  placeReviewActions();
   if (!open) {
     selectedNode = null;
     el("review-form").classList?.remove("review-form-anchored");

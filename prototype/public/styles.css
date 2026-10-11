@@ -3062,5 +3062,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .health-preferences-form .notification-preference input { flex: 0 0 20px; width: 20px; height: 20px; min-height: 20px; margin: 0; }
 .notification-controls { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
 .notification-controls button { min-height: 40px; }
-#review-history-actions { flex: 0 0 auto; justify-content: flex-end; }
-#review-clear-messages { min-height: 44px; }
+#review-history-actions { flex: 0 0 auto; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 8px; }
+#review-history-actions[hidden] { display: none; }
+#review-history-actions button { min-height: 44px; }
+#review-clear-messages { background: var(--surface); color: var(--danger); border-color: var(--danger); }
