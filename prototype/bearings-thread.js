@@ -18,7 +18,7 @@ export const THREAD_NOTE_TAG = "fm-quarterdeck-thread";
 export const MAX_THREAD_BODY_BYTES = 4096;
 export const MAX_QUESTION_BYTES = 2000;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CARD_KEY = /^(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}$/;
+const CARD_KEY = /^(?:(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}|decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})$/;
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const PREFIX = "quarterdeck-thread:";

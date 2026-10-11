@@ -54,6 +54,7 @@
     "test/bearings-procrastination.test.js",
     "test/bearings-thread.test.js",
     "test/bearings.test.js",
+    "test/bearings-scoped-decisions.test.js",
     "test/browser-harness.test.mjs",
     "test/chat-asks-repair.test.js",
     "test/chat-asks.test.js",
