@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 import { validateAnswer } from "../bearings-answer.js";
-import { BearingsUnavailable, MODEL_SCHEMA, contentRevision, createBearingsHub, createSnapshotRunner, normalizeSnapshot, publicText } from "../bearings.js";
+import { applyBoardDecisionOptions, BearingsUnavailable, MODEL_SCHEMA, contentRevision, createBearingsHub, createSnapshotRunner, normalizeSnapshot, publicText } from "../bearings.js";
 import { createServer } from "../server.js";
 
 const fixture = async (name) => JSON.parse(await readFile(new URL(`./fixtures/bearings/${name}.json`, import.meta.url), "utf8"));
@@ -593,6 +593,44 @@ async function liveServer(context, { revision = "a".repeat(40), snapshot, source
   context.after(() => new Promise((resolve) => server.close(resolve)));
   return { server, hub, source: hubSource, port: server.address().port, base: `http://127.0.0.1:${server.address().port}`, moveHead: (value) => { head = value; } };
 }
+
+test("board paths are redacted before the cached API, stream and Overview receive them", async (context) => {
+  const raw = await fixture("two-calls");
+  applyBoardDecisionOptions(raw, {
+    schema: "fm-bearings-board.v1", home: "synthetic-home", generated: "2026-06-01T12:00:00Z",
+    captains_call: [{ key: "alpha-call", type: "decision", title: "Title: /home/example/projects/sample/title.md",
+      about: "About: /home/example/projects/sample/about.md", decide: "Decide: /home/example/projects/sample/decide.md",
+      detail: "Report: /home/example/projects/sample/report.md", freeform_hint: "Read /home/example/projects/sample/hint.md",
+      pr_url: "file:///home/example/projects/sample/report.md", close: { path: "/home/example/projects/sample/report.md" } }],
+  });
+  const { base, port } = await liveServer(context, { source: controlledRunner(raw), clock: fakeClock(Date.now()) });
+  const client = streamClient(port);
+  context.after(() => client.stop());
+  await client.until(() => client.events.some((event) => event.event === "model" && event.data.state === "ready"), "redacted board model");
+  const response = await fetch(`${base}/api/bearings`);
+  assert.equal(response.status, 200);
+  const models = [await response.json(), client.events.find((event) => event.event === "model" && event.data.state === "ready").data];
+  const window = {};
+  vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
+  for (const model of models) {
+    const card = model.cards.find((entry) => entry.key === "decision:alpha-call");
+    assert.equal(card.boardTitle, "Title: …/title.md");
+    assert.equal(card.boardAbout, "About: …/about.md");
+    assert.equal(card.boardDecide, "Decide: …/decide.md");
+    assert.equal(card.boardDetail, "Report: …/report.md");
+    assert.equal(card.boardFreeformHint, "Read …/hint.md");
+    assert.equal(card.boardPrUrl, null);
+    assert.equal(card.boardClose, null);
+    assert.doesNotMatch(JSON.stringify(model), /\/home\/example/);
+    const html = window.bearingsView.cardHtml(card);
+    assert.match(html, /Title: …\/title\.md/);
+    assert.match(html, /About: …\/about\.md/);
+    assert.match(html, /Decide: …\/decide\.md/);
+    assert.match(html, /Report: …\/report\.md/);
+    assert.doesNotMatch(html, /\/home\/example/);
+  }
+  client.stop();
+});
 
 test("cached native decisions reach the bearings API and Overview alongside their landing", async (context) => {
   // Oracle: fm-bearings.v1 output captured from unmodified Firstmate fb75c1f,

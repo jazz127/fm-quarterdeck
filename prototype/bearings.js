@@ -508,14 +508,14 @@ function callSection(raw) {
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
     cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), answer: readOnly ? null : decisionAnswer(row, task),
-      boardTitle: row.board_title || null,
-      boardAbout: row.board_about || null,
-      boardDecide: row.board_decide || null,
-      boardDetail: row.board_detail || null,
-      boardPrUrl: row.board_pr_url || null,
-      boardFreeformHint: row.board_freeform_hint || null,
+      boardTitle: publicText(row.board_title, Infinity),
+      boardAbout: publicText(row.board_about, Infinity),
+      boardDecide: publicText(row.board_decide, Infinity),
+      boardDetail: publicText(row.board_detail, Infinity),
+      boardPrUrl: httpsUrl(row.board_pr_url),
+      boardFreeformHint: publicText(row.board_freeform_hint, 240),
       boardAllowFreeform: row.board_allow_freeform === true,
-      boardClose: row.board_close || null
+      boardClose: row.board_close === "done" || row.board_close === "release" ? row.board_close : null
     }));
   }
   const merges = new Set();
