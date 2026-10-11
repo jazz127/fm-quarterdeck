@@ -53,6 +53,22 @@ await writeFile(path.join(home, 'data/projects.md'), '- synthetic-repository - O
 const script = path.join(home, 'bin/fm-bearings-snapshot.sh');
 await writeFile(script, '#!/bin/sh\ncat "$FM_HOME/snapshot.json"\n');
 await chmod(script, 0o755);
+const workTitle = `Build example-app ${'Complete source context. '.repeat(12)}final full title`;
+const workToken = 'UnbrokenExampleText'.repeat(30);
+const canonicalWork = {
+  schema: 'fm-fleet-snapshot.v1',
+  tasks: [{ id: 'check-layout', kind: 'ship', backlog: { title: workTitle, repo: 'example-app' },
+    current_state: { state: 'done', source: 'run-step', detail: 'run passed: PR open', freshness: 'fresh' } },
+    { id: 'idle-mate', kind: 'secondmate' }],
+  secondmate_current: { registry: { available: true }, records: ['home-alpha', 'home-beta'].map((id, index) => ({
+    id, registered: true, provenance: { selected: 'structured-home' }, freshness: { status: 'fresh' },
+    active_children: [{ id: 'check-layout', name: `Check the sample layout ${workToken} final child title`, kind: 'scout', state: 'working',
+      source: index ? 'pane' : 'run-step', doing: index ? 'harness busy' : 'validating (running) · Validating sample geometry' }],
+  })).concat([{ id: 'home-unavailable', registered: true, provenance: { selected: 'unknown' } }]) },
+};
+await writeFile(path.join(home, 'canonical-work.json'), JSON.stringify(canonicalWork));
+await writeFile(path.join(home, 'bin/fm-fleet-snapshot.sh'), '#!/bin/sh\ncat "$FM_HOME/canonical-work.json"\n');
+await chmod(path.join(home, 'bin/fm-fleet-snapshot.sh'), 0o755);
 await mkdir(path.join(home, '.lavish'), { recursive: true });
 const boardPayload = {
   schema: 'fm-bearings-board.v1', home: 'synthetic-home', generated: new Date().toISOString(), prs_live: false,
@@ -281,10 +297,15 @@ try {
       if(underway.querySelectorAll('[data-work-key]').length!==3||charted.querySelectorAll('[data-work-key]').length!==2)throw Error('work row counts '+underway.querySelectorAll('[data-work-key]').length+'/'+charted.querySelectorAll('[data-work-key]').length);
       if(!underway.textContent.includes('Check the sample layout')||!underway.textContent.includes('Validating sample geometry')||!charted.textContent.includes('Deferred until 2026-12-01')||!charted.textContent.includes('Blocked by: sample-mate/check-layout')||!charted.textContent.includes('Needs repair')||charted.querySelector('[data-work-count]').textContent!=='1')throw Error('work source fields');
       if(underway.querySelector('form,textarea,[data-call-answer]')||charted.querySelector('form,textarea,[data-call-answer]'))throw Error('work invented actions');
+      const workRows=[...underway.querySelectorAll('[data-work-key]')];
+      if(new Set(workRows.map(n=>n.dataset.workKey)).size!==3||!underway.textContent.includes('Home: Main home')||!underway.textContent.includes('Home: home-alpha')||!underway.textContent.includes('Home: home-beta'))throw Error('home identities or labels');
+      if(!underway.textContent.includes('PR open / awaiting merge')||!underway.textContent.includes('Validating / review')||!underway.textContent.includes('Working · stage unavailable')||!underway.textContent.includes('home-unavailable: work records unavailable'))throw Error('stage or unavailable coverage');
+      if(!underway.textContent.includes(${JSON.stringify(workTitle)})||!underway.textContent.includes(${JSON.stringify(workToken)}))throw Error('full work text missing');
       for(const name of ['underway','charted']){
         const section=name==='underway'?underway:charted;
         if(innerWidth<=720){document.querySelector('[data-overview-tab="'+name+'"]').click();if(document.querySelector('#overview-primary').hidden!==true||document.querySelector('#overview-secondary').hidden||section.hidden||!document.querySelector('#just-landed').hidden)throw Error('work phone tab');}
         const box=section.getBoundingClientRect();if(box.width<40||box.left<0||box.right>innerWidth+1||section.scrollWidth>section.clientWidth+1)throw Error('work geometry');
+        for(const node of section.querySelectorAll('[data-work-key] h3,[data-work-key] .call-meta,[data-work-key] .state-chip')){const style=getComputedStyle(node);if(node.scrollWidth>node.clientWidth+1||node.scrollHeight>node.clientHeight+1||style.textOverflow==='ellipsis'||(style.webkitLineClamp!=='none'&&style.webkitLineClamp!=='0'))throw Error('work text clipped');}
       }
       if(innerWidth<=720)document.querySelector('#overview-tab-calls').click();
       return {workSections:true,width:innerWidth};

@@ -75,7 +75,7 @@ test('work UI renders active/gated rows, escapes source text and retains nodes o
   view.update(model);
   assert.equal(view.count('charted'), 2);
   const node = sections.underway.querySelector('[data-work-key]');
-  assert.match(node.textContent, /working.*Build the sample preview.*Validating the sample/s);
+  assert.match(node.textContent, /Stage unavailable.*Build the sample preview.*Validating the sample/s);
   assert.match(sections.charted.textContent, /Needs repair/);
   assert.match(sections.charted.textContent, /Blocked by: build-preview/);
   view.observe({ state: 'stale', stale: true });
@@ -87,6 +87,66 @@ test('work UI renders active/gated rows, escapes source text and retains nodes o
   assert.match(sections.underway.textContent, /Nothing is underway/);
   view.update({ ...normalizeSnapshot(base()), state: 'ready' });
   assert.match(sections.charted.textContent, /unavailable/);
+});
+
+test('Underway renders full long text, plain stages and explicit home labels', () => {
+  const dom = callDom(), context = vm.createContext({ window: {}, document: dom.document });
+  vm.runInContext(readFileSync(new URL('../public/bearings-work.js', import.meta.url), 'utf8'), context);
+  const title = `Build example-app ${'longword'.repeat(100)} final title`, doing = `Full detail ${'context '.repeat(100)}final detail`;
+  const card = { type: 'underway', title, doing, stage: 'Validating / review', home: 'home-alpha', task: 'home-alpha/build', kind: 'ship' };
+  const node = dom.document.createElement('article'); node.innerHTML = context.window.bearingsWork.cardHtml(card);
+  assert.ok(node.textContent.includes(title)); assert.ok(node.textContent.includes(doing));
+  assert.match(node.textContent, /Validating \/ review/);
+  assert.equal(node.querySelector('[data-work-home]').textContent, 'Home: home-alpha');
+  assert.match(context.window.bearingsWork.cardHtml({ ...card, stage: null }), /Stage unavailable/);
+});
+
+test('stock current-state projections reject prose, stale events and historical validation runs', async () => {
+  const { currentStage } = await import('../underway-records.js');
+  const current = (state, source, detail) => ({ state, source, detail, freshness: 'fresh' });
+  assert.equal(currentStage(current('working', 'run-step', 'validating (fixing) · run: synthetic')), 'Validating / review');
+  assert.equal(currentStage(current('working', 'run-step', 'ci running')), 'Validating / review');
+  assert.equal(currentStage(current('done', 'run-step', 'run passed: PR open')), 'PR open / awaiting merge');
+  assert.equal(currentStage(current('done', 'run-step', 'checks green: PR ready for review (still monitoring for merge/close)')), 'PR open / awaiting merge');
+  assert.equal(currentStage(current('parked', 'run-step', 'parked at test: 2 finding(s)')), 'Waiting for validation decision');
+  assert.equal(currentStage(current('parked', 'status-log', 'Choose the window')), 'Waiting for captain decision');
+  assert.equal(currentStage(current('blocked', 'status-log', 'Source unavailable')), 'Blocked');
+  assert.equal(currentStage(current('working', 'pane', 'harness busy (building)')), 'Working · stage unavailable');
+  assert.equal(currentStage(current('working', 'status-log', 'validating (running)')), 'Working · stage unavailable');
+  assert.equal(currentStage({ ...current('working', 'run-step', 'validating (running)'), freshness: 'stale' }), 'Stage unavailable');
+  assert.equal(currentStage(current('working', 'run-step', 'validating (running)'), { cached: true }), 'Stage unavailable');
+  // Current stock attribution already rejected this historical branch/run; the
+  // historical event and meta delivery mode must not override its current result.
+  const { projectUnderwayRecords } = await import('../underway-records.js');
+  const projected = projectUnderwayRecords({ schema: 'fm-fleet-snapshot.v1', tasks: [{ id: 'build', kind: 'ship', mode: 'delivery',
+    current_state: current('working', 'pane', 'harness busy'), hints: { last_event_text: 'done: PR open' },
+    validation: { outcome: 'passed', branch: 'fm/old', head: 'old-head' } }], secondmate_current: { records: [], registry: { available: true } } });
+  assert.equal(projected.rows[0].stage, 'Working · stage unavailable');
+  assert.equal(projected.rows[0].doing, 'harness busy');
+});
+
+test('registered canonical homes retain same-named work, exclude idle mates and disclose unavailable sources', async () => {
+  const { projectUnderwayRecords } = await import('../underway-records.js');
+  const home = (id, children) => ({ id, registered: true, provenance: { selected: 'structured-home' },
+    freshness: { status: 'fresh' }, active_children: children, counts: { active_children: children.length } });
+  const child = { id: 'build', kind: 'ship', name: 'Build example-app', state: 'working', source: 'run-step', doing: 'validating (running)' };
+  const snapshot = { schema: 'fm-fleet-snapshot.v1', tasks: [{ id: 'build', kind: 'ship', backlog: { title: 'Build main example-app' },
+    current_state: { state: 'blocked', source: 'status-log', detail: 'Dependency' } }, { id: 'idle', kind: 'secondmate' }],
+    secondmate_current: { registry: { available: true }, records: [home('home-alpha', [child, child]), home('home-beta', [child]), home('home-idle', []),
+      { id: 'home-unavailable', registered: true, provenance: { selected: 'parent-event-fallback' }, parent_event: { note: 'working: build' } },
+      { ...home('unregistered', [child]), registered: false }] } };
+  const work = projectUnderwayRecords(snapshot);
+  const model = normalizeSnapshot({ ...base(), in_flight: work.rows.map(({ stage, ...row }) => ({ ...row, quarterdeckStage: stage })), quarterdeckWorkDisclosures: work.disclosures });
+  assert.deepEqual(model.underway.map(row => row.home), ['Main home', 'home-alpha', 'home-beta']);
+  assert.equal(new Set(model.underway.map(row => row.key)).size, 3);
+  assert.equal(model.underway[1].stage, 'Validating / review');
+  assert.deepEqual(model.workCoverage.underwayDisclosures, ['home-unavailable: work records unavailable']);
+  assert.ok(model.omitted.some(row => row.kind === 'invalid-underway' && row.count === 1));
+  snapshot.secondmate_current.registry.available = false;
+  snapshot.secondmate_current.records[0].freshness.status = 'cached';
+  const partial = projectUnderwayRecords(snapshot);
+  assert.ok(partial.disclosures.includes('Registered-home registry unavailable'));
+  assert.equal(partial.rows[1].stage, 'Stage unavailable');
 });
 
  test('chat composition retains work-only revisions through the existing stream model', () => {

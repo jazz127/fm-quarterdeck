@@ -11,6 +11,35 @@ import { createServer } from "../server.js";
 const fixture = async (name) => JSON.parse(await readFile(new URL(`./fixtures/bearings/${name}.json`, import.meta.url), "utf8"));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+test('Underway runner reads stock canonical records for full text and all registered homes', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'quarterdeck-underway-'));
+  try {
+    await mkdir(path.join(home, 'bin')); await mkdir(path.join(home, 'data'));
+    const title = `Build example-app ${'full context '.repeat(30)}final title`;
+    const child = { id: 'build', name: 'Check example-app', kind: 'ship', state: 'working', source: 'run-step', doing: 'validating (running)' };
+    const raw = await fixture('clear'); raw.in_flight = [{ id: 'build', name: 'Build example-app…', state: 'working', doing: 'Working…' }];
+    const canonical = { schema: 'fm-fleet-snapshot.v1', tasks: [{ id: 'build', kind: 'ship', backlog: { title, repo: 'example-app' },
+      current_state: { state: 'working', source: 'run-step', detail: 'validating (running)', freshness: 'fresh' } }],
+      secondmate_current: { registry: { available: true }, records: ['home-alpha', 'home-beta'].map(id => ({ id, registered: true,
+        provenance: { selected: 'structured-home' }, freshness: { status: 'fresh' }, active_children: [child] })) } };
+    await writeFile(path.join(home, 'bearings.json'), JSON.stringify(raw));
+    await writeFile(path.join(home, 'canonical.json'), JSON.stringify(canonical));
+    for (const [script, file] of [['fm-bearings-snapshot.sh', 'bearings.json'], ['fm-fleet-snapshot.sh', 'canonical.json']]) {
+      const executable = path.join(home, 'bin', script);
+      await writeFile(executable, `#!/bin/sh\n${file === 'canonical.json' ? '[ "$FM_CREW_STATE_NO_FORGE" = 1 ] && [ "$FM_SNAPSHOT_SECONDMATES" = 0 ] || exit 7\n' : ''}cat "$FM_HOME/${file}"\n`);
+      await chmod(executable, 0o755);
+    }
+    const run = createSnapshotRunner(home), model = normalizeSnapshot(JSON.parse(await run()));
+    assert.equal(model.underway[0].title, title);
+    assert.deepEqual(model.underway.map(row => row.home), ['Main home', 'home-alpha', 'home-beta']);
+    assert.ok(model.underway.every(row => row.stage === 'Validating / review'));
+    await rm(path.join(home, 'bin', 'fm-fleet-snapshot.sh'));
+    const unavailable = normalizeSnapshot(JSON.parse(await run()));
+    assert.equal(unavailable.underway[0].stage, 'Stage unavailable');
+    assert.match(unavailable.workCoverage.underwayDisclosures.join(' '), /Canonical work records unavailable/);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
 // Deterministic timers for the scheduler: nothing here waits on wall time.
 function fakeClock(start = 10_000_000) {
   let now = start;
@@ -248,7 +277,7 @@ test("selected-home holds match exact task and main owner without hiding decisio
   assert.deepEqual(normalizeSnapshot(raw).cards, before.filter(card => card.task !== merge.task), "only the main owner's exact Merge is removed; decisions remain");
 });
 
-test("runner invokes only the guarded snapshot with --json under FM_HOME and shares one run", async (context) => {
+test("runner shares the guarded expanded snapshot run under FM_HOME", async (context) => {
   const raw = await fixture("two-calls");
   const home = await syntheticHome(context, `echo "$# $*|$FM_HOME" >> "$FM_HOME/calls"\nsleep 0.2\ncat "$FM_HOME/fixture.json"`);
   await writeFile(path.join(home, "fixture.json"), JSON.stringify(raw));
@@ -256,7 +285,7 @@ test("runner invokes only the guarded snapshot with --json under FM_HOME and sha
   const [first, second] = await Promise.all([run(), run()]);
   assert.equal(first, second);
   assert.equal(JSON.parse(first).schema, "fm-bearings.v1");
-  assert.equal(await readFile(path.join(home, "calls"), "utf8"), `1 --json|${home}\n`);
+  assert.equal(await readFile(path.join(home, "calls"), "utf8"), `3 --json --all-in-flight --all-secondmates|${home}\n`);
 });
 
 test("runner bounds time and output and reports a missing or failing snapshot as unavailable", async (context) => {

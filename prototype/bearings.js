@@ -1,5 +1,6 @@
 import { parseBacklogTask } from "./firstmate-records.js";
 import { enumeratedLetterOptions, publishOptions } from "./enumerated-options.js";
+import { projectUnderwayRecords } from "./underway-records.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, watch as fsWatch } from "node:fs";
@@ -581,13 +582,15 @@ function workSection(raw, source, section) {
     const id = object(row) && typeof row.id === "string" && row.id.length <= 321
       && (WORK_ID.test(row.id) || (section === "charted" && WARNING_IDS.has(row.id))) ? row.id : null;
     const title = id ? publicText(section === "underway" ? row.name : row.title, Infinity) : null;
-    const owner = token(row?.owner);
+    const owner = token(row?.owner) || (section === "underway" ? token(id?.split("/").length === 2 ? id.split("/")[0] : "(main)") : null);
     const identity = `${owner || ""}:${id}`;
     if (!id || !title || seen.has(identity)) { invalid += 1; continue; }
     seen.add(identity);
     const warning = section === "charted" && (row.kind === "warning" || WARNING_IDS.has(id));
     rows.push(withRev({ key: `${section}:${owner || ""}:${id}`, type: section, task: id, title,
-      repo: repoName(row.repo), owner: token(row.owner),
+      repo: repoName(row.repo), owner,
+      ...(section === "underway" ? { home: owner === "(main)" ? "Main home" : owner,
+        stage: publicText(row.quarterdeckStage, Infinity) || "Stage unavailable" } : {}),
       kind: warning ? "warning" : section === "charted" ? "queued" : token(row.kind),
       state: section === "underway" ? token(row.state) : null,
       doing: section === "underway" ? publicText(row.doing, Infinity) : null,
@@ -608,8 +611,9 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", 
   validateSnapshot(raw);
   const content = { cards: [], coverage: null, omitted: [], landed: [], underway: [], charted: [],
     workCoverage: { underway: Array.isArray(raw.in_flight), charted: Array.isArray(raw.gates),
-      disclosures: raw.omitted.filter(row => object(row) && typeof row.surface === "string" && /in_flight|gates|inventory|current|registry/.test(row.surface))
+      disclosures: raw.omitted.filter(row => object(row) && typeof row.surface === "string" && /in_flight|gates|inventory|current|registry|secondmate/.test(row.surface))
         .map(row => publicText(row.surface, Infinity)).filter(Boolean) } };
+  if (Array.isArray(raw.quarterdeckWorkDisclosures)) content.workCoverage.underwayDisclosures = raw.quarterdeckWorkDisclosures.map(value => publicText(value, Infinity)).filter(Boolean);
   let landedInvalid = 0;
   for (const name of enabled) {
     const section = SECTIONS[name]?.(raw);
@@ -635,14 +639,14 @@ export const contentRevision = ({ cards, coverage, omitted, holds, landed, under
 
 export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = access, setPriority = os.setPriority, timeoutMs = 45000, maxStdout = 2 * 1024 * 1024, maxStderr = 4096 } = {}) {
   let pending = null;
-  const once = async () => {
+  const once = async (script = "fm-bearings-snapshot.sh", args = ["--json", "--all-in-flight", "--all-secondmates"]) => {
     if (!home) throw new BearingsUnavailable("FM_HOME is not configured");
     if (!path.isAbsolute(home)) throw new BearingsUnavailable("FM_HOME must be absolute");
-    const executable = path.join(home, "bin", "fm-bearings-snapshot.sh");
+    const executable = path.join(home, "bin", script);
     try { await accessImpl(executable, constants.X_OK); } catch { throw new BearingsUnavailable("Firstmate bearings snapshot is not installed"); }
     return new Promise((resolve, reject) => {
       // Never --include-prs: the background loop makes no GitHub calls.
-      const child = spawnImpl(executable, ["--json"], { env: { ...process.env, FM_HOME: home }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      const child = spawnImpl(executable, args, { env: { ...process.env, FM_HOME: home, FM_CREW_STATE_NO_FORGE: "1", FM_SNAPSHOT_SECONDMATES: "0" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
       let stdout = "", stderr = "", failure = null, settled = false;
       const stop = (reason) => {
         failure ||= reason;
@@ -669,7 +673,20 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
       });
     });
   };
-  return () => (pending ||= once().then((output) => addBacklogEvidence(output, home)).then((output) => addBoardEvidence(output, home)).finally(() => { pending = null; }));
+  const addWorkRecords = async output => {
+    const raw = JSON.parse(output);
+    try {
+      // This stock reader owns registry selection and permitted home-ledger reads.
+      // Its Underway observation stands alone; never join two task generations.
+      const work = projectUnderwayRecords(JSON.parse(await once("fm-fleet-snapshot.sh", ["--json"])));
+      raw.in_flight = work.rows.map(({ stage, ...row }) => ({ ...row, quarterdeckStage: stage }));
+      raw.quarterdeckWorkDisclosures = work.disclosures;
+    } catch {
+      raw.quarterdeckWorkDisclosures = ["Canonical work records unavailable; current stages and registered-home inventory unverified"];
+    }
+    return JSON.stringify(raw);
+  };
+  return () => (pending ||= once().then(addWorkRecords).then((output) => addBacklogEvidence(output, home)).then((output) => addBoardEvidence(output, home)).finally(() => { pending = null; }));
 }
 
 // Reads mtimes and sizes only (never contents) of the two record kinds whose change

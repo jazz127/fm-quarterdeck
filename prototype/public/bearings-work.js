@@ -4,14 +4,15 @@ window.bearingsWork = (() => {
   const escape = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   function cardHtml(card) {
     const underway = card.type === "underway";
-    const badge = underway ? card.state || "State not recorded" : card.kind === "warning" ? "Needs repair" : "Waiting";
+    const badge = underway ? card.stage || "Stage unavailable" : card.kind === "warning" ? "Needs repair" : "Waiting";
     const detail = underway ? card.doing : card.reason;
     const clock = !underway ? window.bearingsView?.clockText?.(card.clock) : null;
     return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${escape(badge)}</span>${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${clock ? `<span class="call-age">${escape(clock)}</span>` : ""}</header>
       <h3>${escape(card.title)}</h3>
+      ${underway ? `<p class="call-meta" data-work-home>Home: ${escape(card.home || "Home unavailable")}</p>` : ""}
       ${detail ? `<p class="call-meta">${escape(detail)}</p>` : ""}
       ${card.blockedBy ? `<p class="call-meta">Blocked by: ${escape(card.blockedBy)}</p>` : ""}
-      <p class="call-meta">${escape([underway ? card.kind : card.owner, card.repo || card.task].filter(Boolean).join(" · "))}</p>
+      <p class="call-meta">${escape([underway ? card.kind : card.owner, card.task].filter(Boolean).join(" · "))}</p>
       ${window.bearingsView?.sourceShortened?.(card.title) || window.bearingsView?.sourceShortened?.(detail) ? '<p class="call-shortened">Firstmate’s snapshot shortened this row; Quarterdeck shows everything it received.</p>' : ""}</div>`;
   }
   function createController({ sections = {}, doc = document } = {}) {
@@ -26,6 +27,7 @@ window.bearingsWork = (() => {
       if (model.state === "unavailable" || (model.state !== "loading" && !model.workCoverage?.[name])) notes.push(`${labels[name]} unavailable`);
       for (const entry of model.omitted || []) if (entry.kind === `invalid-${name}`) notes.push(`${entry.count} invalid rows withheld`);
       notes.push(...(model.workCoverage?.disclosures || []));
+      if (name === "underway") notes.push(...(model.workCoverage?.underwayDisclosures || []));
       status.textContent = notes.join(" · ");
       status.hidden = !notes.length;
     }
@@ -56,6 +58,7 @@ window.bearingsWork = (() => {
         empty.textContent = model.state === "loading" ? `Checking ${labels[name]}…`
           : model.state === "unavailable" || !model.workCoverage?.[name] ? `${labels[name]} unavailable`
           : model.state === "stale" || model.stale ? "No rows in the last good snapshot · stale"
+          : name === "underway" && model.workCoverage?.underwayDisclosures?.length ? "No observed work rows; inventory coverage is incomplete."
           : name === "underway" ? "Nothing is underway in the current snapshot." : "Nothing is queued in the current snapshot.";
         const badge = root.querySelector("[data-work-count]");
         if (badge) { badge.textContent = String(count(name)); badge.hidden = count(name) === 0; }
