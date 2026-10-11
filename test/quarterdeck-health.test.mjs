@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -151,20 +152,23 @@ async function notes(f, pending, extra = {}) {
   }));
 }
 const noteId = (age, suffix = 'synthetic') => `${Math.floor(Date.now() / 1000) - age}-${suffix}`;
-test('overdue notes wake once, name ids and demand reply plus ack; fresh notes stay silent', async t => {
+test('new notes report once at any age; overdue notes retain reply plus ack reminders', async t => {
   const f = await fixture(t);
   const old = noteId(1000), fresh = noteId(30), future = noteId(-120);
   await notes(f, [{ id: old, body: 'DO NOT PRINT THIS' }, { id: fresh }, { id: future }]);
   const result = await check(f);
   failure(result, /inbox notes overdue/);
   assert.ok(result.stdout.includes(old));
-  assert.ok(!result.stdout.includes(fresh));
-  assert.ok(!result.stdout.includes(future));
+  assert.ok(result.stdout.includes(fresh));
+  assert.ok(result.stdout.includes(future));
   assert.ok(!result.stdout.includes('DO NOT PRINT THIS'));
   assert.match(result.stdout, /reply <id> <text>.*drain --ack <id> required/);
   assert.equal((await check(f)).stdout, '');
+  assert.match(result.stdout, /new pending inbox notes/);
   // A reply alone does not close pending intake; removal after ack stops wakes.
-  failure(await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' }), /inbox notes overdue/);
+  const reminder = await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' });
+  failure(reminder, /inbox notes overdue/);
+  assert.doesNotMatch(reminder.stdout, /new pending/);
   await notes(f, []);
   assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
 });
@@ -177,7 +181,7 @@ test('handled and reply omissions do not hide pending coverage', async t => {
     { surface: 'replies omitted by bound: 42', reveal: 'pass --all-replies' },
     { surface: 'malformed replies without a valid sequence: 1 (synthetic.json)' },
   ] });
-  assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
+  failure(await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' }), /new pending inbox notes/);
   await notes(f, [{ id: noteId(1000) }], { omitted: [handled] });
   failure(await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' }), /inbox notes overdue/);
 });
@@ -219,7 +223,11 @@ test('many overdue ids are bounded with a remaining count', async t => {
   await notes(f, Array.from({ length: 25 }, (_, i) => ({ id: noteId(1000, `synthetic-${i}`) })));
   const result = await check(f);
   failure(result, /\(\+5 more; list inbox\)/);
-  assert.ok(result.stdout.length < 3000);
+  assert.ok(result.stdout.length < 6000);
+  const marker = join(f.state, 'fm-quarterdeck-health.notes.json');
+  assert.equal(JSON.parse(await readFile(marker, 'utf8')).reported.length, 25);
+  assert.equal((await lstat(marker)).mode & 0o777, 0o600);
+  assert.equal((await check(f)).stdout, '');
 });
 for (const [name, pending, extra] of [
   ['unsafe id', [{ id: '123-unsafe\nline' }], {}],
@@ -242,7 +250,7 @@ for (const value of [0, -1, 1441, 1.5, '1', true, null]) {
     await notes(f, [{ id: noteId(100) }]);
     await writeFile(join(f.state, 'quarterdeck-preferences.json'), JSON.stringify({ awayCheckInMinutes: value, openNoteAlarmMinutes: value }));
     await writeFile(join(f.state, 'fm-quarterdeck-health.stamp'), String(Date.now() / 1000 - 120));
-    assert.equal((await check(f)).stdout, ''); assert.equal(f.calls(), 0);
+    failure(await check(f), /new pending inbox notes/); assert.equal(f.calls(), 0);
     assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
   });
 }
@@ -273,4 +281,194 @@ test('hung inbox reads have a bounded deadline', async t => {
   const start = Date.now();
   failure(await check(f), /inbox unavailable/);
   assert.ok(Date.now() - start < 6000);
+});
+
+const markerName = 'fm-quarterdeck-health.notes.json';
+test('multiple new notes bypass a recent health stamp; repeats, replies and handled notes do not become new', async t => {
+  const f = await fixture(t);
+  await check(f);
+  const first = noteId(0, 'example-app-a'), second = noteId(0, 'example-app-b');
+  const handled = noteId(0, 'handled');
+  await notes(f, [{ id: second }, { id: first }, { id: first }], {
+    handled: [{ id: handled }], replies: [{ id: first, body: 'Synthetic reply' }],
+  });
+  const receiptBytes = await readFile(join(f.state, 'receipts.json'), 'utf8');
+  const stamp = await readFile(join(f.state, 'fm-quarterdeck-health.stamp'), 'utf8');
+  const result = await check(f);
+  failure(result, /new pending inbox notes/);
+  assert.ok(result.stdout.includes(first) && result.stdout.includes(second));
+  assert.ok(!result.stdout.includes(handled));
+  assert.equal((result.stdout.match(new RegExp(first, 'g')) || []).length, 1);
+  assert.equal(f.calls(), 2, 'dashboard remains throttled');
+  assert.equal(await readFile(join(f.state, 'fm-quarterdeck-health.stamp'), 'utf8'), stamp);
+  assert.equal(await readFile(join(f.state, 'receipts.json'), 'utf8'), receiptBytes);
+  assert.equal((await check(f)).stdout, '');
+  await notes(f, []);
+  assert.equal((await check(f)).stdout, '');
+  await notes(f, [{ id: first }]);
+  assert.equal((await check(f)).stdout, '', 'reported identity survives removal');
+});
+test('a previously reported fresh note later becomes overdue and continues periodic reminders', async t => {
+  const f = await fixture(t);
+  const id = noteId(100);
+  await notes(f, [{ id }]);
+  failure(await check(f), /new pending inbox notes/);
+  await writeFile(join(f.state, 'quarterdeck-preferences.json'), JSON.stringify({ openNoteAlarmMinutes: 1 }));
+  assert.equal((await check(f)).stdout, '', 'overdue reminders remain throttled');
+  for (let i = 0; i < 2; i++) {
+    await writeFile(join(f.state, 'fm-quarterdeck-health.stamp'), String(Date.now() / 1000 - 601));
+    const reminder = await check(f);
+    failure(reminder, /inbox notes overdue/);
+    assert.doesNotMatch(reminder.stdout, /new pending/);
+  }
+});
+test('unavailable receipts never advance the marker and recovered source reports new notes', async t => {
+  const f = await fixture(t);
+  const first = noteId(0, 'first'), second = noteId(0, 'second');
+  await notes(f, [{ id: first }]);
+  await check(f);
+  const marker = await readFile(join(f.state, markerName), 'utf8');
+  await notes(f, [{ id: first }, { id: second }], { omitted: [{ surface: 'pending notes omitted by bound: 1' }] });
+  failure(await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' }), /inbox unavailable/);
+  assert.equal(await readFile(join(f.state, markerName), 'utf8'), marker);
+  await notes(f, [{ id: first }, { id: second }]);
+  const result = await check(f);
+  failure(result, /new pending inbox notes/);
+  assert.ok(result.stdout.includes(second));
+  assert.ok(!result.stdout.includes(first));
+});
+test('unsafe marker is refused without touching its target or printing paths', async t => {
+  const f = await fixture(t);
+  await notes(f, [{ id: noteId(0) }]);
+  const target = join(f.state, 'receipts.json'), original = await readFile(target, 'utf8');
+  await symlink(target, join(f.state, markerName));
+  const result = await check(f);
+  failure(result, /new inbox note marker unavailable or invalid/);
+  assert.ok(!result.stdout.includes(f.state));
+  assert.equal(await readFile(target, 'utf8'), original);
+  await rm(join(f.state, markerName));
+  const invalid = JSON.stringify({ schema: 'unknown.v1', reported: ['do-not-print-marker'] });
+  await writeFile(join(f.state, markerName), invalid);
+  const rejected = await check(f);
+  failure(rejected, /new inbox note marker unavailable or invalid/);
+  assert.doesNotMatch(rejected.stdout, /do-not-print-marker/);
+  assert.equal(await readFile(join(f.state, markerName), 'utf8'), invalid);
+});
+test('marker write failure is meaningful and retries notification after recovery', { skip: process.getuid?.() === 0 }, async t => {
+  const f = await fixture(t);
+  await check(f); // Create writable lock and stamp before removing directory write access.
+  const id = noteId(0);
+  await notes(f, [{ id }]);
+  await chmod(f.state, 0o500);
+  let result;
+  try { result = await check(f); } finally { await chmod(f.state, 0o700); }
+  failure(result, /new pending inbox notes.*marker write failed/);
+  assert.ok(!result.stdout.includes(f.state));
+  failure(await check(f), /new pending inbox notes/);
+  assert.equal((await check(f)).stdout, '');
+});
+
+// Opt-in real-process contract: no download, shared endpoint or patched watcher.
+// See docs/FIRSTMATE-INTEGRATIONS.md for the exact upstream pin and invocation.
+const stockRoot = process.env.FM_QUARTERDECK_TEST_STOCK_ROOT;
+test('stock follow-on watcher delivers a new note through the registered custom health check', {
+  skip: !stockRoot && 'set FM_QUARTERDECK_TEST_STOCK_ROOT to the pinned upstream export',
+  timeout: 30000,
+}, async t => {
+  const hash = createHash('sha256');
+  async function sourceFiles(dir, prefix = '') {
+    const files = [];
+    for (const name of await readdir(dir)) {
+      const relative = prefix + name, file = join(dir, name), info = await lstat(file);
+      assert.ok(!info.isSymbolicLink(), 'stock export must contain regular source');
+      if (info.isDirectory()) files.push(...await sourceFiles(file, relative + '/'));
+      else { assert.ok(info.isFile()); files.push(relative); }
+    }
+    return files;
+  }
+  const files = (await sourceFiles(join(stockRoot, 'bin'))).sort();
+  for (const file of files) hash.update(file + '\0').update(await readFile(join(stockRoot, 'bin', file))).update('\0');
+  assert.equal(hash.digest('hex'), '5767c03d05550e1c51b253ba5349f58f6de6410f4b1a15ade1f5bd5f00697597',
+    'requires unmodified bin/ from upstream 4735ddc6d9667dffa775cd0009f56775e56ba326');
+  let watcher, done, closed = false;
+  t.after(async () => {
+    if (watcher && !closed) watcher.kill('SIGTERM');
+    if (done) await done;
+  });
+  const f = await fixture(t), home = f.state;
+  f.state = join(home, 'state');
+  await mkdir(f.state, { mode: 0o700 });
+  await mkdir(join(home, 'config'));
+  await mkdir(join(home, 'data'));
+  await cp(join(stockRoot, 'bin'), join(home, 'bin'), { recursive: true });
+  const fakebin = join(home, 'fakebin');
+  await mkdir(fakebin);
+  // Same empty tmux surface as stock wake-helpers.sh; no real terminal backend.
+  await writeFile(join(fakebin, 'tmux'), '#!/bin/sh\n[ "$1" = list-windows ] && exit 0\nexit 1\n', { mode: 0o700 });
+  const env = {
+    HOME: process.env.HOME, PATH: `${fakebin}:/usr/bin:/bin`, FM_HOME: home, FM_ROOT_OVERRIDE: home,
+    FM_STATE_OVERRIDE: f.state, FM_CONFIG_OVERRIDE: join(home, 'config'),
+    FM_BACKEND: 'tmux', FM_WATCH_HANDLING_SUCCESSOR: '1', FM_POLL: '0.2',
+    FM_SIGNAL_GRACE: '1', FM_CHECK_INTERVAL: '300', FM_HEARTBEAT: '999999',
+    FM_SECONDMATE_LIVENESS_SECS: '99999999', FM_WEDGE_ALARM_EXEC: 'discard',
+    FM_QUARTERDECK_HEALTH_STATE_DIR: f.state, FM_QUARTERDECK_HEALTH_PORT: String(f.port),
+    FM_QUARTERDECK_STATE_PATH: join(home, 'agent-state.json'),
+    TAILSCALE_BIN: join(home, 'absent-tailscale'),
+  };
+  const run = (file, args = []) => execFileSync(join(home, 'bin', file), args, { env, encoding: 'utf8', timeout: 10000 });
+  await writeFile(join(f.state, 'fm-quarterdeck-health.check.sh'),
+    `#!/usr/bin/env bash\n# fm-quarterdeck\nexec bash '${script.replaceAll("'", "'\\''")}'\n`, { mode: 0o700 });
+  assert.match(run('fm-check-register.sh', ['fm-quarterdeck-health']), /registered:/);
+  assert.equal((await check(f, { FM_HOME: home, FM_STATE_OVERRIDE: f.state })).stdout, '');
+  assert.equal(f.calls(), 2, 'prime a fresh dashboard stamp');
+  await writeFile(join(f.state, '.last-check'), '');
+  watcher = spawn(join(home, 'bin/fm-watch.sh'), [], { env });
+  let stdout = '', stderr = '';
+  watcher.stdout.on('data', data => { stdout += data; });
+  watcher.stderr.on('data', data => { stderr += data; });
+  done = new Promise((resolve, reject) => {
+    watcher.on('error', reject);
+    watcher.on('close', code => { closed = true; resolve(code); });
+  });
+  async function until(predicate, message) {
+    const deadline = Date.now() + 10000;
+    while (!await predicate()) {
+      assert.ok(!closed, `watcher exited early: ${stdout} ${stderr}`);
+      assert.ok(Date.now() < deadline, message);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  let beat;
+  await until(async () => {
+    try { beat = (await lstat(join(f.state, '.last-watcher-beat'))).mtimeMs; return true; } catch { return false; }
+  }, 'follow-on watcher did not start');
+  await until(async () => (await lstat(join(f.state, '.last-watcher-beat'))).mtimeMs > beat,
+    'follow-on watcher did not complete an empty poll cycle');
+  const id = JSON.parse(run('fm-inbox.sh', ['note', '--json', '--request-id', 'example-app-note', 'Synthetic note for example-app'])).id;
+  assert.match(id, /^[0-9]+-[A-Za-z0-9]+$/);
+  const receipts = run('fm-inbox.sh', ['receipts', '--all-pending']);
+  assert.equal(JSON.parse(receipts).pending[0].id, id, 'stock reader sees intake');
+  beat = (await lstat(join(f.state, '.last-watcher-beat'))).mtimeMs;
+  await until(async () => (await lstat(join(f.state, '.last-watcher-beat'))).mtimeMs > beat,
+    'watcher did not poll after intake');
+  assert.equal(stdout, '', 'stock successor skips downtime resurfacing before a check is due');
+  // Advance only the synthetic check clock; keep the stock 300-second interval.
+  const past = new Date(Date.now() - 301000);
+  await utimes(join(f.state, '.last-check'), past, past);
+  const wakeDeadline = new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('custom-health-check sweep missed new pending note')), 10000);
+    done.finally(() => clearTimeout(timer));
+  });
+  assert.equal(await Promise.race([done, wakeDeadline]), 0);
+  assert.equal(stderr, '');
+  assert.match(stdout, /^check: .*fm-quarterdeck-health\.check\.sh: Quarterdeck health: new pending inbox notes:/);
+  assert.ok(stdout.includes(id));
+  assert.doesNotMatch(stdout, /rearm-resurface|overdue|Synthetic note for example-app/);
+  assert.equal(f.calls(), 2, 'new-note wake bypasses the fresh dashboard throttle');
+  const queue = await readFile(join(f.state, '.wake-queue'), 'utf8');
+  assert.ok(queue.includes(`inbox:${id}`), 'ordinary inbox queue row remains available to main');
+  assert.ok(queue.includes('new pending inbox notes'), 'stock authenticated custom check published its wake');
+  assert.deepEqual({ ...JSON.parse(run('fm-inbox.sh', ['receipts', '--all-pending'])), generated: undefined },
+    { ...JSON.parse(receipts), generated: undefined }, 'health wake does not consume or reply to the note');
+  assert.equal((await check(f, { FM_HOME: home, FM_STATE_OVERRIDE: f.state })).stdout, '', 'same pending note is not new again');
 });

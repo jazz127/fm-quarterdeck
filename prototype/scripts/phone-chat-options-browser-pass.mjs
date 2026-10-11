@@ -106,13 +106,13 @@ try {
       assert.equal(await evalPage(`document.querySelector('#lane-options').hidden`), false, "dock Lanes still opens filters");
       assert.equal(await evalPage(`document.querySelector('#mobile-chat-options').open`), false, "filter shortcut does not open Options");
       await evalPage(`document.querySelector('.mobile-dock #review-panel-toggle').click()`);
-      assert.equal(await evalPage(`document.querySelector('.mobile-review-sheet #review-send').textContent`), "Send batch", "phone composer omits shortcut suffix");
+      assert.equal(await evalPage(`document.querySelector('.mobile-review-sheet #review-send').textContent`), "Send", "phone composer omits shortcut suffix");
       assert.equal(await evalPage(`getComputedStyle(document.querySelector('.mobile-review-sheet #review-send')).display !== 'none'`), true);
       console.log(`phone 375px: one page header row; visible ${state.box[2]}×${state.box[3]} Options; Context, Sources, Older, dock filters, composer label pass`);
     } else {
       assert.equal(state.display, "none", "Options hidden on desktop");
       assert.equal(state.parent, "conversation-head", "desktop Options stays in its original hidden location");
-      assert.equal(await evalPage(`document.querySelector('#review-send').textContent`), "Send batch", "desktop label retained");
+      assert.equal(await evalPage(`document.querySelector('#review-send').textContent`), "Send", "desktop label retained");
       assert.equal(await evalPage(`document.querySelector('#review-send').dataset.hint`), "Ctrl/Cmd+Enter", "desktop shortcut hint retained");
       assert.notEqual(await evalPage(`getComputedStyle(document.querySelector('.conversation-head')).display`), "none", "desktop header retained");
       assert.equal(await evalPage(`document.querySelector('#conversation-filter-shortcut').getAttribute('aria-controls')`), "lane-filter-controls", "desktop Included lanes disclosure retained");

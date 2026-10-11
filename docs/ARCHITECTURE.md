@@ -34,23 +34,13 @@ Task inbox records are internal steers. Outcomes use recorded epochs. Optional e
 
 ## Message classes
 
-| Kind | Meaning | Default |
-| --- | --- | --- |
-| captain | Stored human turns/notes | on |
-| conversation | Firstmate replies / main mirrors | on |
-| supervision | Durable fleet outcome notes | on |
-| thinking | Native stored assistant thinking only | on when available |
-| branch | Crew branch replies | off |
-| crew | Worker status/outbox records | off |
-| tools | Tool calls/results and shell output | off |
-| steer | Internal worker inbox instructions | off |
-| harness | Displayed framework notices | off |
+The [transcript authorship contract](../prototype/TRANSCRIPTS.md#authorship) owns Captain verification, unverified session input and message-kind preferences; the [bounded display contract](../prototype/TRANSCRIPTS.md#bounded-display-contract) owns default visibility. `prototype/public/message-kinds.js` supplies the shared browser catalog. Transcript user roles alone do not establish Captain authorship.
 
 Lane/kind/source/task/search filters intersect. Search is debounced and escaped. Source windows bound transfer while 200-record pages bound DOM work; diagnostics distinguish those limits. Tool density is a synthetic workload consideration, not a public record of an installation's activity.
 
 ## Surfaces
 
-- **Overview:** fleet KPI cards plus Captain's Calls and Just landed from the guarded snapshot hub, composed with deterministic primary-transcript chat asks. Host-only SSE carries the cached model; previews and stream recovery poll with `since`. Confirmed answers and thread notes use the guarded inbox relay, while filed-hold resolution remains Firstmate-owned. [Captain's Call](../prototype/BEARINGS.md) owns the presentation, lifecycle, feed-health and wire contracts; the [chat-ask decision record](CHAT-ASKS.md) owns extraction and resolution rationale. Second mates remain below the columns and outside phone tab panels; [work taxonomy](../prototype/WORK-TAXONOMY.md#explicit-three-level-navigation) owns their evidence, and [visual design](../prototype/VISUAL-DESIGN.md) owns their placement.
+- **Overview:** fleet KPI cards plus Captain's Calls, Just landed, Underway and Charted Next from the guarded snapshot hub, composed with deterministic primary-transcript chat asks. Host-only SSE carries the cached model; previews and stream recovery poll with `since`. Confirmed answers and thread notes use the guarded inbox relay, while filed-hold resolution remains Firstmate-owned. [Captain's Call](../prototype/BEARINGS.md) owns the presentation, lifecycle, feed-health and wire contracts; the [chat-ask decision record](CHAT-ASKS.md) owns extraction and resolution rationale. Second mates remain below the columns and outside all four phone tab panels; [work taxonomy](../prototype/WORK-TAXONOMY.md#explicit-three-level-navigation) owns their evidence, and [visual design](../prototype/VISUAL-DESIGN.md) owns their placement.
 - **Work Split:** repository → lane/workstream → theme, explicit classification and exact task links. Active requires in-flight executing work with process-incarnation proof. A recorded terminal pane is a weaker, visibly labelled evidence tier; it can inform the row but cannot establish Active or a live worker process. [Work taxonomy](../prototype/WORK-TAXONOMY.md) owns platform probes, evidence labels, pressure and completion attention semantics.
 - **Lane Chats:** oldest-to-newest feed, independent refresh, preserved reading intent, safe Markdown/raw text, bounded history and context drawers. Lane envelopes are display hints, not agent authority.
 - **Expenses:** selected private overlay before empty canonical public ledger; labeled synthetic demo only when the canonical file is absent. Decimal strings use BigInt cents with separate currency/project/category totals. Billing snapshots are separate, never added to ledger totals. Attribution comes from private `costs.json`; unknown allocation stays unclassified.

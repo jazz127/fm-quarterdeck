@@ -1,11 +1,15 @@
+import { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
+export { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 import { classifyAnsweredCalls } from "./answered-calls.js";
 import { inboxReceipts } from "./inbox.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { contentRevision, publicText, shortHash } from "./bearings.js";
+import { enumeratedLetterOptions, publishOptions, replyDescription } from "./enumerated-options.js";
 import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
 import { createHistoryReader } from "./history-reader.js";
+import { UNVERIFIED_INPUT } from "./authorship.js";
 
 // Chat asks (BEARINGS.md "Chat asks"). Firstmate's captain-facing asks carry marker lines
 // (ACTION NEEDED / APPROVAL NEEDED / DECISION NEEDED). This module turns every such line in
@@ -13,105 +17,14 @@ import { createHistoryReader } from "./history-reader.js";
 // no Firstmate cooperation beyond the marker convention, and no write outside
 // Quarterdeck's own state file. The transcript is read incrementally behind a byte cursor.
 export const CHAT_ASKS_SCHEMA = "fm-quarterdeck-chat-asks.v1";
-const KINDS = { ACTION: "action", APPROVAL: "approval", DECISION: "decision" };
-const MAX_ASK_CHARS = 4000;
-const MAX_REPLIES = 6;
 const MAX_OPEN = 100;
 const MAX_TOMBSTONES = 5000;
 const MATCHING_VERSION = 4;
 
-export function taskMarkers(text) {
-  return [...new Set([...String(text).matchAll(/\[task:([A-Za-z0-9][A-Za-z0-9._-]{0,159})\]/g)].map(match => match[1]))];
-}
 const MiB = 1024 * 1024;
 
-// ---------------------------------------------------------------------------------------
-// Pure extraction
-
-// A marker is recognised only at the start of a line, after optional blockquote, list
-// bullet, heading and emphasis markup, so prose that merely mentions a marker (inside
-// backticks or mid-sentence) never becomes a card. Markers are upper case by convention.
-const LEAD = /^\s*(?:>\s*)*(?:(?:[-*+]|\d{1,3}[.)])\s+)?(?:#{1,6}\s+)?(?:\p{Extended_Pictographic}️?\s*)?(?:[*_]{1,3}\s*)?/u;
-const MARKER = /^(ACTION|APPROVAL|DECISION) NEEDED(?![A-Za-z0-9_])/;
-const AFTER_MARKER = /^\s*[*_]{0,3}\s*(?:[:—–]|-(?!-))?\s*[*_]{0,3}\s*/;
-const FENCE = /^\s*(?:```|~~~)/;
-const LANE_LINE = /^\s*\[(?:fm-lane|end)\s[^\]]*\]\s*$/;
-
-function markerLine(line) {
-  const lead = LEAD.exec(line)[0];
-  const match = MARKER.exec(line.slice(lead.length));
-  if (!match) return null;
-  const rest = line.slice(lead.length + match[0].length);
-  return { kind: KINDS[match[1]], marker: `${match[1]} NEEDED`, rest: rest.replace(AFTER_MARKER, "").trim() };
-}
-
-// Quoted alternatives after the word "reply": Reply **"yes"**, reply `ship` or `hold`,
-// shortest reply: "go". Unquoted replies are ambiguous and are never guessed.
-const REPLY = /\breply(?:\s+(?:with|exactly))?\s*:?\s*/gi;
-const QUOTED = /^[*_]{0,3}\s*(?:"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’)\s*[*_]{0,3}/;
-const SEPARATOR = /^\s*(?:,|\/|\||\bor\b)\s*/i;
-export function extractReplies(text) {
-  const replies = [];
-  for (const match of String(text).matchAll(REPLY)) {
-    let rest = text.slice(match.index + match[0].length);
-    for (;;) {
-      const quoted = QUOTED.exec(rest);
-      if (!quoted) break;
-      const reply = quoted.slice(1).find(value => value !== undefined).trim();
-      if (reply && !replies.includes(reply) && replies.length < MAX_REPLIES) replies.push(reply);
-      rest = rest.slice(quoted[0].length);
-      const separator = SEPARATOR.exec(rest);
-      if (!separator) break;
-      rest = rest.slice(separator[0].length);
-    }
-  }
-  // Explicit option labels at the start of an ask/list line also supply replies:
-  // - "stay here": continue; or "plan A" keeps the current setup.
-  for (const line of String(text).split(/\r?\n/)) {
-    const quoted = QUOTED.exec(line.slice(LEAD.exec(line)[0].length));
-    if (!quoted) continue;
-    const reply = quoted.slice(1).find(value => value !== undefined).trim();
-    if (reply && !replies.includes(reply) && replies.length < MAX_REPLIES) replies.push(reply);
-  }
-  return replies;
-}
-
-const readable = (text) => text.replace(/\*\*|__/g, "").replace(/[ \t]+/g, " ").trim();
-
-// Each marker line opens an ask; following non-blank lines continue it (a DECISION NEEDED
-// line often introduces a list). A blank line, another marker, a code fence or a lane
-// marker ends it. Code fences are skipped entirely: examples are not asks.
-export function extractAsks(text) {
-  const asks = [];
-  let fence = false, current = null;
-  const close = () => {
-    if (!current) return;
-    const raw = current.body.filter(Boolean).join("\n");
-    const clipped = raw.length > MAX_ASK_CHARS ? `${raw.slice(0, MAX_ASK_CHARS - 1)}…` : raw;
-    asks.push({ kind: current.kind, marker: current.marker, line: current.line, taskMarkers: taskMarkers(current.line), text: readable(clipped), replies: extractReplies(raw) });
-    current = null;
-  };
-  for (const line of String(text ?? "").split(/\r?\n/)) {
-    if (FENCE.test(line)) { close(); fence = !fence; continue; }
-    if (fence) continue;
-    const marker = markerLine(line);
-    if (marker) { close(); current = { ...marker, line: line.trim(), body: [marker.rest] }; continue; }
-    if (!current) continue;
-    if (LANE_LINE.test(line)) { close(); continue; }
-    if (!line.trim()) { if (current.body.some(Boolean)) close(); continue; }
-    current.body.push(line.trim());
-  }
-  close();
-  return asks;
-}
-
-// Case-folded words with punctuation/whitespace as separators. Padding enforces whole
-// phrases ("path 2" cannot match "path 20"), including inside a longer captain prompt.
+// Case-folded words with punctuation/whitespace as separators.
 export const normalizeReply = (text) => String(text).normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, " ").trim();
-const hasReply = (text, reply) => {
-  const phrase = normalizeReply(reply);
-  return Boolean(phrase) && ` ${normalizeReply(text)} `.includes(` ${phrase} `);
-};
 const HOLD_QUOTE = /"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’/g;
 function matchesHold(ask, card) {
   if (card.readOnly || !card.task) return false;
@@ -143,23 +56,24 @@ export function mentionsTask(text, task) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Transcript records → turns. Only the model's own text is an ask; only the captain's own
-// prompts can quote a reply. Harness traffic, machine envelopes, tools and thinking are ignored.
+// Transcript records → turns. Only the model's own text is an ask. A transcript role=user
+// entry is unverified input (authorship.js), never the captain's reply, so it cannot
+// resolve an ask. Harness traffic, machine envelopes, tools and thinking are ignored.
 const MACHINE_TEXT = /^\W*(?:FIRSTMATE_OP:|FIRSTMATE SUPERVISION WAKE:|MAIN DIALOG MIRROR\b|<task-notification>)|^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/;
 const textParts = (content) => typeof content === "string" ? [content] : Array.isArray(content)
   ? content.map((part) => part?.type === "text" && typeof part.text === "string" ? part.text : null) : [];
 export function recordTurns(record, origin, toolNames = new Map()) {
   const turns = [];
   const push = (role, content) => textParts(content).forEach((text, part) => {
-    if (typeof text === "string" && text.trim() && !(role === "captain" && MACHINE_TEXT.test(text))) turns.push({ role, text, part });
+    if (typeof text === "string" && text.trim() && !(role === UNVERIFIED_INPUT.role && MACHINE_TEXT.test(text))) turns.push({ role, text, part });
   });
   if (origin === "claude") {
     for (const turn of claudeTurns(record, toolNames)) {
       if (turn.role === "assistant" && !turn.recordKind) push("firstmate", turn.content);
-      else if (turn.role === "user") push("captain", turn.content);
+      else if (turn.role === "user") push(UNVERIFIED_INPUT.role, turn.content);
     }
   } else if (record?.type === "message" && ["user", "assistant"].includes(record.message?.role)) {
-    push(record.message.role === "user" ? "captain" : "firstmate", record.message.content);
+    push(record.message.role === "user" ? UNVERIFIED_INPUT.role : "firstmate", record.message.content);
   }
   return turns;
 }
@@ -329,8 +243,8 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
     for (const [key] of tombs.slice(MAX_TOMBSTONES)) delete target.tombstones[key];
   }
 
-  // Apply one parsed record. Captain prompts test every earlier open ask; repeated
-  // marker+reply supersedes an older ask. All matching stays within the record byte cap.
+  // Apply one parsed record. Repeated marker+reply supersedes an older ask. Unverified
+  // session input never resolves an ask. All matching stays within the record byte cap.
   function applyRecord(target, record, { source, origin, offset, backfill }, toolNames) {
     const at = (() => { const value = new Date(record.timestamp ?? record.message?.timestamp); return Number.isNaN(value.valueOf()) ? null : value.toISOString(); })();
     const recordId = (origin === "claude" ? record.uuid : record.id) || `${source}@${offset}`;
@@ -358,16 +272,6 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
             if (older.status === "open" && isLater(ask, older) && repeatsAsk(ask, older)) changed = resolveAsk(target, older, "superseded", { supersededBy: key }) || changed;
           }
           if (!existing) { target.asks[key] = ask; changed = true; }
-        }
-      } else {
-        const prompt = { source, offset, part: turn.part, recordId, at };
-        const matching = Object.values(target.asks)
-          .filter(ask => ask.status === "open" && isLater(prompt, ask))
-          .sort((a, b) => String(b.at).localeCompare(String(a.at)) || b.offset - a.offset);
-        for (const ask of matching) {
-          const reply = ask.replies.find(reply => hasReply(turn.text, reply));
-          if (!reply) continue;
-          changed = resolveAsk(target, ask, "reply", { resolvedReply: normalizeReply(reply), resolvedByRecord: recordId }) || changed;
         }
       }
     }
@@ -415,10 +319,10 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
             const backfill = prior.ino === null;
             const toolNames = new Map();
             const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes, onLine: async (line, offset) => {
-              // Human mid-turn prompts may be queued_command attachments, not user
-              // records. The whole-record cap, not a separate 64 KiB prompt cap, bounds
-              // parsing. Adapters still exclude tool output, hooks and machine traffic.
-              if (!line.includes("NEEDED") && !line.includes('"user"') && !line.includes('"queued_command"')) return;
+              // Only Firstmate's own marker lines matter; session input never resolves an
+              // ask. The whole-record cap bounds parsing. Adapters still exclude tool
+              // output, hooks and machine traffic.
+              if (!line.includes("NEEDED")) return;
               let record;
               try { record = JSON.parse(line.toString("utf8")); } catch { return; }
               if (applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
@@ -506,14 +410,41 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
 // Cards. A chat card answers through the same keyed relay as a snapshot card: question
 // chat.<id>, the quoted replies as options, and freeform text.
 export const chatQuestion = (key) => `chat.${key.slice("chat:".length)}`;
+const describedHint = (text, reply) => publicText(replyDescription(text, reply), 240);
 export function chatCard(ask) {
-  const options = ask.replies.map((reply, index) => ({ value: `reply-${index + 1}`, label: publicText(reply, 200), hint: "Firstmate's suggested reply" })).filter((option) => option.label);
+  let options = ask.replies.map((reply, index) => ({ value: `reply-${index + 1}`, label: publicText(reply, 200), hint: describedHint(ask.text, reply) || "Firstmate's suggested reply" })).filter((option) => option.label);
+  if (!options.length && (ask.kind === "decision" || ask.kind === "approval")) {
+    options = publishOptions(enumeratedLetterOptions(ask.text), publicText);
+  }
   const card = { key: ask.key, type: "chat", kind: ask.kind, marker: ask.marker, summary: publicText(ask.text, Infinity) || `${ask.marker} (no text)`, replies: options.map((option) => option.label),
     source: ask.source.split("/")[0], transcript: { offset: ask.offset, part: ask.part }, clock: { label: "Asked", at: ask.at },
     answer: { question: chatQuestion(ask.key), options, recommend: null, close: null, freeform: true } };
   return { ...card, rev: shortHash(card) };
 }
-const linkedEntry = (ask) => ({ key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies: ask.replies.map((reply) => publicText(reply, 200)).filter(Boolean), clock: { label: "Asked", at: ask.at } });
+const linkedEntry = (ask) => {
+  const replies = ask.replies.map((reply) => publicText(reply, 200)).filter(Boolean);
+  const replyHints = {};
+  for (const reply of replies) {
+    const hint = describedHint(ask.text, reply);
+    if (hint) replyHints[reply] = hint;
+  }
+  return { key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies, ...(Object.keys(replyHints).length ? { replyHints } : {}), clock: { label: "Asked", at: ask.at } };
+};
+// A filed decision with no structured choices offers lettered lines from a linked decision ask.
+function withLinkedChoices(card, entries) {
+  const chatAsks = entries.map(linkedEntry);
+  const next = { ...card, chatAsks };
+  const existing = Array.isArray(next.answer?.options) ? next.answer.options : [];
+  if (next.type !== "decision" || existing.length || !next.answer) return next;
+  let best = [];
+  for (const ask of entries) {
+    if (ask.kind !== "decision") continue;
+    const options = publishOptions(enumeratedLetterOptions(ask.text), publicText);
+    if (options.length > best.length) best = options;
+  }
+  if (!best.length) return next;
+  return { ...next, answer: { ...next.answer, options: best } };
+}
 
 // Compose the served model: snapshot cards first (each carrying the chat asks linked to it),
 // then unlinked open chat asks, newest first, at most MAX_OPEN.
@@ -532,15 +463,25 @@ export function composeCallModel(base, asks, chatView) {
   unlinked.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   const cards = base.cards.map((card) => {
     const entries = linked.get(card.task);
-    if (card.readOnly || !entries) return card;
-    const { rev, ...rest } = card;
-    const withAsks = { ...rest, chatAsks: entries.map(linkedEntry) };
-    return { ...withAsks, rev: shortHash(withAsks) };
+    if (card.readOnly) return card;
+    let rest = card;
+    let modified = false;
+    if (entries) {
+      const { rev, ...withoutRev } = card;
+      rest = withLinkedChoices(withoutRev, entries);
+      modified = true;
+    }
+    // Missing choices stay text-only. The view already offers explicit linked replies;
+    // a decision/approval marker alone cannot establish a boolean question.
+    if (modified) {
+      return { ...rest, rev: shortHash(rest) };
+    }
+    return card;
   });
   const chatCards = unlinked.slice(0, MAX_OPEN).map(chatCard);
   const chat = { state: chatView.state, error: chatView.error, open: unlinked.length, linked: asks.length - unlinked.length, omitted: Math.max(0, unlinked.length - MAX_OPEN), behind: Boolean(chatView.behind),
     sources: chatView.sources.map(({ source, backfillOmittedBytes }) => ({ source: source.split("/")[0], backfillOmittedBytes })), resolved: chatView.resolved || [] };
-  const content = { cards: [...cards, ...chatCards], coverage: base.coverage, omitted: base.omitted, chat };
+  const content = { ...base, cards: [...cards, ...chatCards], chat };
   return { ...base, cards: content.cards, chat, chatCheckedAt: chatView.checkedAt, rev: shortHash([contentRevision(content), chat]) };
 }
 
@@ -548,6 +489,7 @@ export function composeCallModel(base, asks, chatView) {
 // composed model. Chat scanning runs on each read and every scanEveryMs while streamed.
 export function createCallSource({ hub, chat, home = null, receipts = inboxReceipts, timers = globalThis, scanEveryMs = 3000 } = {}) {
   let answerReceipts = null, receiptsSignature = "", receiptsCheckedAt = 0;
+  let receiptEvidence = { available: false, checkedAt: null };
   let composed = null, composedFrom = null;
   const listeners = new Set();
   let timer = null;
@@ -576,7 +518,10 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   const refresh = () => (refreshing ||= (async () => {
     if (home && Date.now() - receiptsCheckedAt >= 15000) {
       receiptsCheckedAt = Date.now();
-      try { answerReceipts = await receipts(home); receiptsSignature = JSON.stringify(answerReceipts); } catch { /* Keep the last durable evidence on a failed read. */ }
+      try {
+        answerReceipts = await receipts(home); receiptsSignature = JSON.stringify(answerReceipts);
+        receiptEvidence = { available: true, checkedAt: new Date().toISOString() };
+      } catch { receiptEvidence = { available: false, checkedAt: new Date().toISOString() }; /* Preserve UI evidence, fail closed for notification eligibility. */ }
     }
     await chat.scan();
     await applyHolds().catch(() => false);
@@ -593,6 +538,21 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
     current,
     freshness,
     refresh,
+    // Independent of the UI's 15-second receipt cache. This uses the same expanded
+    // per-item adapter and classifier, never a parser of combined batch prose.
+    async notificationEvidence() {
+      try {
+        const data = await receipts(home);
+        if (!Array.isArray(data?.pending) || !Array.isArray(data?.handled) || !Array.isArray(data?.replies) || data.omitted?.length) throw new Error("Incomplete receipts");
+        answerReceipts = data; receiptsSignature = JSON.stringify(data);
+        receiptEvidence = { available: true, checkedAt: new Date().toISOString() };
+        return { ...receiptEvidence, model: current(), receipts: data };
+      } catch {
+        receiptEvidence = { available: false, checkedAt: new Date().toISOString() };
+        return { ...receiptEvidence, model: current(), receipts: null };
+      }
+    },
+    receiptEvidence: () => ({ ...receiptEvidence }),
     chat,
     subscribe(listener) {
       listeners.add(listener);

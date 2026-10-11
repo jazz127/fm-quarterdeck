@@ -16,12 +16,12 @@ const receipts = async () => ({ pending: [], handled: [], replies: [] });
 const transcript = async () => ({ turns: [], omitted: false });
 const snapshot = (decisions_open = [], landed = []) => ({ schema: "fm-bearings.v1", decisions_open, landed,
   contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
-const decision = (id, owner) => ({ id, owner, summary: "Choose the rollout window", options: [{ value: "blue", label: "Blue" }] });
+const decision = (id, owner) => ({ id, owner, ...(id.includes("/") ? { key: id.split("/")[1] } : {}), summary: "Choose the rollout window", options: [{ value: "blue", label: "Blue" }] });
 
-test("remote decisions display in their own home while local scoped calls keep all controls", async (context) => {
+test("remote decisions display in their own home while local calls keep all controls", async (context) => {
   const model = { state: "ready", ...normalizeSnapshot(snapshot([
-    decision("mate/rollout", "mate"), decision("unscoped-remote", "mate"), decision("unknown/rollout"),
-    decision("rollout", "(main)"), decision(`${"h".repeat(160)}/local-rollout`, "(main)"),
+    decision("mate/rollout", "mate"), decision("unscoped-remote", "mate"), decision("unknown/rollout", "unknown"),
+    decision("rollout", "(main)"), decision("h".repeat(128), "(main)"),
   ])) };
   const dom = callDom();
   const window = { document: dom.document };
@@ -78,7 +78,7 @@ test("remote decisions display in their own home while local scoped calls keep a
       const sentAnswer = await answers.submit(answer, model);
       assert.equal(sentAnswer.key, card.key);
       const envelope = taggedEnvelope(sent.at(-1).body, "fm-bearings-answer");
-      assert.equal(envelope.question, index === 3 ? "rollout" : "local-rollout");
+      assert.equal(envelope.question, index === 3 ? "rollout" : "h".repeat(128));
       const saved = await post({ key: card.key, duration: "3h" });
       assert.equal(saved.status, 200);
       assert.equal((await saved.json()).until[card.key], "2026-06-01T03:00:00.000Z");

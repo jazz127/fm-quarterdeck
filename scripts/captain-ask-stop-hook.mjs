@@ -36,22 +36,27 @@ export async function checkStop(input, { home = process.env.FM_HOME, configDir =
     if (input.cwd !== root) return { diagnostic: 'primary cwd differs from selected home; skipped' };
     const expected = path.join(claudeProjectDirectory(path.resolve(configDir), root), `${session}.jsonl`);
     if (input.transcript_path !== expected || await realpath(expected) !== expected) throw new Error('transcript not confined to selected primary session');
-    // Read only a bounded tail, and choose the last actual assistant message, never
-    // user/tool/hook text or earlier turns. Partial/truncated records fail open.
-    const text = await bounded(expected, 4 * 1024 * 1024, true);
-    let final = null, finalId = null;
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const record = JSON.parse(line);
-      if (record.type !== 'assistant') continue;
-      const turn = claudeTurns(record, new Map()).find(turn => turn.role === 'assistant' && !turn.recordKind);
-      if (!turn) continue;
-      const messageText = typeof turn.content === 'string' ? turn.content : turn.content.filter(part => part?.type === 'text').map(part => part.text).join('\n');
-      const id = record.message?.id || record.uuid || null;
-      final = id && id === finalId ? `${final}\n${messageText}` : messageText;
-      finalId = id;
+    // Stop input carries the completed reply even before it reaches the transcript.
+    // Older harnesses omit it; only then read the bounded assistant-message tail.
+    let final = input.last_assistant_message;
+    if (final === undefined) {
+      final = null;
+      const text = await bounded(expected, 4 * 1024 * 1024, true);
+      let finalId = null;
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line);
+        if (record.type !== 'assistant') continue;
+        const turn = claudeTurns(record, new Map()).find(turn => turn.role === 'assistant' && !turn.recordKind);
+        if (!turn) continue;
+        const messageText = typeof turn.content === 'string' ? turn.content : turn.content.filter(part => part?.type === 'text').map(part => part.text).join('\n');
+        const id = record.message?.id || record.uuid || null;
+        final = id && id === finalId ? `${final}\n${messageText}` : messageText;
+        finalId = id;
+      }
+      if (final === null) throw new Error('final assistant message absent from bounded transcript tail');
     }
-    if (final === null) throw new Error('final assistant message absent from bounded transcript tail');
+    if (typeof final !== 'string') throw new Error('final assistant message must be text');
     if (enforceLanes && final.trim() && checkLaneEnvelopes(final).length) return {
       decision: 'block', reason: 'Wrap the complete captain-facing reply in flat matching [fm-lane <LaneName>] / [end <LaneName>] blocks. Lane labels are presentation only, not task ownership.'
     };

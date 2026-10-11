@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { htmlModel } from "./helpers/html-model.mjs";
+import { parseCss, computed, element } from "./helpers/css-model.mjs";
 
 const script = await readFile(new URL("../public/review-target.js", import.meta.url), "utf8") + "\n" + await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
 const openSent = (page, open) => { const sent = page.element("review-sent"); sent.open = open; sent.listeners.toggle(); };
@@ -9,8 +11,9 @@ const tick = () => new Promise(setImmediate);
 function harness() {
   const data = new Map();
   const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
-  const posts = [];
+  const posts = [], headers = [];
   const waiting = [];
+  const intervals = [];
   let mode = "success", configUp = true, uuid = 0;
   const version = "e21fb8d5c854d8b19a6721e911b31628aac96cdd";
   function page() {
@@ -39,10 +42,11 @@ function harness() {
         createElement: () => ({ textContent: "", style: {}, append() {}, setAttribute() {}, addEventListener() {} }) },
       window: { innerHeight: 800, visualViewport, addEventListener() {}, matchMedia: (query) => ({ get matches() { return query.startsWith("(min-") ? desktop : !desktop; } }) }, setTimeout: (fn) => fn(), location: { hash: "#overview" }, sessionStorage: storage,
       crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}` },
+      setInterval(fn, ms) { intervals.push({ fn, ms }); return intervals.length; },
       fetch: async (url, options) => {
         if (options?.method === "POST") {
           const body = JSON.parse(options.body);
-          posts.push(body);
+          posts.push(body); headers.push(options.headers);
           if (mode === "hold") return new Promise((resolve) => waiting.push(resolve));
           return mode === "fail" ? { ok: false, status: 502, json: async () => ({ error: "disk error" }) }
             : { ok: true, json: async () => ({ receiptId: `local:${body.batchId}`, delivery: "local" }) };
@@ -59,7 +63,7 @@ function harness() {
       element("review-message").value = text;
       element("review-form").listeners.submit({ preventDefault() {} });
     };
-    const send = (end = false) => element(end ? "review-end" : "review-send").listeners.click();
+    const send = () => element("review-send").listeners.click();
     const state = () => JSON.parse(data.get("fm-agentos-review-draft-v1"));
     const keydown = (event) => {
       let stopped = false;
@@ -82,7 +86,7 @@ function harness() {
     const body = posts.at(-1);
     waiting.shift()({ ok: !failure, status: failure ? 502 : 200, json: async () => failure ? { error: "disk error" } : { receiptId: `local:${body.batchId}`, delivery: "local" } });
   };
-  return { page, posts, data, release, setMode: (value) => { mode = value; }, setConfigUp: (value) => { configUp = value; } };
+  return { page, posts, headers, data, intervals, release, setMode: (value) => { mode = value; }, setConfigUp: (value) => { configUp = value; } };
 }
 
 test("open help consumes Escape before annotation, picking or review", async () => {
@@ -299,48 +303,80 @@ test("phone Review tab sends the queue, not the hidden composer text; Message ta
   assert.equal(p.state().sent.length, 2);
 });
 
-test("review panel keeps desktop Sent/Queued sections and phone Message/Review tabs, split at the 720px breakpoint", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
-  const start = html.indexOf('<aside id="review-panel"');
-  const panel = html.slice(start, html.indexOf("</aside>", start));
-  // Desktop: collapsed Sent over always-visible Queued.
-  assert.match(panel, /<details id="review-sent"(?![^>]*\bopen\b)[^>]*>\s*<summary id="review-sent-summary"[^>]*><span>Sent<\/span> <span id="review-sent-count"/);
-  assert.match(panel, /<section id="review-queued"[^>]*>[\s\S]*Queued <span id="review-queued-count"[\s\S]*id="review-thread"/);
-  assert.ok(panel.indexOf('id="review-sent"') < panel.indexOf('id="review-queued"'), "Sent stacks above Queued");
-  // Phone: the original Message/Review tabs and one combined history thread.
-  assert.match(panel, /id="review-conversation-tab"[^>]*>Message<[\s\S]*id="review-history-tab"[^>]*aria-controls="review-phone-thread"[^>]*>Review</);
-  assert.match(panel, /id="review-phone-thread"[^>]*hidden/);
-  // Hidden by default (desktop); revealed only inside the phone breakpoint.
-  const phoneAt = css.indexOf("@media (max-width: 720px)");
-  assert.match(css.slice(0, phoneAt), /^\.review-tabs, #review-phone-thread \{ display: none; \}/m);
-  const phoneCss = css.slice(phoneAt);
-  assert.match(phoneCss, /\.review-panel \.review-tabs \{ display: flex/);
-  assert.match(phoneCss, /\.review-panel \.review-sent, \.review-panel \.review-queued \{ display: none/);
-  assert.match(phoneCss, /\.review-panel header:has\(\.review-tabs\) > strong \{ display: none; \}/);
-  assert.match(phoneCss, /\[data-review-tab="review"\] #review-phone-thread:not\(\[hidden\]\)/);
-  // The desktop header title still shrinks and wraps beside Close.
-  assert.match(css, /\.review-panel header > strong \{[^}]*flex: 1 1 0;[^}]*min-width: 0;[^}]*overflow-wrap: anywhere/);
-  assert.match(css, /\.review-header-actions \{[^}]*flex: 0 0 auto/);
-  const batchCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
-  assert.match(batchCss, /\.review-batch > summary \{[^}]*font-size: 12px;[^}]*line-height: 1\.25;[^}]*white-space: nowrap/);
-  assert.match(batchCss, /\.review-note-text,\n\.review-batch > p \{ font-size: 12px; line-height: 1\.25; \}/);
-  assert.doesNotMatch(batchCss, /\.review-note-full \{[^}]*font-size:/);
-  assert.match(batchCss, /\.review-batch-label \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap/);
-  assert.match(batchCss, /\.review-batch\[open\] > summary \.review-batch-full \{[^}]*white-space: normal/);
-  assert.doesNotMatch(css.slice(0, phoneAt), /header:has\(\.review-tabs\)/);
+test("review panel keeps desktop history and phone tabs at the 720px breakpoint", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  const rules = parseCss(await readFile(new URL('../public/shell-panel.css', import.meta.url), 'utf8'));
+  const sent = html.one('#review-sent'), queued = html.one('#review-queued');
+  assert.equal(html.one('#review-panel').attrs.hidden, '');
+  assert.equal(html.one('#review-panel-toggle').attrs['aria-controls'], 'review-panel');
+  assert.equal(html.one('#review-panel-toggle').attrs.hidden, undefined);
+  assert.equal(sent.tag, 'details');
+  assert.equal(sent.attrs.open, undefined);
+  assert.equal(queued.tag, 'section');
+  assert.equal(sent.parent, queued.parent);
+  assert.ok(sent.parent.children.indexOf(sent) < queued.parent.children.indexOf(queued));
+  assert.equal(html.one('#review-conversation-tab').textContent, 'Message');
+  assert.equal(html.one('#review-history-tab').textContent, 'Review');
+  assert.equal(html.one('#review-history-tab').attrs['aria-controls'], 'review-phone-thread');
+  assert.equal(html.one('#review-phone-thread').attrs.hidden, '');
+  const tabs = html.one('.review-tabs');
+  assert.equal(computed(rules, tabs, 721).display, 'none');
+  assert.equal(computed(rules, html.one('#review-phone-thread'), 721).display, 'none');
+  for (const width of [360, 390, 720]) {
+    assert.equal(computed(rules, tabs, width).display, 'flex');
+    assert.equal(computed(rules, sent, width).display, 'none');
+    assert.equal(computed(rules, queued, width).display, 'none');
+    assert.equal(computed(rules, html.one('#review-panel header > strong'), width).display, 'none');
+  }
+  const title = computed(rules, html.one('#review-panel header > strong'), 721);
+  assert.equal(title.flex, '1 1 0');
+  assert.equal(title['min-width'], '0');
+  assert.equal(title['overflow-wrap'], 'anywhere');
+  assert.equal(computed(rules, html.one('.review-header-actions'), 721).flex, '0 0 auto');
 });
 
-test("compact review keeps its receipt summary and accessible history in the Sent section", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const css = await readFile(new URL("../public/shell-panel.css", import.meta.url), "utf8");
-  const client = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
-  assert.match(html, /id="review-sent-summary" aria-label="Sent batches, 0"/);
-  assert.match(html, /id="review-inline-summary" aria-hidden="true"/);
-  assert.match(css, /\.mobile-dock \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(css, /\.review-sent:not\(\[open\]\) > \.review-thread \{ display: none/);
-  assert.match(client, /el\("review-inline-summary"\)\.textContent = compactSummary/);
-  assert.match(client, /if \(sentOpen\) void refreshStatuses\(\)/);
+test("review text remains selectable and expanded batch labels wrap", async () => {
+  const rules = parseCss(await readFile(new URL('../public/styles.css', import.meta.url), 'utf8'));
+  const batch = element('details', ['review-batch']);
+  const summary = element('summary', [], {}, batch);
+  const full = element('span', ['review-batch-full'], {}, summary);
+  const label = element('span', ['review-batch-label'], {}, summary);
+  const meta = element('span', ['review-batch-meta'], {}, summary);
+  const time = element('time', [], {}, meta);
+  const text = element('p', ['review-note-text']);
+  const preview = element('p', ['review-note-preview']);
+  const note = element('p', [], {}, batch);
+  for (const width of [360, 390, 1280]) {
+    for (const node of [text, preview, note, full, label, time]) {
+      const style = computed(rules, node, width);
+      assert.equal(style['user-select'], 'text');
+      assert.equal(style['-webkit-user-select'], 'text');
+    }
+    for (const node of [summary, text, note]) {
+      const style = computed(rules, node, width);
+      assert.equal(style['font-size'], '12px');
+      assert.equal(style['line-height'], '1.25');
+    }
+    assert.equal(computed(rules, summary, width)['white-space'], 'nowrap');
+    assert.equal(computed(rules, label, width)['text-overflow'], 'ellipsis');
+    assert.equal(computed(rules, label, width)['white-space'], 'nowrap');
+    batch.attrs.open = '';
+    assert.equal(computed(rules, full, width)['white-space'], 'normal');
+    delete batch.attrs.open;
+  }
+});
+
+test("compact review exposes an accessible receipt summary and hides collapsed history", async () => {
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  assert.equal(html.one('#review-sent-summary').attrs['aria-label'], 'Sent batches, 0');
+  assert.equal(html.one('#review-inline-summary').attrs['aria-hidden'], 'true');
+  const rules = parseCss(await readFile(new URL('../public/shell-panel.css', import.meta.url), 'utf8'));
+  const sent = element('details', ['review-sent']);
+  const thread = element('div', ['review-thread'], {}, sent);
+  assert.equal(computed(rules, thread, 1280).display, 'none');
+  sent.attrs.open = '';
+  assert.notEqual(computed(rules, thread, 1280).display, 'none');
+  assert.equal(computed(rules, element('nav', ['mobile-dock']), 390)['grid-template-columns'], 'repeat(4, minmax(0, 1fr))');
 });
 
 test("phone visual viewport keeps composer above keyboard and restores navigation reserve", async () => {
@@ -382,15 +418,17 @@ test("Ctrl/Cmd+Enter retries an unconfirmed identity instead of masking failure"
   assert.equal(p.state().sent.length, 1);
 });
 
-test("later accepted end status clears history, not unavailable status", async () => {
+test("legacy end status polling keeps history until explicit Review clearing", async () => {
   const h = harness(), p = h.page(); await tick();
   vm.runInContext(`sent = [{ id: "00000000-0000-4000-8000-000000000001", receiptId: "ignored", entries: [], state: "unavailable", end: true }]; update()`, p.context);
   assert.equal(p.state().sent.length, 1);
   await vm.runInContext("refreshStatuses()", p.context);
+  assert.equal(p.state().sent.length, 1);
+  p.element("review-clear-messages").click();
   assert.equal(p.state().sent.length, 0);
 });
 
-test("Send Batch snapshots multiple kinds, later queue and rapid second send remain distinct after acceptance", async () => {
+test("Send snapshots multiple kinds, later queue and rapid second send remain distinct after acceptance", async () => {
   const h = harness(), p = h.page(); await tick();
   p.q("same", "region"); p.q("same", "lane"); p.q("plain");
   h.setMode("hold"); p.send(); p.send(); await tick();
@@ -423,13 +461,13 @@ test("failed captured identity retries without merging later notes, including af
   assert.equal(reloaded.state().retryBatches[0].id, failed.id);
   h.setMode("success");
   reloaded.send(); await tick();
-  assert.notEqual(h.posts[1].batchId, failed.id, "a later Send Batch does not reuse a failed identity");
+  assert.notEqual(h.posts[1].batchId, failed.id, "a later Send does not reuse a failed identity");
   await vm.runInContext("submitBatch(retryBatches[0])", reloaded.context);
   assert.deepEqual(h.posts[2], h.posts[0]);
   assert.equal(reloaded.state().queue.length, 0);
 });
 
-test("Send and End drains recovered board once by item identity, not by equal text; failure retains it", async () => {
+test("Send recovers each draft identity once, retains failures and never clears history", async () => {
   const h = harness(), p = h.page(); await tick();
   p.q("identical"); p.q("identical"); p.q("third");
   const draft = p.state();
@@ -438,44 +476,32 @@ test("Send and End drains recovered board once by item identity, not by equal te
   const recovered = h.page(); await tick();
   assert.equal(recovered.state().queue.length, 3);
   assert.equal(recovered.element("review-panel").hidden, true);
-  h.setMode("fail"); recovered.send(true); await tick();
+  h.setMode("fail"); recovered.send(); await tick();
   assert.equal(recovered.element("review-panel").hidden, true);
   assert.deepEqual(h.posts[0].entries.map((e) => e.prompt), ["identical", "identical", "third"]);
-  assert.equal(h.posts[0].end, true);
+  assert.equal(h.posts[0].end, false);
   assert.equal(recovered.state().retryBatches.length, 1);
-  h.setMode("success"); recovered.send(true); await tick();
+  h.setMode("success"); recovered.send(); await tick();
   assert.deepEqual(h.posts[1], h.posts[0]);
   assert.equal(recovered.state().retryBatches.length, 0);
-  assert.equal(recovered.state().sent.length, 0, "accepted end clears history");
+  assert.equal(recovered.state().sent.length, 1, "acceptance keeps history until explicit clearing");
   assert.equal(recovered.element("review-panel").hidden, true);
 });
 
-test("Send and End drains failed prior identities separately from its recovered cutoff", async () => {
-  const h = harness(), p = h.page(); await tick();
-  p.q("old"); h.setMode("fail"); p.send(); await tick();
-  p.q("next"); h.setMode("hold"); p.send(true); await tick();
-  assert.equal(h.posts.length, 2);
-  assert.deepEqual(h.posts[1].entries.map((e) => e.prompt), ["old"]);
-  assert.deepEqual(p.state().retryBatches.map((b) => b.payload.entries[0].prompt), ["next"]);
-  h.release(true); await tick();
-  assert.equal(h.posts.length, 2, "failure stops the drain without losing the later cutoff");
-  h.setMode("success"); p.send(true); await tick();
-  assert.deepEqual(h.posts.slice(2).map((b) => b.entries[0].prompt), ["old", "next"]);
-  assert.equal(h.posts[2].batchId, h.posts[0].batchId);
-  assert.notEqual(h.posts[3].batchId, h.posts[2].batchId);
-  assert.equal(p.state().sent.length, 0);
-  assert.equal(p.state().retryBatches.length, 0);
-});
-
-test("reload during an uncertain drain preserves retry order and later queue", async () => {
+test("new sends and old retries keep independent cutoffs across reload", async () => {
   const h = harness(), p = h.page(); await tick();
   p.q("first"); h.setMode("fail"); p.send(); await tick();
-  p.q("second"); h.setMode("hold"); p.send(true); await tick();
+  const original = h.posts[0];
+  p.q("second"); h.setMode("hold"); p.send(); await tick();
   p.q("third");
   const reloaded = h.page(); await tick();
   assert.deepEqual(reloaded.state().retryBatches.map((b) => b.payload.entries[0].prompt), ["first", "second"]);
   assert.deepEqual(reloaded.state().queue.map((e) => e.prompt), ["third"]);
   h.release(true); await tick();
+  h.setMode("success");
+  await vm.runInContext("submitBatch(retryBatches[0])", reloaded.context);
+  assert.deepEqual(h.posts.at(-1), original);
+  assert.deepEqual(reloaded.state().queue.map((e) => e.prompt), ["third"]);
 });
 
 test("reload retains more than thirty independent retries and receipt batches", async () => {
@@ -530,19 +556,74 @@ test("reload retains Lavish receipts with unknown downstream state and storage f
   assert.match(reloaded.element("review-state").textContent, /Reload persistence unavailable/);
 });
 
-test("Send and End captures the whole board, keeps newer items and does not double-submit", async () => {
+test("Send keeps newer items and history without double submission or session ending", async () => {
   const h = harness(), p = h.page(); await tick();
   p.element("review-panel").hidden = false;
   p.q("one", "region"); p.q("two", "lane");
-  h.setMode("hold"); p.send(true); p.send(true); await tick();
+  h.setMode("hold"); p.send(); p.send(); await tick();
   assert.equal(h.posts.length, 1);
-  p.q("after end cutoff"); h.release(); await tick();
-  assert.equal(p.state().sent.length, 0, "accepted end clears history while later notes remain");
-  assert.deepEqual(p.state().queue.map((e) => e.prompt), ["after end cutoff"]);
-  assert.equal(p.element("review-panel").hidden, false, "later annotation keeps board open");
-  h.setMode("success"); p.send(true); await tick();
-  assert.equal(p.element("review-panel").hidden, true);
+  assert.equal(h.posts[0].end, false);
+  p.q("after cutoff"); h.release(); await tick();
+  assert.equal(p.state().sent.length, 1);
+  assert.deepEqual(p.state().queue.map((e) => e.prompt), ["after cutoff"]);
+  assert.equal(p.element("review-panel").hidden, false);
+  h.setMode("success"); p.send(); await tick();
+  assert.equal(p.element("review-panel").hidden, false);
   assert.notEqual(h.posts[0].batchId, h.posts[1].batchId);
+});
+
+test("Review clear removes only delivered history while preserving drafts, captures and sibling calls", async () => {
+  for (const phone of [false, true]) {
+    const h = harness(), p = h.page(); await tick();
+    p.setDesktop(!phone);
+    p.q("Delivered example-app note"); p.send(); await tick();
+    // Distinct receipt postures all remain history, independent of uncertain submissions.
+    vm.runInContext(`sent.push(...["received", "handling", "failed", "unavailable"].map((state, index) => ({...sent[0], id: "receipt-" + index, state}))); update()`, p.context);
+    h.setMode("fail"); p.q("Unconfirmed acme note"); p.send(); await tick();
+    h.setMode("hold"); p.q("Pending example-app note"); p.send(); await tick();
+    p.q("Unsent queued draft");
+    p.element("review-message").value = "Current unsent draft";
+    vm.runInContext(`selected = { id: "example-app", label: "Example app", route: "#overview", version: config.version }; window.quarterdeckCallQueue = { list: () => [{key: "sibling", phase: "confirm", text: "Keep option meaning"}] }; update()`, p.context);
+    const before = p.state();
+    assert.equal(p.element("review-clear-messages").disabled, false);
+    if (phone) {
+      vm.runInContext('setReviewTab("conversation")', p.context);
+      assert.equal(p.element("review-history-actions").hidden, true);
+      p.element("review-history-tab").click();
+    }
+    assert.equal(p.element("review-history-actions").hidden, false);
+    p.element("review-clear-messages").click();
+    const after = p.state();
+    assert.equal(after.sent.length, 0);
+    assert.deepEqual({...after, sent: before.sent}, before, "only the history array changes in persisted state");
+    assert.equal(vm.runInContext('callQueue()[0].key', p.context), "sibling");
+    assert.equal(h.posts.length, 3, "clearing does not submit anything");
+    assert.equal(p.element("review-clear-messages").disabled, true);
+    h.release(true); await tick();
+    assert.equal(p.state().sent.length, 0);
+    assert.equal(p.state().retryBatches.length, 2, "failure after clearing keeps captured IDs");
+    const restored = h.page(); await tick();
+    assert.equal(restored.state().sent.length, 0);
+    assert.equal(restored.state().queue[0].prompt, "Unsent queued draft");
+    assert.equal(restored.state().message, "Current unsent draft");
+    assert.deepEqual(restored.state().retryBatches, p.state().retryBatches);
+  }
+});
+
+test("receipt arriving after Review clear adds new history and a legacy end retry cannot clear or close", async () => {
+  const h = harness(), p = h.page(); await tick();
+  p.element("review-panel").hidden = false;
+  p.q("Delivered earlier"); p.send(); await tick();
+  p.q("Pending later"); h.setMode("hold"); p.send(); await tick();
+  p.element("review-clear-messages").click();
+  h.release(); await tick();
+  assert.equal(p.state().sent.length, 1, "a later durable acceptance appears independently");
+  h.setMode("success");
+  vm.runInContext('retryBatches.push({id: crypto.randomUUID(), payload: {...sent[0], schema: "fm-agentos-review.v2", batchId: "legacy-end", sessionId: "", end: true}})', p.context);
+  await vm.runInContext('submitBatch(retryBatches[0])', p.context);
+  assert.equal(h.posts.at(-1).end, true, "legacy identity retries unchanged");
+  assert.equal(p.state().sent.length, 2);
+  assert.equal(p.element("review-panel").hidden, false);
 });
 
 test("mobile blank strip regression: 48px header offset eliminates gap, and annotation exclusion is distinct from stage geometry", async () => {
@@ -656,6 +737,32 @@ test("mobile review close overlay regression: z-index 75 overtakes shell level-7
   assert.equal(fixedWinner.id, "review-close", "With z-index 75, Close button overtakes app shell and wins hit testing");
 });
 
+test("desktop inline composer recovers Send while the review panel stays hidden", async () => {
+  const h = harness();
+  h.setConfigUp(false);
+  const p = h.page(); await tick();
+  p.element("review-panel").hidden = true;
+  p.element("review-annotation").hidden = true;
+  p.element("review-message").value = "Synthetic inline note";
+  p.element("review-message").listeners.input();
+  assert.equal(p.element("review-send").disabled, true, "unreachable server cannot accept Send");
+  assert.equal(h.intervals.length, 1);
+  assert.equal(h.intervals[0].ms, 5000);
+  h.setConfigUp(true);
+  h.intervals[0].fn();
+  await tick(); await tick();
+  assert.equal(p.element("review-send").disabled, true, "a hidden panel and hidden inline composer do not poll");
+  assert.equal(p.element("review-panel").hidden, true);
+  p.element("review-annotation").hidden = false;
+  h.intervals[0].fn();
+  await tick(); await tick();
+  assert.equal(p.element("review-panel").hidden, true, "recovery does not open the review panel");
+  assert.equal(p.element("review-annotation").hidden, false);
+  assert.equal(p.element("review-send").disabled, false, "the open inline composer re-reads configuration");
+  assert.equal(p.element("review-state").textContent, "Review delivery reconnected.");
+  assert.equal(p.element("review-message").value, "Synthetic inline note");
+});
+
 test("phone composer re-enables Send when an unreachable server returns", async () => {
   const h = harness();
   h.setConfigUp(false);
@@ -675,4 +782,111 @@ test("phone composer re-enables Send when an unreachable server returns", async 
   assert.equal(h.posts.length, 1);
   assert.deepEqual(h.posts[0].entries.map((entry) => entry.prompt), ["Synthetic phone message"]);
   assert.equal(p.element("review-message").value, "");
+});
+
+test("single Send and keyboard flush saved work and keep call routes independent", async () => {
+  const h = harness(), p = h.page(); await tick();
+  const calls = [{key: "example-app-answer", phase: "confirm", text: "Choose option A"}, {key: "acme-note", phase: "confirm", text: "Ordinary thread note"}];
+  const options = []; let flushes = 0;
+  p.context.window.quarterdeckCallQueue = { list: () => calls, send: async (value) => { options.push(value); return false; } };
+  p.context.window.quarterdeckInboxPending = { count: () => 1, flush: () => { flushes++; } };
+  p.q("Staged review note");
+  p.element("review-message").value = "Current review message";
+  p.element("review-message").listeners.input();
+  p.element("review-message").listeners.keydown({key: "Enter", metaKey: true, preventDefault() {}});
+  await tick();
+  assert.equal(flushes, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(options)), [{ immediate: true }]);
+  assert.deepEqual(h.posts[0].entries.map((entry) => entry.prompt), ["Staged review note", "Current review message"]);
+  assert.equal(h.headers[0]["x-quarterdeck-send-now"], "1");
+  assert.equal(calls.length, 2, "partial call failure keeps sibling state with its provider");
+  p.context.window.quarterdeckCallQueue = { list: () => [] };
+  vm.runInContext("update()", p.context);
+  assert.equal(p.element("review-send").disabled, false, "saved pending work alone enables Send");
+  p.send(); await tick();
+  assert.equal(flushes, 2);
+  assert.equal(h.posts.length, 1, "pending-only send creates no empty review batch");
+});
+
+test("Annotate follows the composer at tablet widths and uses the same draft across breakpoints", async () => {
+  const p = harness().page(); await tick();
+  const action = p.element("review-select-location");
+  const actions = { append(node) { node.parentElement = this; }, insertBefore(node) { node.parentElement = this; } };
+  const header = { insertBefore(node) { node.parentElement = this; } };
+  p.context.document.querySelector = (selector) => selector === "#review-form .review-actions" ? actions
+    : selector === ".review-header-actions" ? header : { textContent: "" };
+  p.q("Staged example-app annotation");
+  p.element("review-message").value = "Current acme draft";
+  p.element("review-message").listeners.input();
+  const before = p.state();
+  for (const width of [600, 768, 1024, 600, 1024]) {
+    p.setDesktop(width > 720);
+    vm.runInContext("placeSelectionAction()", p.context);
+    assert.equal(action.parentElement, width > 720 ? actions : header, `${width}px places the existing control with the active composer`);
+    assert.deepEqual(p.state(), before, "placement leaves queue, captures and drafts intact");
+    action.click();
+    assert.equal(vm.runInContext("pickingRegion", p.context), true);
+    assert.equal(action.textContent, "Select on page");
+    action.click();
+    assert.equal(vm.runInContext("pickingRegion", p.context), false);
+    assert.equal(p.state().message, "Current acme draft");
+    assert.deepEqual(p.state().queue, before.queue);
+  }
+});
+
+test("Review relocates the same actions in Clear/Queue/Send order and restores Message across widths", async () => {
+  const h = harness(), p = h.page(); await tick();
+  p.q("Synthetic queued note");
+  p.element("review-message").value = "Synthetic retained draft";
+  const before = p.state();
+  const queue = p.element("review-queue"), send = p.element("review-send"), clear = p.element("review-clear-messages");
+  const annotate = p.element("review-select-location");
+  for (const id of ["review-queue", "review-send", "review-clear-messages", "review-select-location"]) p.element(id).id = id;
+  function container(children = []) {
+    const owner = { children, get firstChild() { return this.children[0]; },
+      insertBefore(node, reference) {
+        if (node.parentElement) node.parentElement.children.splice(node.parentElement.children.indexOf(node), 1);
+        const index = this.children.indexOf(reference);
+        this.children.splice(index < 0 ? this.children.length : index, 0, node);
+        node.parentElement = this;
+        if (p.context.document.activeElement === node) p.context.document.activeElement = null;
+      }, append(node) { this.insertBefore(node, null); } };
+    for (const node of children) node.parentElement = owner;
+    return owner;
+  }
+  const actions = container([queue, send, annotate]), history = container([clear]);
+  Object.defineProperty(queue, "nextSibling", { get: () => queue.parentElement.children[queue.parentElement.children.indexOf(queue) + 1] });
+  send.focus = () => { p.context.document.activeElement = send; };
+  p.context.document.querySelector = (selector) => selector === "#review-form .review-actions" ? actions : { textContent: "" };
+  Object.assign(p.element("review-history-actions"), history);
+  const historyOwner = p.element("review-history-actions");
+  clear.parentElement = historyOwner;
+  for (const width of [1440, 820, 390, 820, 390, 1440]) {
+    p.setDesktop(width > 720);
+    p.element("review-panel").hidden = false;
+    vm.runInContext('setReviewTab("review")', p.context);
+    assert.deepEqual(historyOwner.children.map(node => node.id), width > 720 ? [clear.id, queue.id, send.id] : [clear.id, send.id]);
+    assert.equal(queue.parentElement, width > 720 ? historyOwner : actions);
+    assert.equal(send.parentElement, historyOwner);
+    assert.equal(actions.children.includes(annotate), true);
+    send.focus();
+    p.element("review-panel").hidden = true;
+    vm.runInContext('placeReviewActions()', p.context);
+    assert.deepEqual(actions.children.map(node => node.id), [queue.id, send.id, annotate.id]);
+    assert.deepEqual(historyOwner.children.map(node => node.id), [clear.id]);
+    assert.equal(p.context.document.activeElement, send, "moving a focused Send retains focus");
+    assert.deepEqual(p.state(), before, "layout moves leave all persisted composer state intact");
+  }
+  const html = htmlModel(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
+  assert.equal(html.one('#review-queue').attrs.form, 'review-form');
+  for (const id of [clear.id, queue.id, send.id]) assert.equal(html.all(`#${id}`).length, 1);
+  const rules = parseCss(await readFile(new URL('../public/styles.css', import.meta.url), 'utf8'));
+  const clearStyle = computed(rules, html.one('#review-clear-messages'));
+  assert.equal(clearStyle.background, 'var(--surface)');
+  assert.equal(clearStyle.color, 'var(--danger)');
+  assert.equal(clearStyle['border-color'], 'var(--danger)');
+  const actionsOwner = element('div', [], {}, null, 'review-history-actions');
+  for (const width of [360, 390, 721, 1280]) {
+    assert.equal(computed(rules, element('button', [], {}, actionsOwner), width)['min-height'], '44px');
+  }
 });

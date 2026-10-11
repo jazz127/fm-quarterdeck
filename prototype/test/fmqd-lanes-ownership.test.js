@@ -4,10 +4,10 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { verifyLegacySkill } from "../../skills/fm-lanes/verify-legacy.mjs";
+import { verifyLegacySkill } from "../../skills/fmqd-lanes/verify-legacy.mjs";
 
 test("read-only preflight refuses changed legacy bytes or entry without overwriting", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "fm-lanes-legacy-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "fmqd-lanes-legacy-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const legacy = path.join(root, "legacy");
   // Contract: legacy rollback preflight accepts only the caller-approved bytes

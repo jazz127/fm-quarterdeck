@@ -4,10 +4,96 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { browserCpuRate, cleanupBrowserProfile, waitForBrowserPort } from "../scripts/browser-harness.mjs";
+import vm from "node:vm";
+import { acquireFixturePage, browserCpuRate, cleanupBrowserProfile, waitForBrowserPort } from "../scripts/browser-harness.mjs";
 
 const runningBrowser = () => ({ exitCode: null, signalCode: null });
 const missingPort = () => { const error = Error("Not ready"); error.code = "ENOENT"; throw error; };
+
+const fixtureUrl = "http://127.0.0.1:4100/#overview", revision = "a".repeat(40);
+const unselected = "error: No page is currently selected\ncode: BROWSER_ERROR\n";
+// Synthetic axi CLI shaped like the hosted runner: newpage creates the target
+// but leaves no page selected, so the caller must list and select it.
+function hostedBrowser({ newpageError = unselected, created = [fixtureUrl], selectable = true, document = {}, open = ["about:blank"], selected } = {}) {
+  const pages = open.map((url, index) => ({ id: String(index + 1), url })), calls = [];
+  const browser = async (...args) => {
+    calls.push(args.join(" "));
+    if (args[0] === "newpage") {
+      for (const url of created) pages.push({ id: String(pages.length + 1), url });
+      if (newpageError) throw Object.assign(Error(`Command failed: chrome-devtools-axi ${args.join(" ")}`), { stdout: newpageError });
+      selected = pages.at(-1).id;
+      return "page:\n";
+    }
+    if (args[0] === "pages") return `pages[${pages.length}]{id,url,selected}:\n${pages.map((page) => `  ${page.id},${page.url},${page.id === selected}`).join("\n")}\n`;
+    if (args[0] === "selectpage") { if (selectable) selected = args[1]; return "selected\n"; }
+    if (args[0] === "eval") {
+      const state = { href: pages.find((page) => page.id === selected)?.url, revision, navigation: "navigate", ...document };
+      const evaluate = vm.runInNewContext(`(${args[1]})`, {
+        document: { readyState: 'complete' },
+        location: { href: state.href },
+        window: { FM_BOOT_REVISION: state.revision },
+        performance: { getEntriesByType: type => type === 'navigation' ? [{ type: state.navigation }] : [] },
+        setTimeout,
+      });
+      return `result: ${await evaluate()}\n`;
+    }
+    throw Error(`unexpected ${args[0]}`);
+  };
+  return { browser, calls };
+}
+
+test("hosted unselected newpage fails bare acquisition but selects the actual own target", async () => {
+  await assert.rejects(hostedBrowser().browser("newpage", fixtureUrl), (error) => error.stdout === unselected);
+  const { browser, calls } = hostedBrowser();
+  assert.equal(await acquireFixturePage(browser, fixtureUrl, revision), "2");
+  assert.deepEqual(calls, ["pages", `newpage ${fixtureUrl}`, "pages", "selectpage 2", "pages", calls.at(-1)]);
+  assert.match(calls.at(-1), /^eval /, "the fresh document and served revision are verified before interaction");
+});
+
+test("a selected newpage still lists, selects and verifies the same own target", async () => {
+  const { browser, calls } = hostedBrowser({ newpageError: "" });
+  assert.equal(await acquireFixturePage(browser, fixtureUrl, revision), "2");
+  assert.deepEqual(calls.slice(0, 5), ["pages", `newpage ${fixtureUrl}`, "pages", "selectpage 2", "pages"]);
+});
+
+test("freshness follows the requested URL and revision for another fixture", async () => {
+  const url = 'http://127.0.0.1:4101/#work', servedRevision = 'c'.repeat(40);
+  const { browser } = hostedBrowser({ created: [url], document: { revision: servedRevision } });
+  assert.equal(await acquireFixturePage(browser, url, servedRevision), '2');
+});
+
+test("a fresh page beside a same-URL original selects only the newly created target", async () => {
+  const { browser, calls } = hostedBrowser({ open: ["about:blank", fixtureUrl], selected: "2" });
+  assert.equal(await acquireFixturePage(browser, fixtureUrl, revision), "3");
+  assert.ok(calls.includes("selectpage 3") && !calls.includes("selectpage 2"));
+});
+
+test("unrelated newpage errors keep their original failure without listing pages", async () => {
+  const { browser, calls } = hostedBrowser({ newpageError: "error: Target closed\ncode: BROWSER_ERROR\n" });
+  await assert.rejects(acquireFixturePage(browser, fixtureUrl, revision), /Command failed/);
+  assert.deepEqual(calls, ["pages", `newpage ${fixtureUrl}`]);
+});
+
+for (const [name, created, count] of [["a missing", [], 0], ["an ambiguous", [fixtureUrl, fixtureUrl], 2]]) {
+  test(`${name} own target stops with the listing and original error as evidence`, async () => {
+    const { browser, calls } = hostedBrowser({ created });
+    await assert.rejects(acquireFixturePage(browser, fixtureUrl, revision),
+      new RegExp(`found ${count}:[\\s\\S]*1,about:blank,false[\\s\\S]*newpage: error: No page is currently selected`));
+    assert.ok(!calls.some((call) => call.startsWith("selectpage")), "no guessed target is selected");
+  });
+}
+
+test("a failed selection stops before interaction", async () => {
+  const { browser, calls } = hostedBrowser({ selectable: false });
+  await assert.rejects(acquireFixturePage(browser, fixtureUrl, revision), /target 2 .* was not selected:[\s\S]*2,http:\/\/127\.0\.0\.1:4100\/#overview,false/);
+  assert.ok(!calls.some((call) => call.startsWith("eval")));
+});
+
+for (const [name, document] of [["stale revision", { revision: "b".repeat(40) }], ["reloaded realm", { navigation: "reload" }], ["wrong document", { href: "about:blank" }]]) {
+  test(`a ${name} fails the own fixture document check`, async () => {
+    await assert.rejects(acquireFixturePage(hostedBrowser({ document }).browser, fixtureUrl, revision), /is not a fresh .* document/);
+  });
+}
 
 test("browser CPU throttling accepts only a finite bounded rate", () => {
   for (const rate of ["1", "1.5", "6", "20"]) assert.equal(browserCpuRate(rate), Number(rate));

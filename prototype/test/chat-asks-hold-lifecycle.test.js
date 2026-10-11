@@ -5,6 +5,26 @@ import path from 'node:path';
 import os from 'node:os';
 import { backlogHoldRecords, normalizeSnapshot } from '../bearings.js';
 import { createChatAskScanner, memoryStateFile, extractAsks, taskMarkers, composeCallModel, createCallSource } from '../chat-asks.js';
+import { extractAskSections } from '../public/chat-ask-extraction.js';
+
+test('shared ask ranges retain CRLF, multiple asks and unclipped originals without changing the canonical projection', () => {
+  const long = 'Sample detail '.repeat(400);
+  const text = `Background.\r\n\r\n**DECISION NEEDED:** Choose example-app.\r\n- "staged": sample first\r\n- "wait": later\r\n\r\n\`\`\`text\r\nACTION NEEDED: fenced example\r\n\`\`\`\r\n\r\n> APPROVAL NEEDED: ${long}\r\nReply "allow" or "hold".\r\n\r\nEnd detail.`;
+  const sections = extractAskSections(text);
+  assert.equal(sections.length, 2);
+  assert.deepEqual(sections.map(({ ask }) => ask), extractAsks(text));
+  assert.deepEqual(sections[0].ask.replies, ['staged', 'wait']);
+  assert.deepEqual(sections[1].ask.replies, ['allow', 'hold']);
+  assert.equal(sections[1].ask.text.length, 4000);
+  assert.ok(sections[1].raw.length > 4000);
+  let cursor = 0, recovered = '';
+  for (const section of sections) {
+    assert.equal(section.raw, text.slice(section.start, section.end));
+    recovered += text.slice(cursor, section.start) + section.raw;
+    cursor = section.end;
+  }
+  assert.equal(recovered + text.slice(cursor), text);
+});
 const hold = (id, reason, checked = ' ') => `- [${checked}] ${id} - Choose (hold-kind: captain) (hold: fm-hold-v1:${Buffer.from(reason).toString('base64')})`;
 async function scanner(t, text) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'qd-hold-lifecycle-'));
@@ -64,7 +84,7 @@ test('lifecycle parser rejects duplicate ids and unscoped body prose', () => {
   assert.deepEqual(backlogHoldRecords('- [ ] work - Regular\n  Resolution mode: answered\n## Done\n  Resolution recorded by fm-captain-hold.\n  Resolution mode: released'), []);
 });
 
-const decisionModel = (rows) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: rows,
+const decisionModel = (rows) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: rows.map(row => ({ ...row, key: row.id.split("/").at(-1) })),
   contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
 
 test('local chat asks stay actionable across every read-only decision matching field', async t => {

@@ -22,3 +22,8 @@ prototype/data/preview-acceptance/
 .env.*
 !.env.example
 .DS_Store
+
+# Installed application dependencies and private optional notification owner
+node_modules/
+prototype/data/quarterdeck-notifications.*
+prototype/data/quarterdeck-push-keys.json

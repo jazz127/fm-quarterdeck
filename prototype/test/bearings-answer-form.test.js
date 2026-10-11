@@ -14,7 +14,7 @@ const merge = (rev = "b1") => ({ key: "merge:beta-merge", type: "merge", task: "
   answer: { question: "merge.beta-merge", options: [{ value: "merge", label: "Merge now", hint: "Firstmate re-checks" }], recommend: null, close: null, freeform: true } });
 const model = (cards) => ({ schema: "fm-quarterdeck-call.v1", rev: cards.map((card) => `${card.key}@${card.rev}`).join("|") || "empty", state: "ready", cards, coverage: { known: 1, checked: 1, provenClear: false }, omitted: [] });
 
-function setup({ responses = [], storage = null, viewerStorage = null, onAsked = () => {} } = {}) {
+function setup({ responses = [], storage = null, viewerStorage = null, onAsked = () => {}, activeFilter = false } = {}) {
   const dom = callDom();
   const timers = fakeTimers();
   const { document } = dom;
@@ -40,7 +40,15 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
   const patcher = win.bearingsPatch.createCallPatcher({ section, list, status, view: win.bearingsView, doc: document, win, storage, viewerStorage, timers,
     onRender: (node, card) => { answers?.render(node, card); overflow?.render(node, card); },
     onApply: (next) => { answers?.prune(next.cards.map((card) => card.key)); overflow?.prune(next.cards.map((card) => card.key)); } });
-  answers = win.bearingsAnswerForm.createAnswerController({ list, drafts: patcher.drafts, doc: document, win, storage, fetchImpl, timers, uuid: () => uuid(++n), onAsked });
+  answers = win.bearingsAnswerForm.createAnswerController({ list, drafts: patcher.drafts, doc: document, win, storage, fetchImpl, timers, uuid: () => uuid(++n), onAsked,
+    onChange(key, answer) {
+      const card = list.querySelector(`[data-call-key="${key}"]`);
+      if (activeFilter && card) {
+        card.hidden = !win.callLifecycle.visible(win.callLifecycle.cardState({ answer }), "active");
+        if (card.hidden && card.contains(document.activeElement)) outside.focus();
+      }
+      patcher.refreshPending?.();
+    } });
   overflow = win.bearingsOverflow.createOverflowController({ list, win });
   const node = (key) => list.children.find((entry) => entry.getAttribute("data-call-key") === key);
   const part = (key, name) => node(key).querySelector(`[data-call-answer-${name}]`);
@@ -103,6 +111,8 @@ test('Edit after an unconfirmed send and changed-card refusal retain identity, i
   t.part(key, 'edit').click(); t.part(key, 'text').type('Wednesday'); t.submit(key);
   assert.equal(t.answers.state(key).requestId, requestId);
   t.leave(); t.patcher.update(model([decision('a2')]));
+  assert.equal(t.answers.state(key).phase, 'confirm', 'unfocused unsent text waits for acknowledgement');
+  t.node(key).querySelector('[data-call-update-now]').click();
   assert.equal(t.answers.state(key).phase, 'refused');
   assert.equal(t.answers.state(key).requestId, requestId);
   const reload = setup({ storage }); reload.patcher.update(model([decision('a2')]));
@@ -115,6 +125,159 @@ function tabStorage() {
   return { getItem: (key) => entries.get(key) || null, setItem: (key, value) => entries.set(key, value), removeItem: (key) => entries.delete(key),
     key: (index) => [...entries.keys()][index], get length() { return entries.size; } };
 }
+
+test("Active-filter chat removal waits for accepted body consumption and leaves no unsent stub", async () => {
+  let consume;
+  const body = new Promise(resolve => { consume = resolve; });
+  const t = setup({ activeFilter: true, responses: [{ status: 202, body }] });
+  const chat = { ...merge(), key: "chat:0123456789abcdef", type: "chat", marker: "ACTION NEEDED", summary: "Rotate the sample token", answer: {
+    question: "chat.0123456789abcdef", options: [{ value: "reply-1", label: "rotated" }], freeform: true,
+  } };
+  const key = chat.key;
+  t.patcher.update(model([chat, decision()]));
+  const radio = t.node(key).querySelector('input[value="reply-1"]');
+  radio.checked = true; radio.dispatchEvent({ type: "change" });
+  t.submit(key);
+  assert.equal(t.node(key).hidden, true, "Queued leaves the Active filter");
+  const original = t.node(key);
+  t.part(key, "send").click();
+  t.leave(); await flush();
+  assert.equal(original.contains(t.document.activeElement), false, "no engagement protects the send");
+  t.patcher.update(model([decision("a2", "Updated neighbour")]));
+  assert.equal(original.querySelector('[data-call-update-now]').textContent, 'Show update');
+  original.querySelector('[data-call-update-now]').click();
+  t.patcher.applyNow(key);
+  t.part(key, 'send').click();
+  assert.equal(t.fetches.length, 1, 'acknowledgement cannot send or duplicate the in-flight response');
+  assert.equal(t.node(key), original, "source removal waits while the accepted body is unread");
+  assert.equal(t.answers.state(key).phase, "sending");
+  assert.equal(t.list.querySelector("[data-call-stub]"), null);
+  assert.match(t.node("decision:alpha-call").textContent, /Updated neighbour/, "unrelated changes still apply");
+  consume({ state: "accepted" }); await flush(); t.timers.advance(700);
+  assert.equal(original.isConnected, false, "resolved chat leaves after confirmation is consumed");
+  assert.equal(t.patcher.drafts.text(key), "");
+  assert.equal(t.list.querySelector("[data-call-stub]"), null, "accepted words never become unsent text");
+  assert.equal(t.patcher.pending, null);
+});
+
+test("a filed answer keeps its sent echo across a source update during sending", async () => {
+  let consume;
+  const t = setup({ activeFilter: true, responses: [{ status: 202, body: new Promise(resolve => { consume = resolve; }) }] });
+  const key = merge().key;
+  t.patcher.update(model([merge()]));
+  const radio = t.node(key).querySelector('input[value="merge"]'); radio.checked = true; radio.dispatchEvent({ type: "change" });
+  t.part(key, "text").type("Preserve compatibility"); t.submit(key); t.part(key, "send").click(); t.leave(); await flush();
+  t.patcher.update(model([{ ...merge("b2"), reason: "Updated review context" }]));
+  consume({ state: "accepted" }); await flush();
+  assert.equal(t.answers.state(key).phase, "sent");
+  assert.equal(t.node(key).getAttribute("data-call-rev"), "b2");
+  assert.match(t.node(key).textContent, /Updated review context/);
+  assert.equal(t.part(key, "text").value, "Preserve compatibility");
+  assert.equal(t.node(key).querySelector('input[value="merge"]').disabled, true);
+  assert.equal(t.patcher.drafts.text(key), "");
+});
+
+test("source removal during an unconfirmed send preserves copyable unsent text", async () => {
+  let respond;
+  const t = setup({ activeFilter: true, responses: [new Promise(resolve => { respond = resolve; })] });
+  const key = merge().key;
+  t.patcher.update(model([merge()]));
+  const radio = t.node(key).querySelector('input[value="merge"]'); radio.checked = true; radio.dispatchEvent({ type: "change" });
+  t.part(key, "text").type("Check the sample migration"); t.submit(key); t.part(key, "send").click(); t.leave();
+  t.patcher.update(model([]));
+  t.node(key).querySelector('[data-call-update-now]').click();
+  t.part(key, 'send').click();
+  assert.equal(t.fetches.length, 1, 'Show update leaves the unconfirmed request protected');
+  assert.ok(t.node(key), "the request is still awaiting confirmation");
+  respond({ status: 502, body: { error: "Unconfirmed" } }); await flush(); t.timers.advance(700);
+  const stub = t.list.querySelector("[data-call-stub]");
+  assert.ok(stub);
+  assert.match(stub.querySelector("[data-call-stub-text]").textContent, /Check the sample migration/);
+  assert.match(t.patcher.drafts.text(key), /Check the sample migration/);
+});
+
+test("visible answer and thread sends clear drafts before a pending source removal", async () => {
+  for (const path of ["answer", "thread"]) {
+    let consume;
+    const t = setup({ responses: [{ status: 202, body: new Promise(resolve => { consume = resolve; }) }] });
+    const key = merge().key; t.patcher.update(model([merge()]));
+    if (path === "answer") {
+      const radio = t.node(key).querySelector('input[value="merge"]'); radio.checked = true; radio.dispatchEvent({ type: "change" });
+    }
+    t.part(key, "text").type("Sample context"); t.submit(key); t.part(key, "send").click(); t.leave(); await flush();
+    t.patcher.update(model([]));
+    assert.equal(t.answers.state(key).path, path);
+    assert.ok(t.node(key));
+    consume({ state: "accepted" }); await flush();
+    assert.equal(t.patcher.drafts.text(key), "", `${path} clears only after confirmation`);
+    t.leave();
+    assert.equal(t.list.querySelector("[data-call-stub]"), null, `${path} has no leftover unsent stub`);
+    assert.equal(t.patcher.pending, null);
+  }
+});
+
+test("selecting a lettered option submits that letter, and text alone stays a thread note", async () => {
+  const key = "decision:alpha-call";
+  const lettered = () => {
+    const card = decision();
+    card.answer = { ...card.answer, options: [
+      { value: "a", label: "a", hint: "Staged rollout — fewer users at once" },
+      { value: "b", label: "b", hint: "Ship now — faster delivery" },
+    ] };
+    return card;
+  };
+  const typed = setup();
+  typed.patcher.update(model([lettered()]));
+  typed.part(key, "text").type("Tuesday");
+  typed.submit(key);
+  assert.equal(typed.answers.state(key).path, "thread");
+  assert.equal(typed.fetches.length, 0, "text with no letter selected is not an answer yet");
+
+  const t = setup();
+  t.patcher.update(model([lettered()]));
+  assert.match(t.node(key).querySelector('input[value="a"]').closest(".call-opt").textContent, /Staged rollout — fewer users at once/);
+  assert.equal(t.node(key).querySelectorAll('input[type="radio"]').length, 2);
+  const radio = t.node(key).querySelector('input[value="a"]');
+  radio.checked = true;
+  radio.dispatchEvent({ type: "change" });
+  t.submit(key);
+  assert.equal(t.answers.state(key).selection, "a");
+  assert.equal(t.answers.state(key).selectionLabel, "a");
+  assert.equal(t.part(key, "preview").textContent, "a");
+  t.part(key, "send").click();
+  await flush();
+  assert.equal(t.fetches[0].url, "/api/bearings/answer");
+  assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: "a1", selection: "a", note: "" });
+});
+
+test("a named linked alternative relays its exact label; unselected text uses the thread endpoint", async () => {
+  const card = { ...decision(), chatAsks: [{ summary: 'Choose the window. Reply "Staged rollout" or "Release now".', replies: ["Staged rollout", "Release now"] }] };
+  const key = card.key;
+  const t = setup();
+  t.patcher.update(model([card]));
+  const radio = t.node(key).querySelector('input[data-call-reply="Release now"]');
+  radio.checked = true;
+  radio.dispatchEvent({ type: "change" });
+  t.part(key, "text").type("Use the sample window");
+  t.submit(key);
+  assert.equal(t.fetches.length, 0);
+  assert.equal(t.part(key, "preview").textContent, "Release now - Use the sample window");
+  t.part(key, "send").click();
+  await flush();
+  assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: card.rev, selection: "", note: "Release now - Use the sample window" });
+  assert.equal(t.fetches[0].url, "/api/bearings/answer");
+
+  const note = setup();
+  note.patcher.update(model([card]));
+  note.part(key, "text").type("Release now");
+  note.submit(key);
+  assert.equal(note.answers.state(key).path, "thread", "matching an option's text is not selecting it");
+  note.part(key, "send").click();
+  await flush();
+  assert.equal(note.fetches[0].url, "/api/bearings/thread");
+  assert.equal(note.fetches[0].body.text, "Release now");
+  assert.equal(note.fetches[0].body.selection, undefined);
+});
 
 test("nothing is sent until Queue and then an explicit Send; the sent answer clears its draft and shows receipts", async () => {
   const t = setup({ responses: [{ status: 202, body: { state: "accepted", noteId: "note-accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
@@ -290,6 +453,7 @@ test("an empty or oversized answer is refused locally and nothing is sent", asyn
   const opted = decision("a2");
   opted.answer = { ...opted.answer, options: [{ value: "staged", label: "Staged", hint: null }] };
   t.patcher.update(model([opted]));
+  t.node(key).querySelector('[data-call-update-now]').click();
   const radio = t.node(key).querySelector('input[value="staged"]');
   radio.checked = true;
   radio.dispatchEvent({ type: "change" });

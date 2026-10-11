@@ -148,9 +148,9 @@ try {
       assert.equal(await evaluate('document.querySelector(".mobile-review-sheet").matches(":modal")'), false, 'Message restores interaction');
       assert.equal(await evaluate('document.body.style.overflow'), '', 'Message restores overflow');
       assert.ok(await evaluate('document.querySelector(".mobile-review-sheet").getBoundingClientRect().height < innerHeight * .62'), 'empty composer is compact');
-      assert.ok(await evaluate('Math.abs(document.querySelector("#review-queue").getBoundingClientRect().top - document.querySelector("#review-end").getBoundingClientRect().top) < 2'), 'three actions share one row');
+      assert.ok(await evaluate('Math.abs(document.querySelector("#review-queue").getBoundingClientRect().top - document.querySelector("#review-send").getBoundingClientRect().top) < 2'), 'three actions share one row');
       await evaluate('document.querySelector("#review-message").value="Draft survives dismissal"; document.querySelector("#review-message").dispatchEvent(new Event("input", {bubbles:true}))');
-      const fit = await evaluate(`(() => { const r = document.querySelector('#review-end').getBoundingClientRect(); return r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; })()`);
+      const fit = await evaluate(`(() => { const r = document.querySelector('#review-send').getBoundingClientRect(); return r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; })()`);
       assert.ok(fit, 'all composer actions fit');
       if (width === 390) await writeFile(path.join(os.tmpdir(), 'quarterdeck-mobile-review.png'), Buffer.from((await cmd('Page.captureScreenshot')).data, 'base64'));
       await cmd('Input.dispatchKeyEvent', {type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27});
@@ -162,7 +162,7 @@ try {
       await wait(80);
       // Simulate reduced visible height while the keyboard is raised.
       await evaluate('document.documentElement.style.setProperty("--review-vv-height", "420px")');
-      assert.ok(await evaluate('document.querySelector("#review-end").getBoundingClientRect().bottom <= 420'), 'keyboard height keeps actions visible');
+      assert.ok(await evaluate('document.querySelector("#review-send").getBoundingClientRect().bottom <= 420'), 'keyboard height keeps actions visible');
       await evaluate('document.querySelector("#review-close").click()');
       await evaluate('document.querySelector(".mobile-dock [data-mobile-view=overview]").click()');
       await evaluate('document.querySelector("#review-panel-toggle").click()');
@@ -266,7 +266,7 @@ try {
             return window.testOriginalFetch(url, options);
           };
           document.querySelector('#review-message').value = 'Hidden unsent draft';
-          document.querySelector('#review-end').click();`);
+          document.querySelector('#review-send').click();`);
         await wait(100);
         const sent = await evaluate('window.testReviewPayload');
         assert.ok(sent.entries.length > 0);

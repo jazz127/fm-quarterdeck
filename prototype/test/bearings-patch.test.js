@@ -15,7 +15,7 @@ const card = (key, summary, extra = {}) => ({ key, type: key.split(":")[0], task
 const model = (cards, extra = {}) => ({ schema: "fm-quarterdeck-call.v1", rev: cards.map((entry) => `${entry.key}@${entry.rev}`).join("|") || "empty", state: "ready", cards, coverage: { known: 3, checked: 3, provenClear: false }, omitted: [], ...extra });
 // Product rendering lives in bearings-view.js; this one carries one draft field per card.
 const view = {
-  cardHtml: (entry) => `<p data-summary>${entry.summary}</p><button type="button" data-copy>Copy</button><textarea data-call-draft="note"></textarea><input data-call-draft="other">`,
+  cardHtml: (entry) => `<p data-summary>${entry.summary}</p><button type="button" data-copy>Copy</button><textarea data-call-draft="note"></textarea>${entry.noOther ? "" : '<input data-call-draft="other">'}`,
 };
 
 function setup({ storage = memoryStorage(), clipboard, scroller } = {}) {
@@ -44,6 +44,91 @@ function setup({ storage = memoryStorage(), clipboard, scroller } = {}) {
 const A = card("decision:alpha-call", "Pick the alpha window");
 const B = card("merge:beta-merge", "Merge beta");
 const C = card("decision:gamma-credential", "Provide gamma credential");
+
+test("a focused pending card marks its body and exposes an incoming notice with Show update", () => {
+  const t = setup();
+  t.patcher.update(model([A]));
+  const a = t.cardNode(A.key), field = a.querySelector('[data-call-draft="note"]');
+  field.focus();
+  t.patcher.update(model([{ ...A, rev: 'a2' }]));
+  assert.equal(a.getAttribute('data-held'), 'true', 'body has the pending appearance hook');
+  assert.equal(a.querySelector('[data-call-held-text]').textContent, 'Update incoming — call updated');
+  assert.equal(a.querySelector('[data-call-update-now]').textContent, 'Show update');
+  assert.equal(t.document.activeElement, field);
+  a.querySelector('[data-call-update-now]').click();
+  assert.equal(a.getAttribute('data-held'), null);
+  assert.equal(a.getAttribute('data-call-rev'), 'a2');
+});
+
+test("unfocused cards with no unsent text apply automatically; focused and unfocused drafts hold independently", () => {
+  const t = setup();
+  t.patcher.update(model([A, B, C]));
+  const a = t.cardNode(A.key), b = t.cardNode(B.key), c = t.cardNode(C.key);
+  // A draft restored without focus must still wait for acknowledgement.
+  t.patcher.drafts.set(B.key, "note", "  Exact draft\n\n");
+  a.querySelector('[data-call-draft="note"]').focus();
+  const changed = [A, B, C].map(entry => ({ ...entry, rev: entry.rev + "-new" }));
+  assert.equal(t.patcher.update(model(changed)), "held");
+  assert.equal(a.getAttribute("data-call-rev"), A.rev, "focus alone holds");
+  assert.equal(b.getAttribute("data-call-rev"), B.rev, "unfocused unsent text holds");
+  assert.equal(c.getAttribute("data-call-rev"), changed[2].rev, "no focus and no unsent text applies");
+  assert.equal(a.querySelector('[data-call-held-text]').textContent, "Update incoming — call updated");
+  assert.equal(b.querySelector('[data-call-update-now]').textContent, "Show update");
+  assert.equal(a.getAttribute("data-held"), "true");
+  assert.equal(a.getAttribute("aria-busy"), "true");
+  t.outside.focus();
+  t.timers.advance(600);
+  assert.equal(a.getAttribute("data-call-rev"), changed[0].rev, "focus departure releases only that card");
+  assert.equal(b.getAttribute("data-call-rev"), B.rev);
+  b.querySelector('[data-call-update-now]').click();
+  assert.equal(b.getAttribute("data-call-rev"), changed[1].rev);
+  assert.equal(b.querySelector('[data-call-draft="note"]').value, "  Exact draft\n\n");
+  assert.equal(b.querySelector('[data-call-held]'), null);
+  t.patcher.update(model(changed));
+  assert.equal(t.patcher.held, false, "acknowledged revision does not immediately rehold");
+  t.patcher.update(model(changed.map(entry => ({ ...entry, rev: entry.rev + "-next" }))));
+  assert.ok(b.querySelector('[data-call-held]'), "a later update needs its own release");
+});
+
+test("Show update recovers text from removed fields and resolution, including whitespace-only drafts", () => {
+  const t = setup();
+  t.patcher.update(model([A, B]));
+  const a = t.cardNode(A.key);
+  a.querySelector('[data-call-draft="other"]').type("  Keep this\nexactly  ");
+  t.patcher.update(model([{ ...A, rev: "removed-field", noOther: true }, B]));
+  a.querySelector('[data-call-update-now]').click();
+  assert.equal(a.querySelector('[data-call-draft="other"]'), null);
+  assert.equal(a.querySelector('[data-call-recovery-text]').textContent, "  Keep this\nexactly  ");
+  assert.ok(a.querySelector('[data-call-recovery-copy]'));
+  t.patcher.drafts.set(B.key, "note", " \n ");
+  t.patcher.update(model([]));
+  assert.equal(t.cardNode(B.key).getAttribute("data-held"), "true");
+  t.cardNode(B.key).querySelector('[data-call-update-now]').click();
+  assert.equal(t.list.querySelector('[data-call-stub-text]').textContent, " \n ");
+});
+
+test("a selected card releases on keyboard focus departure or a click on a sibling control", () => {
+  for (const leave of [t => t.outside.focus(), t => t.cardNode(B.key).querySelector('[data-copy]').click()]) {
+    const t = setup();
+    t.patcher.update(model([A, B]));
+    const a = t.cardNode(A.key);
+    a.querySelector('[data-summary]').click();
+    t.patcher.update(model([{ ...A, rev: 'a2' }, B]));
+    assert.equal(a.getAttribute('data-held'), 'true');
+    leave(t);
+    t.timers.advance(600);
+    assert.equal(a.getAttribute('data-call-rev'), 'a2');
+    assert.equal(a.getAttribute('aria-current'), null);
+  }
+});
+
+test("a selected option without typed text does not hold an unfocused source change", () => {
+  const t = setup();
+  t.patcher.update(model([A]));
+  t.patcher.drafts.set(A.key, 'selection', 'staged');
+  assert.equal(t.patcher.update(model([{ ...A, rev: 'a2' }])), 'applied');
+  assert.equal(t.cardNode(A.key).getAttribute('data-call-rev'), 'a2');
+});
 
 test("first model renders keyed cards in order with coverage; an empty model shows the honest empty state", () => {
   const { list, coverage, patcher, cardNode } = setup();
@@ -108,7 +193,7 @@ test("typing holds only its card: neighbours insert/remove immediately, local no
   assert.equal(status.querySelector("[data-call-update-now]"), null);
   assert.equal(alpha.getAttribute("data-held"), "true");
   assert.equal(alpha.querySelector("[data-call-held]").getAttribute("role"), "status");
-  assert.equal(alpha.querySelector("[data-call-held-text]").textContent, "Call updated — updates when you're done");
+  assert.equal(alpha.querySelector("[data-call-held-text]").textContent, "Update incoming — call updated");
   assert.equal(field.value, "Ask about the rollback window", "the typed text is untouched");
   assert.ok(section.getAttribute("inert") === null && section.getAttribute("disabled") === null, "never inert: copy and editing keep working");
   assert.equal(alpha.querySelector("[data-summary]").textContent, A.summary);
@@ -162,7 +247,7 @@ test("a text selection inside the section holds updates until it collapses", () 
   assert.equal(patcher.update(model([A])), "held");
   timers.advance(5000);
   assert.equal(cardNode(B.key).querySelector("[data-summary]"), summary, "selected text stays put for copying");
-  assert.equal(cardNode(B.key).querySelector("[data-call-held-text]").textContent, "Call resolved — updates when you're done");
+  assert.equal(cardNode(B.key).querySelector("[data-call-held-text]").textContent, "Update incoming — call resolved");
   assert.equal(cardNode(B.key).classList.contains("call-card-leaving"), false);
   dom.selection.removeAllRanges();
   timers.advance(600);

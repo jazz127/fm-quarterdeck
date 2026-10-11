@@ -1,10 +1,10 @@
 ---
-name: fm-toolcheck
+name: fmqd-toolcheck
 description: Read-only audit of bootstrap-declared Kunchenguid tools and fm-quarterdeck integration pins/artifacts; no changes.
 user-invocable: true
 ---
 
-# /fm-toolcheck
+# /fmqd-toolcheck
 
 This is a Quarterdeck-owned Firstmate integration, not an upstream Firstmate skill. Run `node <Quarterdeck-skill-directory>/audit.mjs --firstmate-root <installed-Firstmate-repository>` and present the entire local report. The skill directory is the canonical or projected Quarterdeck directory containing this file; never invoke a same-named script from the Firstmate repository. Ask for the installed Firstmate root if unknown. The separate Quarterdeck section calls the reviewed skill source's `scripts/firstmate-integration.mjs status|verify <FM_HOME>` read-only interfaces. It compares the installed pin with local `main` in `<FM_HOME>/projects/fm-quarterdeck` (or explicit `--quarterdeck-root /absolute/checkout`), not the skill's immutable snapshot. Report missing/changed hook, check/trust, skill links, preference block, config and untagged legacy ownership, plus pin drift. Local main is cached evidence; no fetch occurs. Optional `--releases` makes bounded GitHub release metadata requests; identify this as network evidence, separate from local evidence. Do not interpret an unavailable release as current or obsolete.
 

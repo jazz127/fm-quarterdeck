@@ -8,11 +8,16 @@ import path from 'node:path';
 import { hookEntry } from './captain-ask-hook-install.mjs';
 
 const source = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const skills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
+const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
+// Prior discovery names are inspection-only; the saved journal owns removal.
+const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
+const knownSkills = [...skills, ...legacySkills];
 const tag = 'fm-quarterdeck';
 const marker = '<!-- fm-quarterdeck:integration:v1 -->';
 const endMarker = '<!-- /fm-quarterdeck:integration:v1 -->';
 const pinTagFile = 'fm-quarterdeck.json';
+// Shared modules under public/ that pinned readers import (the Stop hook via chat-asks.js).
+const pinnedPublic = new Set(['prototype/public/chat-ask-extraction.js']);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -104,7 +109,7 @@ async function pinSource(home, revision) {
     const [, mode, blob, name] = match;
     // This is an integration pin, not a second dashboard deployment. Keep
     // shared producer readers, but omit UI assets, tests and browser tooling.
-    if (/^prototype\/(?:public|test|scripts|data)\//.test(name)) continue;
+    if (/^prototype\/(?:public|test|scripts|data)\//.test(name) && !pinnedPublic.has(name)) continue;
     const bytes = git(source, ['cat-file', 'blob', blob]);
     const value = { bytes: bytes.toString('base64'), mode: mode === '100755' ? 0o700 : 0o600 };
     const current = await capture(root, name);
@@ -204,7 +209,7 @@ async function apply(home, operation, after) {
 }
 const manifestFile = 'state/quarterdeck-integration.json';
 async function save(home, manifest) { await publish(home, manifestFile, regular(`${JSON.stringify(manifest, null, 2)}\n`)); }
-const runtimeFiles = ['state/fm-quarterdeck-health.lock', 'state/fm-quarterdeck-health.stamp'];
+const runtimeFiles = ['state/fm-quarterdeck-health.lock', 'state/fm-quarterdeck-health.stamp', 'state/fm-quarterdeck-health.notes.json'];
 function taggedManifest(manifest) {
   return manifest.tag === tag && manifest.pin.tag === tag && manifest.checkId === 'fm-quarterdeck-health'
     && manifest.entry?.hooks?.[0]?.command?.includes('# fm-quarterdeck')
@@ -213,8 +218,8 @@ function taggedManifest(manifest) {
 }
 async function legacyArtifacts(home) {
   const found = [];
-  const claudeLinks = await captureDiscovery(home) === 'directory' ? skills.map(name => `.claude/skills/${name}`) : [];
-  for (const file of ['state/quarterdeck-health.check.sh', 'state/quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.check.sh', 'state/fm-quarterdeck-health.check-trust', ...skills.map(name => `.agents/skills/${name}`), ...claudeLinks]) {
+  const claudeLinks = await captureDiscovery(home) === 'directory' ? knownSkills.map(name => `.claude/skills/${name}`) : [];
+  for (const file of ['state/quarterdeck-health.check.sh', 'state/quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.check.sh', 'state/fm-quarterdeck-health.check-trust', ...knownSkills.map(name => `.agents/skills/${name}`), ...claudeLinks]) {
     if (await capture(home, file)) found.push(file);
   }
   const settings = await capture(home, '.claude/settings.local.json');
@@ -274,7 +279,7 @@ async function inventory(home, manifest, lockFile) {
   if (preferences?.bytes && textOf(preferences).includes(marker) && !artifacts.some(item => item.file === 'data/captain.md')) await add('data/captain.md', 'preferences', { marker });
   const discovery = await captureDiscovery(home);
   for (const base of ['.agents/skills', ...(discovery === 'directory' ? ['.claude/skills'] : [])]) {
-    for (const name of skills) {
+    for (const name of knownSkills) {
       const file = `${base}/${name}`;
       await parents(home, file);
       if (!(await info(path.join(home, file)))?.isSymbolicLink()) continue;
@@ -308,6 +313,7 @@ export async function integrate(mode, selectedHome, { revision, config = {} } = 
         return { installed: false, ok: mode === 'status' && !legacy.length, needsReinstall: true, problems: ['not-installed', ...legacy.map(file => `legacy-untagged:${file}`)] };
       }
       const problems = [];
+      if (manifest.operations.some(op => ['.agents/skills/', '.claude/skills/'].some(base => legacySkills.some(name => op.file === base + name)))) problems.push('legacy-skill-names:reinstall-required');
       if (!taggedManifest(manifest)) problems.push('legacy-untagged-install:reinstall-required');
       try { await verifyPin(home, manifest.pin); } catch { problems.push('pin-drift'); }
       for (const op of manifest.operations) {

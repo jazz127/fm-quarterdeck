@@ -4,10 +4,10 @@ A skill in source is not activated in a Firstmate home. These integrations are o
 
 | Integration | Contract | Canonical source |
 | --- | --- | --- |
-| fm-lanes | Captain-facing project/theme/General display envelopes; not authority, destination or work ownership | `skills/fm-lanes/SKILL.md` |
-| fm-toolcheck | Read-only scoped audit of public Kunchenguid-owned tools declared by installed bootstrap; no installs/upgrades | `skills/fm-toolcheck/`, [TOOLCHECK.md](TOOLCHECK.md) |
-| fm-quartermaster | Explicit advisory outsider review of loops, regressions, architecture and waste; bounded investigations need existing authority, workers gain no delegation authority | `skills/fm-quartermaster/SKILL.md` |
-| fm-quarterdeck-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fm-quarterdeck-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
+| fmqd-lanes | Captain-facing project/theme/General display envelopes; not authority, destination or work ownership | `skills/fmqd-lanes/SKILL.md` |
+| fmqd-toolcheck | Read-only scoped audit of public Kunchenguid-owned tools declared by installed bootstrap; no installs/upgrades | `skills/fmqd-toolcheck/`, [TOOLCHECK.md](TOOLCHECK.md) |
+| fmqd-quartermaster | Explicit advisory outsider review of loops, regressions, architecture and waste; bounded investigations need existing authority, workers gain no delegation authority | `skills/fmqd-quartermaster/SKILL.md` |
+| fmqd-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and new/overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fmqd-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
 | Captain ask Stop hook | Code-enforced structured task markers against selected-home open captain holds; bounded diagnostic fail-open, no model or stock Firstmate edits | `scripts/captain-ask-stop-hook.mjs`, `scripts/captain-ask-hook-install.mjs` |
 | Mechanical helpers | Opt-in lane syntax check, receipt-proven note reply+ack, owned standalone restart after landing; no automatic installation or shared takeover | `scripts/check-lane-envelopes.mjs`, `scripts/quarterdeck-note-close.mjs`, `scripts/quarterdeck-watch.mjs` |
 | Tier-aware delivery | Future Firstmate integration must independently implement/validate the [branch contract](branching-and-preview-model.md) | Not implied by UI labels |
@@ -54,7 +54,7 @@ Installed artifacts:
   paths, the pinned script and optional `CLAUDE_CONFIG_DIR`. The original ask-only
   installer remains compatible; it is not the unified installation owner.
 - Four home-local `.agents/skills/` links, each explicitly tagged in the ownership
-  manifest (skill discovery names stay compatible). Claude's stock `../.agents/skills`
+  manifest, using the four `fmqd-` names above. Claude's stock `../.agents/skills`
   alias is preserved; an absent discovery path gets that alias, while an existing
   real `.claude/skills/` directory gets four links. Other aliases are refused.
   No user-global skill directory or other home is inspected or changed. Pi's
@@ -68,7 +68,7 @@ Installed artifacts:
 - Mode-0600 `state/quarterdeck-health.json`, persisting private health settings
   with `integrationTag: "fm-quarterdeck"`. Its existing config namespace stays
   compatible. Mutable health lock/stamp bookkeeping uses explicitly tagged
-  `state/fm-quarterdeck-health.lock` / `.stamp`; uninstall removes these safely.
+  `state/fm-quarterdeck-health.lock` / `.stamp` / `.notes.json`; inventory and fmqd-toolcheck cover them and uninstall removes these safely.
 - One soft-reference block with `<!-- fm-quarterdeck:integration:v1 -->` and
   `<!-- /fm-quarterdeck:integration:v1 -->` markers appended to `data/captain.md`,
   pointing at the snapshot's `FIRSTMATE.md`. Existing user text and any recognized
@@ -103,7 +103,7 @@ check/trust, config, transaction/runtime state and every retained tagged pin fil
 It inspects only the integration's home-local ownership surfaces, not arbitrary
 private transcripts or another home's/global discovery namespace. It does not
 delete anything; retained cache entries are explicitly marked `retained:true`.
-`fm-toolcheck` calls status/verify, compares the installed pin to the selected
+`fmqd-toolcheck` calls status/verify, compares the installed pin to the selected
 checkout's local main, and prints an exact review-only reinstall command; it never
 runs installation. See [TOOLCHECK.md](TOOLCHECK.md).
 
@@ -127,16 +127,36 @@ interruption: prove its owner is gone first. Unrecognized/conflicting destinatio
 refuse adoption even if they look similar. A new pin requires uninstall, then
 install; the operator owns that deliberate two-step update window.
 
+Quarterdeck skill discovery now uses `fmqd-lanes`, `fmqd-health`,
+`fmqd-quartermaster` and `fmqd-toolcheck`. The previous names `fm-lanes`,
+`fm-quarterdeck-health`, `fm-quartermaster` and `fm-toolcheck` remain only as
+compatibility evidence in inspection, immutable onboarding templates and migration
+regressions. Status/verify report `legacy-skill-names:reinstall-required` for an
+old-name journal. Preserve `state/quarterdeck-health.json` outside the home, run
+the normal uninstall using the original pin or current reviewed installer, then
+install the new reviewed revision with that saved config. The journal removes
+both Agent and Claude projections, preserving unrelated/upstream skills; no
+manual skill cleanup is needed for an intact unified install. Old pins remain
+inert and explicitly retained in inventory. Inventory also recognizes old-name
+links to tagged pins after journal loss, but grants no removal/adoption authority.
+Unjournaled legacy destinations still refuse a fresh install.
+
+This skill rename preserves the registered `fm-quarterdeck-health` check ID,
+its lock/stamp filenames, the `fm-quarterdeck` ownership tag and existing state
+namespaces. Onboarding's separately confirmed workflow writes preference v3;
+exact shipped v1/v2 bytes remain available for guarded upgrades/removal, never
+rewritten in place. Unified skill repinning does not rewrite an onboarding block.
+
 A previous **unified but untagged** v1 journal is backward-compatible with
 uninstall, including its original exact hook/block, skill links and check id.
 Status/verify flag it `legacy-untagged-install:reinstall-required`; install refuses
 to silently upgrade it. After approval, preserve private config, uninstall and
 install from current reviewed main. Unjournaled home-local legacy artifacts are
 reported but not adopted or removed without their original owner. Existing
-preference/config namespaces and skill discovery names are not cosmetically
-renamed; tags live in contents or the explicit ownership manifest. Only the
-registered check id and ephemeral runtime lock/stamp names deliberately change
-for this tagging rollout (an old throttle stamp is not migrated).
+preference/config namespaces are not cosmetically renamed; tags live in contents
+or the explicit ownership manifest. The earlier tagging rollout changed the
+registered check id and ephemeral runtime lock/stamp names (an old throttle
+stamp is not migrated).
 
 The audited legacy installation has a separately owned ask hook, copied health
 check/trust, global skill links from two historical pins, an unmarked operating
@@ -170,11 +190,14 @@ registered custom scripts was Quarterdeck-specific.
 
 **Residual upstream footprint:** there were no literal Quarterdeck-specific
 runtime adapters in stock `bin/` or Pi extensions in the inspected diff, but
-inbox continuity and re-presentation fixes are still local stock changes that
-this home relies on for prompt idle delivery. A Quarterdeck installer cannot
+inbox continuity and re-presentation fixes were local stock changes in that
+inspection. The L1 health check now supplies a new-pending-note backstop through
+the stock custom-check sweep, including a handling successor, once an operator
+has installed and verified the new pin. This is sweep-bound delivery, not the
+local patch's immediate wake. A Quarterdeck installer cannot
 remove them safely or emulate primary-session wake ownership with a parallel
-scheduler. Converge those generic fixes upstream through Firstmate's own tests;
-until then, report the local dependency rather than claiming zero merge risk.
+scheduler. Deployment, registration, pin updates and clean-upstream lab acceptance remain
+operator work; this source change alone proves none of those steps.
 
 **Genuinely prose:** interpreting a free-form answer/order; selecting a meaningful
 lane or review checkpoint; deciding execution, deferral and actual completion;
@@ -207,15 +230,46 @@ procedures below document separately owned legacy installations for original-own
 rollback, not approval to create new hand-edited preferences or projections.
 Never mix their ownership with the unified journal or use them to remove unified
 artifacts. Any new Quarterdeck Firstmate-side artifact must carry `fm-quarterdeck`
-and be owned by the installer, uninstall, inventory and fm-toolcheck.
+and be owned by the installer, uninstall, inventory and fmqd-toolcheck.
 
 Pin a clean stable approved source revision, never a disposable task worktree. Independently review each skill, discovery policy and target. Before replacing any existing installation, retain a verified private rollback copy, inspect type/bytes/target and compare at the moment of the authorized change. Unexpected entries, changed bytes or symlinks refuse blind replacement.
 
-`skills/fm-lanes/verify-legacy.mjs` is a read-only preflight against a caller-supplied baseline hash. It refuses changed bytes, unexpected entries and symlinks, performs no writes, and does not approve activation. Public example neutralization may intentionally differ from an installed copy: review that exact diff and obtain approval rather than bypassing the preflight or asserting byte equivalence.
+`skills/fmqd-lanes/verify-legacy.mjs` is a read-only preflight against a caller-supplied baseline hash. It refuses changed bytes, unexpected entries and symlinks, performs no writes, and does not approve activation. Public example neutralization may intentionally differ from an installed copy: review that exact diff and obtain approval rather than bypassing the preflight or asserting byte equivalence.
 
 For an existing separately owned projection, record the exact revision and target privately. After separate authorization, rollback restores the verified retained copy/target, and removal deletes only the verified projection, not canonical content. New installation and repinning use the unified installer and its migration contract above. Repository documentation never authorizes removing a standalone installation.
 
-Use the independent [toolcheck procedure](TOOLCHECK.md) for its scope proof and optional network lookup. Quartermaster discovery does not enable a scheduler, runtime hook or automatic invocation. Onboarding affects only its recognized preference block; ordinary skill execution and the Preferences HTTP view do not seed preferences or change projections. Health skill activation likewise needs explicit approval: its setup registers a Firstmate custom check, not a new daemon, and persists private configuration in the selected home's state directory. The check validates the `/api/bearings` contract in `prototype/BEARINGS.md` (idle loading is healthy; ready snapshots must be fresh) and reports overdue captain inbox notes requiring reply+ack. A missing or incompatible producer is a failure, not evidence of full dashboard health. The supervising Firstmate reads and safely acts on open notes at every health check-in; the checker itself never executes or acknowledges orders.
+Use the independent [toolcheck procedure](TOOLCHECK.md) for its scope proof and optional network lookup. Quartermaster discovery does not enable a scheduler, runtime hook or automatic invocation. Onboarding affects only its recognized preference block; ordinary skill execution and the Preferences HTTP view do not seed preferences or change projections. Health skill activation likewise needs explicit approval: its setup registers a Firstmate custom check, not a new daemon, and persists private configuration in the selected home's state directory. The check validates the `/api/bearings` contract in `prototype/BEARINGS.md` (idle loading is healthy; ready snapshots must be fresh) and reports each newly observed pending captain inbox note once, alongside periodic overdue-note reminders requiring reply+ack. New-note detection runs even while dashboard checks and overdue reminders are throttled; it uses the normal stock custom-check sweep (normally 300 seconds), without changing `FM_CHECK_INTERVAL`. The default fifteen-minute Open note alarm remains unchanged. The atomic `state/fm-quarterdeck-health.notes.json` marker retains reported ids across handling/removal, is notification bookkeeping only, and never replaces guarded receipts or proves delivery. Missing markers resurface current pending notes as new; invalid/unsafe markers and write failures produce sanitized diagnostics, with retry after failed writes. Unavailable or incomplete receipt coverage never advances this marker. A missing or incompatible producer is a failure, not evidence of full dashboard health. The supervising Firstmate reads and safely acts on open notes at every health check-in; the checker itself never executes or acknowledges orders.
+
+### New-note follow-on watcher regression (L1)
+
+`test/quarterdeck-health.test.mjs` includes an opt-in real-process regression
+against unmodified [upstream Firstmate](https://github.com/kunchenguid/firstmate).
+The exact upstream commit is pinned in the regression assertion. Export its `bin/` into a
+private scratch directory, then run:
+
+```bash
+FM_QUARTERDECK_TEST_STOCK_ROOT=/absolute/private/stock-export \
+  node --test --test-name-pattern='stock follow-on' test/quarterdeck-health.test.mjs
+```
+
+The test verifies the exported `bin/` SHA-256 tree digest
+`5767c03d05550e1c51b253ba5349f58f6de6410f4b1a15ade1f5bd5f00697597`
+(sorted relative filenames, NUL, file bytes, NUL). It copies these unchanged
+scripts into one temporary synthetic home, uses an empty fake tmux surface as
+in stock `tests/wake-helpers.sh`, and registers the actual health checker with
+stock `fm-check-register.sh`. Stock `fm-inbox.sh note` submits a neutral note
+after a handling-successor `fm-watch.sh` process has completed an empty poll
+cycle. The test proves the successor stays quiet before the check is due, then
+emits the authenticated custom-health `check:` wake with the note id, retaining
+both the ordinary `inbox:<id>` queue row and unchanged pending receipts.
+The dashboard stamp remains fresh during the wake, and repeat checks are silent.
+
+`FM_CHECK_INTERVAL` stays 300 seconds. Only the isolated `.last-check` timestamp
+is aged to make the next sweep due; the poll interval is shortened inside the
+fixture. Without the export this integration test explicitly skips; deterministic
+health/receipt/marker tests still run. No stock scripts are vendored or changed,
+no shared home or service is controlled, and no live cutover, deployment or
+Quarterdeck card roundtrip is claimed by this regression.
 
 ## Captain ask Stop hook
 

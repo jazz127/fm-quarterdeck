@@ -3,6 +3,38 @@
 window.bearingsView = (() => {
   const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  // Use the same HTTPS/no-userinfo policy as source card links. Build text and
+  // anchors as DOM nodes; prose, line breaks and sentence punctuation stay intact.
+  function messageText(node, text, doc = window.document) {
+    node.textContent = "";
+    const plain = (value) => {
+      if (!value) return;
+      const span = doc.createElement("span");
+      span.textContent = value;
+      node.append(span);
+    };
+    let offset = 0;
+    for (const match of text.matchAll(/https:\/\/[^\s<>"'`]+/g)) {
+      if (match.index && !/[\s([{]/.test(text[match.index - 1])) continue;
+      let address = match[0].replace(/[.,;!]+$/, "");
+      for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
+        while (address.endsWith(close) && address.split(close).length > address.split(open).length) address = address.slice(0, -1);
+      }
+      let url;
+      try { url = new URL(address); } catch { continue; }
+      if (url.protocol !== "https:" || url.username || url.password) continue;
+      plain(text.slice(offset, match.index));
+      const link = doc.createElement("a");
+      link.className = "call-message-link";
+      link.setAttribute("href", url.href);
+      link.setAttribute("target", "_blank");
+      link.setAttribute("rel", "noopener noreferrer");
+      link.textContent = address;
+      node.append(link);
+      offset = match.index + address.length;
+    }
+    plain(text.slice(offset));
+  }
   function age(value, now = Date.now()) {
     const ms = now - Date.parse(value);
     if (!Number.isFinite(ms) || ms < 0) return "age unknown";
@@ -60,17 +92,17 @@ window.bearingsView = (() => {
     }
     return null;
   }
-  function disclosureHtml(headingId, panelId, text, card, fields) {
+  function disclosureHtml(headingId, panelId, text, card, fields, tag = "h3") {
     const shown = fullest(text, fields.map(([field]) => card[field]));
-    if (!sourceShortened(shown)) return `<h3 id="${headingId}">${escape(shown)}</h3>`;
+    if (!sourceShortened(shown)) return `<${tag} id="${headingId}">${escape(shown)}</${tag}>`;
     const others = fields.filter(([field]) => typeof card[field] === "string" && collapsed(card[field]) && collapsed(card[field]) !== collapsed(shown));
     const body = others.length
       ? others.map(([field, label]) => `<p><span class="call-meta">${escape(label)}</span><br>${escape(card[field])}</p>`).join("")
       : `<p>This is the full text Quarterdeck received.</p>`;
-    return `<h3 id="${headingId}" data-call-truncated><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="${panelId}">${escape(shown)}</button></h3><div class="call-full" id="${panelId}" data-call-full hidden>${body}</div>`;
+    return `<${tag} id="${headingId}" data-call-truncated><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="${panelId}">${escape(shown)}</button></${tag}><div class="call-full" id="${panelId}" data-call-full hidden>${body}</div>`;
   }
-  function headlineHtml(id, text, card) {
-    return disclosureHtml(`call-decide-${id}`, `call-full-${id}`, text, card, RECORDED);
+  function headlineHtml(id, text, card, tag = "h3") {
+    return disclosureHtml(`call-decide-${id}`, `call-full-${id}`, text, card, RECORDED, tag);
   }
   // Just landed uses the same continuation rule. The backlog title replaces a
   // shortened snapshot "what" only when it continues that cut.
@@ -106,6 +138,16 @@ window.bearingsView = (() => {
     }
     return replies;
   }
+  // The description under a linked reply, when the ask line recorded one.
+  function linkedReplyHint(card, reply) {
+    if (Array.isArray(card.chatAsks)) {
+      for (const ask of card.chatAsks) {
+        const hint = ask?.replyHints && typeof ask.replyHints === "object" ? ask.replyHints[reply] : "";
+        if (typeof hint === "string" && hint.trim()) return hint;
+      }
+    }
+    return "Suggested reply from chat · sent as your words";
+  }
   // One text box per card. A checked option answers; text alone is a thread note.
   // The hint under the box is the captain's contract for that split (BEARINGS.md).
   const BOX_HINT = "Pick an option to answer, or just type - Firstmate replies in the thread.";
@@ -124,7 +166,7 @@ window.bearingsView = (() => {
       <p class="call-answer-error" data-call-answer-error role="alert" hidden></p>
       <div class="call-answer-confirm" data-call-answer-confirm role="group" aria-label="Queued answer" hidden>
         <p>Queued for Firstmate: <strong data-call-answer-preview></strong></p>
-        <p class="call-meta" data-call-answer-confirm-note>Send sends this answer now; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.</p>
+        <p class="call-meta" data-call-answer-confirm-note>Send submits this answer with a short batching delay; Send in the message composer bypasses it and submits every queued answer. Edit takes it out of the queue.</p>
       </div>
       <div class="call-answer-receipt" data-call-answer-receipt tabindex="-1" hidden><p role="status" data-call-answer-receipt-text></p><button type="button" data-call-answer-again>Answer again</button></div>
     </form>`;
@@ -139,7 +181,7 @@ window.bearingsView = (() => {
     const replies = linkedReplies(card, options);
     const radio = (value, text, hint, extra = "", recommended = false) => `<label class="call-opt"><input type="radio" name="call-selection-${id}" value="${escape(value)}" data-call-draft="selection" data-call-option-label="${escape(text)}"${extra}${recommended ? ` aria-describedby="call-rec-${id}"` : ""}><span class="call-opt-body"><span class="call-opt-label">${escape(text)}</span>${hint ? `<span class="call-opt-hint">${escape(hint)}</span>` : ""}</span>${recommended ? `<span class="call-opt-rec" id="call-rec-${id}">Recommended</span>` : ""}</label>`;
     const optionHtml = options.map((option) => radio(option.value, option.label, option.hint, "", answer.recommend === option.value)).join("")
-      + replies.map((reply, index) => radio(`chat-reply-${index + 1}`, reply, "Suggested reply from chat · sent as your words", ` data-call-reply="${escape(reply)}"`)).join("");
+      + replies.map((reply, index) => radio(`chat-reply-${index + 1}`, reply, linkedReplyHint(card, reply), ` data-call-reply="${escape(reply)}"`)).join("");
     const choices = options.length + replies.length;
     const body = choices ? `<div class="call-opts">${optionHtml}</div>` : `<p class="call-answer-gap">No structured options for this call yet; any recorded choices are in the full ${card.type === "merge" ? "reason" : "ask"} above.</p>`;
     return answerForm(card, label, body, thread);
@@ -166,7 +208,7 @@ window.bearingsView = (() => {
       ${headlineHtml(id, summary, card)}
       <dl class="call-context">${row("About", "Firstmate asked in chat; no captain hold is filed")}${row("Reply", repliesText(card.replies))}</dl>
       <p class="call-meta">Found by its <code>${escape(card.marker || "")}</code> line in the Firstmate transcript.</p>
-      <p class="call-meta">Answering here, dismissing, or replying in chat with the quoted reply closes this card.</p>
+      <p class="call-meta">A confirmed answer here or dismissal closes this card. Replies typed in chat do not close it.</p>
       <div class="call-dismiss-confirm" data-call-dismiss-confirm role="group" aria-label="Confirm dismissal" hidden><p>Hide this ask from Captain's Call? Nothing is sent to Firstmate. Unsent text stays in this tab.</p><div class="call-answer-actions"><button type="button" data-call-dismiss-send>Dismiss this ask</button><button type="button" data-call-dismiss-cancel>Cancel</button></div></div>
       <p class="call-answer-error" data-call-dismiss-error role="alert" hidden></p></div>
       ${answerHtml(card, summary, threadHistoryHtml(id))}`;
@@ -177,27 +219,34 @@ window.bearingsView = (() => {
     if (card.type === "chat") return chatCardHtml(card);
     const merge = card.type === "merge";
     let url = null;
-    try { const parsed = new URL(card.url); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = parsed.href; } catch {}
+    try { const parsed = new URL(card.boardPrUrl || card.url); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = parsed.href; } catch {}
     // Firstmate holds credentials as ordinary captain-hold decisions, so the ask text decides the chip.
     const credential = !merge && /credential|authentication|access|login/i.test(`${card.verb || ""} ${card.summary || ""}`);
     const label = merge ? "Merge" : credential ? "Credentials" : "Decision";
     const id = idFor(card.key || card.task || label);
     const ask = card.summary || "";
-    const decide = merge ? card.reason || "Merge requested; reason not recorded" : decisionText(card) || (ask && !isLinkedChatLine(card, ask) ? ask : "") || "Decision requested; ask not recorded";
-    const shown = fullest(decide, RECORDED.map(([field]) => card[field]));
-    const shortened = sourceShortened(shown);
+
+    const fallbackDecide = merge ? card.reason || "Merge requested; reason not recorded" : decisionText(card) || (ask && !isLinkedChatLine(card, ask) ? ask : "") || "Decision requested; ask not recorded";
+    const shown = fullest(fallbackDecide, RECORDED.map(([field]) => card[field]));
+    const shortened = !card.boardTitle && sourceShortened(shown);
+    const titleHtml = card.boardTitle ? `<h3 id="call-decide-${id}">${escape(card.boardTitle)}</h3>` : headlineHtml(id, fallbackDecide, card);
+    const decideToShow = card.boardDecide ? `<p class="call-decide">${escape(card.boardDecide)}</p>` : (card.boardTitle ? headlineHtml(`${id}-fallback`, fallbackDecide, card, "p") : "");
+    const detailHtml = card.boardDetail ? `<h3 id="call-detail-${id}"><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="call-detail-full-${id}">More details</button></h3><div class="call-full" id="call-detail-full-${id}" data-call-full hidden><p>${escape(card.boardDetail)}</p></div>` : "";
+
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
-    const about = [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
+    const about = card.boardAbout || [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
     return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${label}</span>${lifecycleBadgeHtml()}<div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}${card.readOnly ? "" : procrastinateHtml(id)}</div><span class="call-age" data-call-clock="${escape(card.clock?.at || "")}" data-call-clock-label="${escape(card.clock?.label || "Created / updated")}">${escape(clockText(card.clock))}</span></header>
       ${replyBannerHtml()}
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
-      ${headlineHtml(id, decide, card)}
-      <dl class="call-context">${row("About", about)}${linkedAsksHtml(card)}${merge ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
+      ${titleHtml}
+      ${decideToShow}
+      ${detailHtml}
+      <dl class="call-context">${row("About", about)}${linkedAsksHtml(card)}${merge && !card.boardAbout ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
       <p class="call-id">Task <code>${escape(card.task || "unknown")}</code></p>
       ${shortened ? `<p class="call-shortened">Firstmate's snapshot shortened this ${merge ? "reason" : "ask"}; Quarterdeck shows everything it received. Ask Firstmate in chat for the full text of task <code>${escape(card.task || "unknown")}</code>.</p>` : ""}
       ${url ? `<a class="call-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(url)}</a>` : merge ? '<p class="call-meta">Merge link unavailable</p>' : ""}
-      ${card.answer ? "" : `<p class="call-source-gap">Options, hints and recommendation are not structured in the snapshot; any recorded choices remain in the full ${merge ? "reason" : "ask"} above.</p>`}</div>
+      ${card.answer && card.answer.options && card.answer.options.length ? "" : `<p class="call-source-gap">Options, hints and recommendation are not structured in the snapshot; any recorded choices remain in the full ${merge ? "reason" : "ask"} above.</p>`}</div>
       ${card.readOnly ? '<p class="call-meta">This call is answered in its own home.</p>' : answerHtml(card, `${label} ${card.task || ""}`.trim(), threadHistoryHtml(id))}`;
   }
   // Open or closed full-text panels are memory for this tab only.
@@ -269,7 +318,7 @@ window.bearingsView = (() => {
     if (model.chat?.behind) parts.push("Still reading the Firstmate transcript");
     return parts.join(" · ");
   }
-  const heldText = (change) => `Call ${change} — updates when you're done`;
+  const heldText = (change) => `Update incoming — call ${change}`;
   const stubHtml = () => '<div class="call-chrome"><h3>Resolved by Firstmate — your unsent text</h3><p class="call-meta">This text was not sent. Copy it before dismissing.</p></div><pre data-call-stub-text></pre><div class="call-stub-actions"><button type="button" data-call-stub-copy>Copy</button><button type="button" data-call-stub-dismiss>Dismiss</button></div>';
-  return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, landedHeadlineHtml, createTextController };
+  return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, landedHeadlineHtml, createTextController, messageText };
 })();

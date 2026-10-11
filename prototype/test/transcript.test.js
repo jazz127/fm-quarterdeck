@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm, symlink, utimes } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, writeFile, rm, symlink, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createServer, dashboardData, loadFirstmateHome } from "../server.js";
-import { createHistoryReader } from "../history-reader.js";
+import { createHistoryReader, HistoryLimitError } from "../history-reader.js";
+import { claudeProjectDirectory } from "../claude-transcript.js";
+import { readSupervisionOutcomes } from "../supervision.js";
 
 async function fixture(t) {
   const home = await mkdtemp(path.join(os.tmpdir(), "fm-transcript-"));
@@ -51,7 +53,7 @@ test("one JSONL record cannot expand into unbounded message parts", async (t) =>
   await assert.rejects(loadFirstmateHome(home, { reader: createHistoryReader({ maxMessages: 10 }) }), /history exceeds safe read limits/i);
 });
 
-test("all sessions, user turns, main replies, thinking and crew history survive old caps", async (t) => {
+test("all sessions, unverified user input, main replies, thinking and crew history survive old caps", async (t) => {
   const home = await fixture(t);
   const old = [turn("user", "Alpha ordinary captain chat"),
     turn("user", [{ type: "text", text: "<skill name=\"x\">noise</skill>" }, { type: "text", text: "Alpha keep this ordinary part" }]),
@@ -67,7 +69,9 @@ test("all sessions, user turns, main replies, thinking and crew history survive 
   const alpha = data.lanes[0].messages;
   assert.equal(alpha.filter((m) => m.kind === "crew").length, 45);
   assert.equal(alpha.filter((m) => m.kind === "thinking").length, 90);
-  assert.equal(alpha.filter((m) => m.role === "captain").length, 2);
+  assert.equal(alpha.filter((m) => m.role === "captain").length, 0, "a transcript role=user entry is never the Captain's");
+  assert.deepEqual(alpha.filter((m) => m.kind === "input").map((m) => [m.author, m.role, m.text]),
+    [["Pi session input", "input", "Alpha ordinary captain chat"], ["Pi session input", "input", "Alpha keep this ordinary part"]]);
   assert.equal(alpha.filter((m) => m.transcriptSessionId).length, 184);
   assert.ok(alpha.some((m) => m.text === "Alpha main reply" && m.transcriptOrigin === "main mirror" && m.kind === "conversation"));
   assert.ok(alpha.some((m) => m.text === "Alpha reply 0" && m.kind === "branch"), "branch assistant text is not a main reply");
@@ -238,6 +242,243 @@ test("fleet notes use the durable ledger, real epoch, project routing and no sil
   assert.equal(data.transcript.outcomeSources.length, 2);
 });
 
+test("outcome IDs address source bytes across whole, byte-windowed and record-windowed reads", async (t) => {
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const home = await fixture(t);
+    const file = path.join(home, source);
+    const rows = [
+      '{"epoch":1700000000,"summary":"é old"}\r\n',
+      '{"epoch":1700000001,"summary":"retained"}\r\n',
+      '{"epoch":1700000002,"summary":"newest"}\r\n',
+    ];
+    const text = rows.join("");
+    await writeFile(file, text);
+    const read = options => readSupervisionOutcomes(home, message => message, createHistoryReader({ windowReserveRecords: 0, windowReserveBytes: 0, ...options }));
+    const whole = await read({ maxRecords: 3 });
+    const expectedId = `${source}@41`;
+    assert.equal(Buffer.byteLength(rows[0]), 41);
+    assert.equal(whole.messages.find(message => message.text === "retained").recordId, expectedId);
+    const byteWindow = await read({ maxFileBytes: Buffer.byteLength(text) - 1, maxLineBytes: 80 });
+    assert.ok(byteWindow.sources[0].omittedBytes > 0);
+    assert.equal(byteWindow.messages.find(message => message.text === "retained").recordId, expectedId);
+    await appendFile(file, '{"epoch":1700000003,"summary":"appended"}\r\n');
+    const recordWindow = await read({ maxRecords: 3 });
+    assert.deepEqual(recordWindow.messages.map(message => message.text), ["retained", "newest", "appended"]);
+    assert.equal(recordWindow.messages[0].recordId, expectedId, "a saved anchor still addresses a retained outcome after append");
+    assert.equal(recordWindow.messages[0].sourceSequence, 41);
+    const expanded = await read({ maxRecords: 4 });
+    assert.equal(expanded.messages.find(message => message.text === "retained").recordId, expectedId, "widening to the whole ledger preserves the anchor");
+  }
+});
+
+test("task sessions keep status activity clocks and report budget-unread history as not loaded", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  await writeFile(path.join(home, "data/backlog.md"), "## Done\n- [x] a - Old work (repo: Alpha)\n- [x] b - Recent work (repo: Alpha)\n- [x] c - Newest work (repo: Alpha)\n- [x] d - Empty log (repo: Alpha)\n");
+  for (const [id, clock] of Object.entries(clocks)) {
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, "working: underway\ndone: completed\n");
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  // A genuinely empty log is a successfully read source, not unread history.
+  const empty = path.join(home, "state/d.status");
+  await writeFile(empty, "");
+  await utimes(empty, new Date("2025-12-31T00:00:00.000Z"), new Date("2025-12-31T00:00:00.000Z"));
+  const sessions = (data) => Object.fromEntries(data.lanes[0].sessions.map(({ id, updatedAt, loaded, eventCount }) => [id, { updatedAt, loaded, eventCount }]));
+  const exhausted = await loadFirstmateHome(home, { sessionIds: ["d"], reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: 40 }) });
+  assert.deepEqual(sessions(exhausted), {
+    c: { updatedAt: clocks.c, loaded: false, eventCount: 0 },
+    b: { updatedAt: clocks.b, loaded: false, eventCount: 0 },
+    a: { updatedAt: clocks.a, loaded: false, eventCount: 0 },
+    d: { updatedAt: "2025-12-31T00:00:00.000Z", loaded: true, eventCount: 0 },
+  }, "unread nonempty history keeps its clock but is not loaded; an empty log is loaded");
+  assert.deepEqual(exhausted.lanes[0].messages, []);
+  for (const id of ["b", "c"]) assert.ok(exhausted.transcript.warnings.some(warning => warning.includes(`state/${id}.status was not loaded`)));
+  assert.equal(exhausted.transcript.warnings.some(warning => /state\/[ad]\.status/.test(warning)), false, "unshown and empty logs are not budget gaps");
+  const whole = await loadFirstmateHome(home, { reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: 0 }) });
+  assert.deepEqual(Object.fromEntries(Object.entries(sessions(whole)).map(([id, { loaded }]) => [id, loaded])), { c: true, b: true, a: false, d: false });
+  assert.deepEqual(whole.lanes[0].messages.map(message => message.taskId), ["b", "b", "c", "c"], "only the shown sessions' events are read");
+  assert.equal(whole.transcript.warnings.some(warning => warning.includes(".status")), false);
+});
+
+test("task event windows admit requested, then newest shown sessions within real default limits", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  for (const [id, clock] of Object.entries(clocks)) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const read = async (query = "") => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes${query}`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    const lane = data.lanes.find(entry => entry.sessions.length);
+    return { data, sessions: Object.fromEntries(lane.sessions.map(session => [session.id, session])), texts: new Set(lane.messages.map(message => message.text)) };
+  };
+  for (const query of ["", "?session=c"]) {
+    const { sessions, texts } = await read(query);
+    assert.ok(texts.has("done: c completed") && texts.has("working: c step 0"), `the newest task keeps all its events (${query || "default"})`);
+    assert.equal(sessions.c.loaded, true);
+    assert.equal(sessions.c.omittedBytes, undefined);
+    assert.ok(texts.has("done: b completed"), "the next shown task keeps its newest events");
+    assert.equal([...texts].some(text => text.startsWith("working: a ")), false, "an unshown older task spends no event budget");
+    assert.equal(sessions.a.loaded, false);
+  }
+  const older = await read("?session=a");
+  assert.ok(older.texts.has("done: a completed") && older.texts.has("working: a step 0"), "an explicitly requested older task is read first");
+  assert.equal(older.sessions.a.loaded, true);
+  assert.ok(older.texts.has("done: c completed"), "the newest shown task follows the request");
+  assert.equal(older.sessions.b.loaded, false, "a shown task the budget cannot reach is reported unloaded");
+  assert.ok(older.data.transcript.warnings.some(warning => warning.includes("state/b.status was not loaded")));
+});
+
+test("requested task windows precede large outcome ledgers within real default byte limits", async (t) => {
+  const home = await fixture(t);
+  const rowBytes = Math.floor(6 * 1024 * 1024 / 3200);
+  const extraBytes = 6 * 1024 * 1024 % 3200;
+  for (const [id, day] of [["a", 1], ["b", 2], ["c", 3]]) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    const rows = Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`.padEnd(rowBytes - 1 + (i < extraBytes ? 1 : 0), "x") + "\n");
+    rows.push(`done: ${id} completed`.padEnd(rowBytes - 1, "x") + "\n");
+    await writeFile(file, rows.join(""));
+    const clock = new Date(`2026-01-0${day}T00:00:00.000Z`);
+    await utimes(file, clock, clock);
+  }
+  const outcomes = Array.from({ length: 5000 }, (_, i) => JSON.stringify({ epoch: 1700000000 + i, task: "a", summary: `Outcome ${i} ${"x".repeat(2048)}` }) + "\n").join("");
+  assert.ok(Buffer.byteLength(outcomes) > 8 * 1024 * 1024);
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) await writeFile(path.join(home, source), outcomes);
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes?session=a`);
+  const data = await response.json();
+  assert.equal(response.status, 200, data.error);
+  const lane = data.lanes.find(entry => entry.id === "alpha");
+  const requested = lane.sessions.find(session => session.id === "a");
+  assert.equal(requested.loaded, true, "the explicitly requested older task gets the remaining byte allowance before either outcome ledger");
+  assert.equal(requested.updatedAt, "2026-01-01T00:00:00.000Z");
+  assert.ok(requested.omittedBytes > 0, "the task's oldest partial record is omitted at the remaining byte boundary");
+  const events = lane.messages.filter(message => message.kind === "crew" && message.taskId === "a");
+  assert.ok(events.some(message => message.text.startsWith("working: a step 3198")));
+  assert.ok(events.some(message => message.text.startsWith("done: a completed")), "the newest completion survives the byte limit");
+  assert.equal(lane.messages.some(message => ["b", "c"].includes(message.taskId)), false, "later windows cannot displace the requested history");
+  assert.deepEqual(data.transcript.outcomeSources.map(({ loaded }) => loaded), [false, false]);
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source} was not loaded`)));
+});
+
+test("retained outcome activity selects genuine recent windows without claiming unread task history", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  for (const [id, clock] of Object.entries(clocks)) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, Array.from({ length: 1999 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const outcomeClock = "2026-01-04T00:00:00.000Z";
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const ledger = path.join(home, source);
+    await writeFile(ledger, jsonl([
+      { ...(source.includes("terminal") ? { created_epoch: Date.parse(outcomeClock) / 1000, task_id: "a" } : { epoch: Date.parse(outcomeClock) / 1000, task: "a" }), summary: "A landed" },
+      { created_epoch: Date.parse("2026-01-05T00:00:00.000Z") / 1000, task_id: "b", summary: "Silent", silent: true },
+      { epoch: Date.parse("2026-01-06T00:00:00.000Z") / 1000, task: "b", summary: "" },
+      { epoch: "invalid", task: "b", summary: "Invalid clock" },
+    ]));
+    for (const query of ["", "?session=a", "?older=1"]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes${query}`);
+      const data = await response.json();
+      assert.equal(response.status, 200, data.error);
+      const lane = data.lanes.find(entry => entry.id === "alpha");
+      assert.deepEqual(lane.sessions.map(session => session.id), ["a", "c", "b"], "retained Jan 4 activity governs genuine recent membership and order");
+      const updated = lane.sessions.find(session => session.id === "a");
+      const older = query === "?older=1";
+      assert.equal(updated.updatedAt, outcomeClock, "A reports the retained outcome's real time");
+      assert.equal(updated.loaded, true, "A's actual status window is read after genuine recent selection");
+      assert.equal(updated.eventCount, 2000);
+      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, 2000);
+      assert.equal(lane.sessions[0].loaded, true);
+      assert.equal(lane.sessions[1].loaded, true);
+      assert.ok(lane.messages.some(message => message.text === "done: c completed"));
+      assert.equal(lane.sessions.find(session => session.id === "b").loaded, older, "discarded recent windows are not read; explicit older expansion still works");
+      assert.equal(lane.messages.some(message => message.text === "done: b completed"), older);
+      const inventory = data.transcript.outcomeSources.find(entry => entry.source === source);
+      assert.equal(inventory.loaded, true, "outcomes use the allowance left after guaranteed-visible task windows");
+      assert.equal(inventory.messageCount, 1, "silent, empty and invalid outcomes do not advance session activity");
+    }
+    await rm(ledger);
+  }
+});
+
+test("an outcome ledger beyond the record limit keeps /api/lanes online with its newest outcomes", async (t) => {
+  const home = await fixture(t);
+  await writeFile(path.join(home, "state/alpha-task.meta"), "project=Alpha\n");
+  await writeFile(path.join(home, "state/alpha-task.status"), "working: underway\n");
+  const outcome = (i) => JSON.stringify({ epoch: 1700000000 + i, task: "alpha-task", summary: `Outcome ${i}` }) + "\n";
+  const ledger = path.join(home, "state/branch-outcomes.jsonl");
+  await writeFile(ledger, Array.from({ length: 20001 }, (_, i) => outcome(i)).join(""));
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const read = async () => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    return { data, messages: data.lanes.flatMap(lane => lane.messages) };
+  };
+  const { data, messages } = await read();
+  const notes = messages.filter(m => m.kind === "supervision");
+  assert.ok(notes.some(m => m.text === "alpha-task: Outcome 20000"), "the newest outcome is shown");
+  assert.equal(notes.some(m => m.text === "alpha-task: Outcome 0"), false, "older outcomes are not loaded");
+  assert.ok(messages.some(m => m.text === "working: underway"), "task status events still load");
+  const [source] = data.transcript.outcomeSources;
+  assert.ok(source.loaded && source.omittedBytes > 0 && source.messageCount < 20001);
+  assert.ok(data.transcript.warnings.some(w => /branch-outcomes\.jsonl: only its newest whole records loaded.*older outcomes are not shown/.test(w)));
+  // Windowed outcomes are identified by byte offset, so appending keeps their identity.
+  const id = notes.find(m => m.text === "alpha-task: Outcome 20000").recordId;
+  await appendFile(ledger, outcome(20001));
+  const later = await read();
+  assert.equal(later.messages.find(m => m.text === "alpha-task: Outcome 20000").recordId, id);
+  assert.ok(later.messages.some(m => m.text === "alpha-task: Outcome 20001"));
+});
+
+test("oversized outcome records still fail /api/lanes when record trimming would omit them", async (t) => {
+  const home = await fixture(t);
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/lanes`;
+  const newer = Array.from({ length: 16000 }, (_, i) => JSON.stringify({ epoch: 1700000001 + i, summary: `Outcome ${i}` }) + "\n").join("");
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const file = path.join(home, source);
+    await writeFile(file, JSON.stringify({ epoch: 1700000000, summary: "x".repeat(1024 * 1024 + 1) }) + "\n" + newer);
+    let response = await fetch(url);
+    assert.equal(response.status, 503, source);
+    assert.equal((await response.json()).error, "Fleet Chats offline: History exceeds safe read limits; source files are unchanged.");
+    await writeFile(file, newer);
+    response = await fetch(url);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    assert.ok(data.lanes.flatMap(lane => lane.messages).some(message => message.text === "Outcome 15999"));
+    assert.ok(data.transcript.outcomeSources.some(entry => entry.source === source && entry.loaded && entry.omittedBytes > 0));
+    assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source}: only its newest whole records loaded`)));
+    await rm(file);
+  }
+});
+
 test("oversized sources share the request budget: newest active windows load, a starved source is reported unloaded", async (t) => {
   const home = await fixture(t);
   for (const [n, day] of [["a", 1], ["b", 2], ["c", 3]]) {
@@ -272,7 +513,7 @@ test("Claude Code primary transcript maps dialogue, tools and harness for this h
   await writeFile(path.join(directory, `${primary}.jsonl`), jsonl([
     { type: "last-prompt", leafUuid: "x", sessionId: primary },
     { type: "permission-mode", permissionMode: "auto", sessionId: primary },
-    claudeRecord("user", "Alpha captain asks for status", { ...at(1), origin: { kind: "human" } }),
+    claudeRecord("user", "Alpha captain asks for status", { ...at(1), origin: { kind: "human" }, sessionKind: "bg", sessionId: "different-record-session", session_id: "different-legacy-session" }),
     claudeRecord("assistant", [{ type: "thinking", thinking: "", signature: "redacted" }], at(2)),
     claudeRecord("assistant", [{ type: "thinking", thinking: "Alpha native thought" }], at(3)),
     claudeRecord("assistant", [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } }], at(4)),
@@ -303,10 +544,15 @@ test("Claude Code primary transcript maps dialogue, tools and harness for this h
   const messages = [...new Map(data.lanes.flatMap((lane) => lane.messages).filter((m) => m.transcriptOrigin === "main Claude").map((m) => [m.recordId, m])).values()];
   const byText = (text) => messages.find((m) => m.text === text);
   assert.deepEqual(data.transcript.sessions.map((s) => [s.id, s.loaded]), [[`claude-main-session/${primary}.jsonl`, true]]);
-  assert.equal(byText("Alpha captain asks for status").role, "captain");
-  assert.equal(byText("Alpha queued captain prompt").role, "captain");
-  assert.equal(byText("/quiet Alpha").role, "captain");
-  assert.equal(byText("Alpha captain with reminder").role, "captain");
+  // Claude Code's origin.kind=human marks terminal input, which injected text shares: not proof of the Captain.
+  for (const text of ["Alpha captain asks for status", "Alpha queued captain prompt", "/quiet Alpha", "Alpha captain with reminder"]) {
+    assert.deepEqual([byText(text).author, byText(text).role, byText(text).kind], ["Claude session input", "input", "input"], text);
+  }
+  for (const text of ["Alpha captain asks for status", "Alpha queued captain prompt", "Alpha captain with reminder"]) {
+    assert.equal(byText(text).primaryHumanInput, true, "selected human-marked input has display provenance, never Captain authority");
+  }
+  assert.equal(byText("/quiet Alpha").primaryHumanInput, undefined, "unmarked input remains opt-in");
+  assert.equal(messages.some((m) => m.role === "captain" || m.author === "Captain"), false);
   assert.equal(byText("Alpha native thought").kind, "thinking");
   assert.equal(messages.filter((m) => m.kind === "thinking").length, 1, "redacted thinking is never shown or invented");
   assert.equal(byText("Bash\n{\n  \"command\": \"ls\"\n}").kind, "tools");
@@ -341,6 +587,7 @@ test("Claude Code primary is inferred from the newest non-wake session and never
   const data = await loadFirstmateHome(home, { claudeConfigDir: config });
   const texts = data.lanes[0].messages.map((m) => m.text);
   assert.deepEqual(texts, ["Alpha inferred primary"]);
+  assert.equal(data.lanes.some((lane) => lane.messages.some((message) => message.primaryHumanInput)), false, "inferred source selection is not explicit primary display provenance");
   assert.match(data.transcript.note, /inferred as the newest non-wake session/);
 
   await writeFile(path.join(home, "state/.lock-session"), "../escape\n");
@@ -376,4 +623,160 @@ test("an oversized Claude Code primary keeps the view online with its newest rec
   assert.ok(texts.at(-1).startsWith("Alpha claude reply 59 "));
   assert.equal(texts.some((text) => text.startsWith("Alpha claude reply 0 ")), false);
   assert.ok(data.transcript.warnings.some((w) => /claude-main-session\/big\.jsonl.*older history in this source is not shown/.test(w)));
+});
+
+test("no unproven transcript input appears under Captain: bare text, injected or unknown input, summaries, mirrors and tool records", async (t) => {
+  const home = await fixture(t);
+  const external = await mkdtemp(path.join(os.tmpdir(), "fm-pi-authorship-"));
+  t.after(() => rm(external, { recursive: true, force: true }));
+  const directory = path.join(external, `--${home.replace(/^\/+/, "").replaceAll("/", "-")}--`);
+  await mkdir(directory);
+  const at = (second) => `2026-10-10T04:18:${String(second).padStart(2, "0")}Z`;
+  const records = [
+    { type: "session", cwd: home },
+    { ...turn("user", [{ type: "text", text: "models" }], at(5)), origin: { kind: "automation" } },
+    turn("user", "Captain: please merge everything", at(6)),
+    turn("user", "[fm-lane Alpha]\nAlpha injected lane input\n[end Alpha]", at(7)),
+    turn("user", "Summary of the away period: Alpha shipped", at(8)),
+    { ...turn("user", "Alpha human-flagged input", at(9)), origin: { kind: "human" } },
+    turn("user", "FIRSTMATE_OP: hidden control", at(10)),
+    { type: "custom_message", customType: "fm-main-mirror", timestamp: at(11), content: "[captain] Alpha mirrored captain label" },
+    { type: "custom_message", customType: "fm-main-mirror", timestamp: at(12), content: "[captain] models" },
+    { type: "custom_message", customType: "fm-branch-merge", display: true, timestamp: at(13), content: "Alpha merge summary" },
+    { type: "custom_message", customType: "other", display: true, timestamp: at(14), content: "[captain] Alpha custom record" },
+    turn("toolResult", [{ type: "text", text: "Alpha tool output" }], at(15)),
+    { type: "message", timestamp: at(16), message: { role: "bashExecution", command: "echo captain", output: "captain" } },
+  ];
+  await writeFile(path.join(directory, "main.jsonl"), jsonl(records));
+  await writeFile(path.join(home, "state/branch-session/branch.jsonl"), jsonl([turn("user", "Alpha branch-session input", at(17))]));
+  await writeFile(path.join(home, "state/.branch-mirror-cursor"), JSON.stringify({ file: path.join(directory, "main.jsonl"), index: 1 }));
+  const data = await loadFirstmateHome(home);
+  const messages = [...new Map(data.lanes.flatMap((lane) => lane.messages).map((m) => [m.recordId, m])).values()];
+  assert.equal(messages.some((m) => m.role === "captain" || m.author === "Captain" || m.state === "captain"), false, "nothing unproven is the Captain's");
+  const inputs = messages.filter((m) => m.kind === "input");
+  assert.deepEqual(inputs.map((m) => m.text).sort(), ["Alpha branch-session input", "Alpha human-flagged input", "[fm-lane Alpha]\nAlpha injected lane input\n[end Alpha]", "Alpha mirrored captain label",
+    "Captain: please merge everything", "Summary of the away period: Alpha shipped", "models"].sort());
+  assert.ok(inputs.every((m) => m.role === "input" && m.author === "Pi session input" && m.occurredAt && m.recordId), "text, clock and record id are kept");
+  const models = inputs.find((m) => m.text === "models");
+  assert.deepEqual([models.source, models.transcriptOrigin, models.occurredAt], [`main-pi-session/main.jsonl`, "main Pi", at(5).replace("Z", ".000Z")]);
+  assert.equal(inputs.filter((m) => m.text === "models").length, 1, "the [captain] mirror of a native input deduplicates instead of reappearing");
+  assert.equal(messages.some((m) => m.text.includes("hidden control")), false);
+  assert.ok(messages.some((m) => m.text === "Alpha merge summary" && m.author === "Fleet"));
+  assert.ok(messages.some((m) => m.text === "[captain] Alpha custom record" && m.kind === "harness" && m.role === "firstmate"));
+  assert.ok(messages.filter((m) => m.kind === "tools").every((m) => m.role === "firstmate"));
+  assert.ok(inputs.every((m) => !m.author.startsWith("Firstmate")), "unverified input is not relabelled Firstmate");
+});
+
+const MiB = 1024 * 1024;
+const largeTurn = (text, timestamp = "2026-10-01T00:00:00Z") => JSON.stringify({ type: "assistant", timestamp,
+  message: { role: "assistant", content: [{ type: "text", text }] } }) + "\n";
+// Ignored ordinary metadata keeps size independent of message count/content.
+const paddingBase = JSON.stringify({ type: "system", padding: "" });
+const paddingRecord = paddingBase.slice(0, -2) + "x".repeat(4096 - Buffer.byteLength(paddingBase) - 1) + '"}\n';
+function largeTranscript(size) {
+  const newest = largeTurn("acme retained reply") + largeTurn("acme newest reply", "2026-10-01T00:01:00Z");
+  const old = paddingRecord.repeat(Math.floor((size - Buffer.byteLength(newest)) / 4096));
+  const gap = size - Buffer.byteLength(old) - Buffer.byteLength(newest);
+  return old + " ".repeat(gap - 1) + "\n" + newest;
+}
+async function largeFixture(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-large-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home"), config = path.join(root, "claude");
+  await mkdir(path.join(home, "data"), { recursive: true });
+  await mkdir(path.join(home, "state"));
+  await writeFile(path.join(home, "data/projects.md"), "- acme - example-app\n");
+  await writeFile(path.join(home, "state/.lock-session"), "synthetic-main\n");
+  const directory = claudeProjectDirectory(config, home);
+  await mkdir(directory, { recursive: true });
+  return { home, config, file: path.join(directory, "synthetic-main.jsonl") };
+}
+
+const largeEntries = async (window) => {
+  const result = [];
+  for await (const entry of window.lines) if (entry.line.trim()) result.push(entry);
+  return result;
+};
+
+test("actual 8 MiB reader boundary retains newest whole records within byte and record budgets", async (t) => {
+  const { file } = await largeFixture(t);
+  for (const size of [8 * MiB - 1, 8 * MiB, Math.floor(8.6 * MiB)]) {
+    const source = largeTranscript(size);
+    const sourceBytes = Buffer.from(source);
+    await writeFile(file, source);
+    for (const budget of [MiB, 8 * MiB]) {
+      // The real per-file/line/record bounds, with an observable total-byte budget.
+      const reader = createHistoryReader({ maxTotalBytes: 8 * MiB, windowReserveBytes: 0 });
+      const window = await reader.recent(file, budget);
+      assert.equal(8 * MiB - reader.windowBudget(), Math.min(size, budget), "actual bytes charged are bounded");
+      assert.equal(window.totalBytes, size);
+      assert.equal(window.omittedBytes > 0, size > budget);
+      const retained = await largeEntries(window);
+      assert.equal(JSON.parse(retained.at(-1).line).message.content[0].text, "acme newest reply");
+      assert.ok(retained.length <= 20000);
+      for (const { line, offset } of retained) {
+        assert.equal(sourceBytes.subarray(offset, offset + Buffer.byteLength(line)).toString(), line);
+        assert.ok(Buffer.byteLength(line) <= MiB);
+      }
+    }
+    if (size > 8 * MiB) await assert.rejects(createHistoryReader().text(file), HistoryLimitError);
+    else assert.equal(Buffer.byteLength(await createHistoryReader().text(file)), size);
+  }
+  await writeFile(file, largeTurn("x".repeat(MiB)));
+  await assert.rejects(createHistoryReader().recent(file), HistoryLimitError, "retained oversized single records still fail");
+  await writeFile(file, "{}\n".repeat(20001));
+  const capped = await createHistoryReader().recent(file);
+  const kept = await largeEntries(capped);
+  assert.equal(kept.length, 15000, "a window keeps only the newest records its record budget holds");
+  assert.equal(capped.omittedBytes, 5001 * 3);
+  assert.equal(kept.at(-1).offset, 20000 * 3, "the newest record is retained");
+});
+
+test("actual Claude /api/lanes stays fresh at and above 8 MiB, including append and partial-tail rereads", async (t) => {
+  const { home, config, file } = await largeFixture(t);
+  const server = createServer({ FM_HOME: home, CLAUDE_CONFIG_DIR: config });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}/api/lanes`;
+  const read = async (query = "") => {
+    const response = await fetch(base + query);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    const messages = data.messages || data.lanes.flatMap(lane => lane.messages);
+    return { data, messages: [...new Map(messages.map(message => [message.recordId, message])).values()] };
+  };
+  let recordId;
+  for (const size of [8 * MiB - 1, 8 * MiB, Math.floor(8.6 * MiB)]) {
+    await writeFile(file, largeTranscript(size));
+    for (const query of ["", "?windowBytes=1048576&format=refs.v1", "?windowBytes=8388608"]) {
+      const { data, messages } = await read(query);
+      assert.deepEqual(messages.map(message => message.text), ["acme retained reply", "acme newest reply"]);
+      const session = data.transcript.sessions[0];
+      assert.equal(session.id, "claude-main-session/synthetic-main.jsonl");
+      assert.equal(session.loaded, true);
+      assert.equal(session.skippedRecords, 0);
+      assert.equal(session.omittedBytes > 0, size > (query.includes("1048576") ? MiB : 8 * MiB));
+      if (session.omittedBytes) assert.ok(data.transcript.warnings.some(w => /older history in this source is not shown/.test(w)));
+      assert.equal(data.transcript.expandable, query.includes("1048576"));
+      recordId = messages.at(-1).recordId;
+    }
+  }
+  const appended = largeTurn("acme appended reply", "2026-10-01T00:02:00Z");
+  await appendFile(file, appended.slice(0, -10));
+  const partial = await read("?windowBytes=1048576&format=refs.v1");
+  assert.equal(partial.data.transcript.sessions[0].skippedRecords, 1, "partial JSON is skipped, never reconstructed");
+  assert.equal(partial.messages.at(-1).recordId, recordId);
+  await appendFile(file, appended.slice(-10));
+  const completed = await read("?windowBytes=1048576&format=refs.v1");
+  assert.equal(completed.data.transcript.sessions[0].skippedRecords, 0);
+  assert.equal(completed.messages.at(-1).text, "acme appended reply");
+  assert.equal(completed.messages.find(m => m.text === "acme newest reply").recordId, recordId);
+  await writeFile(file, largeTurn("x".repeat(MiB)));
+  let response = await fetch(base);
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /History exceeds safe read limits/);
+  await writeFile(file, "{}\n".repeat(20001));
+  const capped = await read();
+  assert.ok(capped.data.transcript.sessions[0].loaded && capped.data.transcript.sessions[0].omittedBytes > 0, "a record-capped window stays online");
+  assert.ok(capped.data.transcript.warnings.some(w => /older history in this source is not shown/.test(w)));
 });

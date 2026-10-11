@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/shell-panel.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-stage">Skip to content</a>
     <main id="lanes" class="workspace" data-view="overview" aria-label="Live Quarterdeck conversations">
       <button id="shell-panel-toggle" type="button" aria-controls="review-sidebar-region" aria-expanded="true" aria-label="Collapse navigation panel" hidden><span aria-hidden="true">☰</span><span class="sr-only">Collapse navigation panel</span></button>
       <aside id="review-sidebar-region" class="lane-list" aria-label="Conversation fleets">
@@ -70,7 +71,7 @@
       </aside>
       <div id="shell-panel-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="review-sidebar-region" aria-label="Resize navigation panel: drag left or right; use arrow keys for 20 pixel steps" title="Drag to resize navigation · arrow keys adjust by 20px" hidden></div>
 
-      <div class="main-stage">
+      <div class="main-stage" id="main-stage" tabindex="-1">
         <section id="conversations-view" class="conversation product-view" aria-label="Live conversation stream">
           <header class="conversation-head">
             <div class="conversation-header-controls">
@@ -99,6 +100,7 @@
               <details class="kind-filter-menu" id="kind-filter-menu">
                 <summary>Message kinds</summary>
                 <div class="kind-filter-popover">
+                  <label class="lane-status-control message-origin-control">Second mate <select id="secondmate-filter" aria-label="Filter messages by second mate"><option value="">All messages</option></select></label>
                   <div id="message-type-filters" class="message-type-filters" role="group" aria-label="Message kinds; crew messages are hidden by default"></div>
                   <div class="message-types-actions">
                     <button id="kinds-bulk-toggle" class="bulk-toggle" type="button" aria-pressed="false">Select all</button>
@@ -135,7 +137,7 @@
               <div class="mobile-filter-tabs" role="tablist" aria-label="Conversation filters"><button id="mobile-lanes-tab" type="button" role="tab" aria-controls="lane-filter-controls" aria-selected="true" tabindex="0">Fleets</button><button id="mobile-kinds-tab" type="button" role="tab" aria-controls="kind-filter-menu" aria-selected="false" tabindex="-1">Message kinds</button></div>
               <button id="lane-filter-close" type="button" aria-label="Close fleet filters">×</button>
             </div>
-            <div class="lane-filter-heading"><span>Included fleets</span><button id="lane-filter-info" class="lane-info-toggle" type="button" aria-expanded="false" aria-controls="lane-filter-info-tip" title="About included fleets">i</button><button id="lane-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="lane-filter-controls" aria-expanded="true" aria-label="Collapse Included fleets panel" title="Collapse Included fleets panel">‹</button></div>
+            <div class="lane-filter-heading"><span>Included fleets</span><button id="lane-filter-info" class="lane-info-toggle" type="button" aria-expanded="false" aria-controls="lane-filter-info-tip" aria-label="About included fleets" title="About included fleets"><span aria-hidden="true">i</span></button><button id="lane-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="lane-filter-controls" aria-expanded="true" aria-label="Collapse Included fleets panel" title="Collapse Included fleets panel">‹</button></div>
             <div id="lane-collapsed-rail" class="lane-collapsed-rail" aria-label="Collapsed fleet filters" hidden></div>
             <div id="lane-filter-controls" class="lane-filter-controls">
             <div id="lane-filter-info-tip" class="lane-filter-info-tip" hidden role="note">Check fleets to include. Tap a name to solo that fleet. Fleet checks and status filter the feed together; closed history is separate.</div>
@@ -148,8 +150,10 @@
             </div>
           </section>
           <div class="conversation-feed">
+          <div id="primary-input-filter-status" class="notice" role="status" hidden>Primary session input is hidden by your Message kinds selection. <button id="show-primary-input" class="empty-action" type="button">Show primary session input (unverified)</button></div>
           <div id="transcript-window-status" class="transcript-window-status" hidden><span id="transcript-window-hint">Recent source windows · Search covers loaded records.</span><button id="transcript-load-more" type="button" aria-describedby="transcript-window-hint">Load more records</button></div>
-          <div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true"><div class="notice" role="status">Loading Fleet Chats… Reading recent messages. Older history is available on demand.</div></div>
+          <div id="messages" class="messages" tabindex="-1" aria-label="Conversation feed, oldest to newest" aria-busy="true"><div class="notice" role="status">Loading Fleet Chats… Reading recent messages. Older history is available on demand.</div></div>
+          <button id="jump-to-latest-floating" class="jump-to-latest floating-latest" type="button" aria-controls="messages" title="Jump to the latest matching records" hidden>↓ Latest</button>
           </div>
           <aside id="conversation-kind-panel" class="conversation-kind-panel" aria-label="Message kind filters"><div class="kind-panel-heading"><span>Message kinds</span><button id="kind-panel-toggle" class="desktop-panel-toggle" type="button" aria-controls="kind-filter-menu" aria-expanded="true" aria-label="Collapse Message kinds panel" title="Collapse Message kinds panel">›</button></div></aside>
           </div>
@@ -161,7 +165,9 @@
           <div id="summary" class="summary-grid"></div>
           <div id="overview-section-tabs" class="overview-section-tabs" role="tablist" aria-label="Overview sections">
             <button type="button" id="overview-tab-calls" role="tab" aria-selected="true" aria-controls="overview-primary" tabindex="0" data-overview-tab="calls">Captain's Call (0)</button>
-            <button type="button" id="overview-tab-landed" role="tab" aria-selected="false" aria-controls="overview-secondary" tabindex="-1" data-overview-tab="landed">Just landed (0)</button>
+            <button type="button" id="overview-tab-landed" role="tab" aria-selected="false" aria-controls="just-landed" tabindex="-1" data-overview-tab="landed">Just landed (0)</button>
+            <button type="button" id="overview-tab-underway" role="tab" aria-selected="false" aria-controls="underway" tabindex="-1" data-overview-tab="underway">Underway (0)</button>
+            <button type="button" id="overview-tab-charted" role="tab" aria-selected="false" aria-controls="charted-next" tabindex="-1" data-overview-tab="charted">Charted Next (0)</button>
           </div>
           <div id="overview-columns" class="overview-columns">
             <div id="overview-primary">
@@ -197,6 +203,16 @@
                   <p class="call-empty" data-landed-empty>Checking for landings…</p>
                 </div>
                 <p class="call-meta">Remote homes use Firstmate's cached readings.</p>
+              </section>
+              <section id="underway" aria-labelledby="underway-heading">
+                <h2 id="underway-heading" class="section-heading">Underway <b class="call-badge" data-work-count hidden>0</b></h2>
+                <p class="call-meta" data-work-status role="status"></p>
+                <div class="call-cards" data-work-cards></div>
+              </section>
+              <section id="charted-next" aria-labelledby="charted-next-heading">
+                <h2 id="charted-next-heading" class="section-heading">Charted Next <b class="call-badge" data-work-count hidden>0</b></h2>
+                <p class="call-meta" data-work-status role="status"></p>
+                <div class="call-cards" data-work-cards></div>
               </section>
             </div>
           </div>
@@ -278,6 +294,19 @@
             <button type="submit" disabled>Save health preferences</button>
             <p id="health-preferences-status" role="status" aria-live="polite">Loading health preferences…</p>
           </form>
+          <section id="notification-preferences" class="health-preferences-form" aria-labelledby="notification-title">
+            <h2 id="notification-title">Mobile notifications</h2>
+            <p>Generic lock-screen alerts for newly actionable filed Captain’s Calls, once per task. Existing calls, replies and chat-only asks do not alert.</p>
+            <p>Arrival is best effort. Opening and answering require private network access. Provider acceptance does not prove display or reading. Source gaps can miss calls; unsent drafts in this tab do not suppress alerts on other devices.</p>
+            <label class="notification-preference"><input type="checkbox" data-notification-preference disabled> Captain’s Call alerts on this installation</label>
+            <p>The alert preference defaults to on. Browser permission and enrollment still require an explicit Enable notifications tap.</p>
+            <div class="notification-controls">
+              <button type="button" data-notification-enable disabled>Enable notifications</button>
+              <button type="button" data-notification-disable disabled>Disable notifications</button>
+              <button type="button" data-notification-check disabled>Check status</button>
+            </div>
+            <p data-notification-status role="status" aria-live="polite">Checking notification configuration…</p>
+          </section>
           <p id="preferences-state" class="notice" role="status" aria-live="polite">Loading preferences…</p>
           <div class="scan-controls" aria-label="Preference navigation"><label>Show <select id="preferences-density"><option value="titles">Titles only</option><option value="reasons">Titles and reasons</option><option value="details" selected>Titles, reasons and details</option></select></label><label>Sort <select id="preferences-sort"><option value="source">Source order</option><option value="newest">Newest evidence</option><option value="oldest">Oldest evidence</option></select></label><button type="button" id="preferences-expand">Expand all</button><button type="button" id="preferences-collapse">Collapse all</button></div>
           <div id="preferences-list" class="preferences-list"></div>
@@ -297,11 +326,13 @@
       <aside id="review-panel" class="review-panel" hidden aria-label="Review conversation">
         <div id="review-resize" class="panel-divider review-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="review-panel" aria-label="Resize review conversation: drag divider left or right; use arrow keys to adjust, Home to reset" title="Drag divider to resize review conversation · Home resets"></div>
         <header><strong>Review conversation</strong><div class="review-tabs" role="tablist" aria-label="Review mode"><button id="review-conversation-tab" type="button" role="tab" aria-selected="true" aria-controls="review-form">Message</button><button id="review-annotation-tab" type="button" role="tab" aria-selected="false" aria-controls="review-form" tabindex="-1">Annotation</button><button id="review-history-tab" type="button" role="tab" aria-selected="false" aria-controls="review-phone-thread" tabindex="-1" aria-label="Review queued notes and batch history">Review</button></div><div class="review-header-actions"><button id="review-clear-location" type="button" hidden>Cancel selection</button><button id="review-close" type="button" aria-label="Close review conversation (keep draft)">Close ×</button></div></header>
+        <details id="inbox-pending" class="review-section" hidden><summary>Pending inbox submissions</summary><div id="inbox-pending-items"></div><button id="inbox-pending-send" type="button">Send now</button><p id="inbox-pending-status" role="status"></p></details>
         <p id="review-context" class="muted"></p>
         <div id="review-phone-thread" class="review-thread" role="log" aria-live="polite" hidden></div>
         <details id="review-sent" class="review-section review-sent"><summary id="review-sent-summary" aria-label="Sent batches, 0"><span>Sent</span> <span id="review-sent-count" class="review-section-count">0</span></summary><div id="review-sent-list" class="review-thread" role="log" aria-live="polite"></div></details>
         <section id="review-queued" class="review-section review-queued" aria-labelledby="review-queued-title"><div class="review-section-head"><h3 id="review-queued-title">Queued <span id="review-queued-count" class="review-section-count">0</span></h3><button id="review-select-location" type="button" aria-label="Annotate">Annotate</button></div><div id="review-thread" class="review-thread" role="log" aria-live="polite"></div></section>
-        <form id="review-form"><div class="review-form-header"><label for="review-message">Annotation or message</label><button id="review-form-close" type="button" aria-label="Close annotation or message (keep draft)">Close ×</button></div><textarea id="review-message" rows="3" maxlength="4000" placeholder="Message firstmate"></textarea><small class="review-shortcuts">Enter: queue · Shift+Enter: new line · Ctrl/Cmd+Enter: send</small><p id="review-target" class="muted"></p><div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message (Enter)" data-hint="Enter">Queue</button><button id="review-send" type="button" data-hint="Ctrl/Cmd+Enter">Send batch</button><button id="review-end" type="button" data-hint="Then end chat">Send &amp; End</button></div></form>
+        <form id="review-form"><div class="review-form-header"><label for="review-message">Annotation or message</label><button id="review-form-close" type="button" aria-label="Close annotation or message (keep draft)">Close ×</button></div><textarea id="review-message" rows="3" maxlength="4000" placeholder="Message firstmate"></textarea><small class="review-shortcuts">Enter: queue · Shift+Enter: new line · Ctrl/Cmd+Enter: send</small><p id="review-target" class="muted"></p><div class="review-actions"><button id="review-queue" type="submit" form="review-form" aria-label="Queue message (Enter)" data-hint="Enter">Queue</button><button id="review-send" type="button" data-hint="Ctrl/Cmd+Enter">Send</button></div></form>
+        <div id="review-history-actions" class="review-actions"><button id="review-clear-messages" type="button" title="Clear delivered history in this tab; drafts and pending submissions are kept">Clear messages</button></div>
         <p id="review-state" role="status" aria-live="polite"></p>
       </aside>
       <div id="review-annotation" hidden role="dialog" aria-label="Annotate selected region"></div>
@@ -348,13 +379,16 @@
     <script src="/bearings-thread-panel.js"></script>
     <script src="/bearings-procrastinate.js"></script>
     <script src="/bearings-landed.js"></script>
+    <script src="/bearings-work.js"></script>
     <script src="/overview-tabs.js"></script>
     <script src="/call-lifecycle.js"></script>
     <script src="/bearings-live.js"></script>
     <script type="module" src="/app.js"></script>
+    <script src="/inbox-pending.js"></script>
     <script src="/review-target.js"></script>
     <script type="module" src="/review-client.js"></script>
     <script type="module" src="/panel-resize.js"></script>
     <script type="module" src="/shell-panel.js"></script>
-  </body>
+  <script src="/notifications-ui.js" defer></script>
+</body>
 </html>

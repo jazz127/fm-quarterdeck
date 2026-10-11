@@ -44,16 +44,24 @@ export function parseCss(source, media = []) {
   }
   return rules;
 }
-function mediaMatches(query, width, height) {
+function mediaMatches(query, width, height, features) {
+  const motion = /\(\s*prefers-reduced-motion\s*:\s*(reduce|no-preference)\s*\)/.exec(query);
+  if (motion) {
+    if ((features.reducedMotion === true) !== (motion[1] === 'reduce')) return false;
+    query = query.replace(motion[0], '');
+  }
   if (/forced-colors|prefers-reduced-motion|hover|pointer|orientation/.test(query)) return false;
   const limits = [...query.matchAll(/\((min|max)-(width|height):\s*([\d.]+)px\)/g)];
-  return limits.length > 0 && limits.every(([, bound, axis, value]) => {
+  return (limits.length > 0 || Boolean(motion)) && limits.every(([, bound, axis, value]) => {
     const actual = axis === 'width' ? width : height;
     return bound === 'min' ? actual >= Number(value) : actual <= Number(value);
   });
 }
 function compound(node, selector) {
-  if (!node || selector.includes('::')) return false;
+  if (!node) return false;
+  const pseudoElement = /::([\w-]+)/.exec(selector)?.[1];
+  if ((node.pseudo || undefined) !== pseudoElement) return false;
+  selector = selector.replace(/::[\w-]+/g, '');
   let rest = selector;
   for (;;) {
     const pseudo = /:(is|not|has)\(/.exec(rest);
@@ -77,13 +85,11 @@ function compound(node, selector) {
   return !tag || tag === node.tag;
 }
 export function matches(node, selector) {
-  // Preserve child combinators while splitting only outside attribute/pseudo args.
-  const pieces = split(selector.replaceAll(' > ', '>'), c => c === ' ' || c === '>');
+  const pieces = split(selector.replace(/\s*>\s*/g, ' > '), c => /\s/.test(c));
   function walk(current, index) {
     if (!compound(current, pieces[index])) return false;
     if (!index) return true;
-    // The repository selectors under test use '>' only immediately before the leaf.
-    if (index === pieces.length - 1 && selector.includes('>')) return walk(current.parent, index - 1);
+    if (pieces[index - 1] === '>') return walk(current.parent, index - 2);
     for (let parent = current.parent; parent; parent = parent.parent) if (walk(parent, index - 1)) return true;
     return false;
   }
@@ -96,10 +102,10 @@ function specificity(selector) {
   const pseudos = (selector.match(/:(?!:)[\w-]+/g) || []).length;
   return ids * 100 + (attributes + classes + pseudos) * 10;
 }
-export function computed(rules, node, width = 1440, height = 1000) {
+export function computed(rules, node, width = 1440, height = 1000, features = {}) {
   const values = {}, priorities = {};
   for (const rule of rules) {
-    if (!rule.media.every(query => mediaMatches(query, width, height)) || !matches(node, rule.selector)) continue;
+    if (!rule.media.every(query => mediaMatches(query, width, height, features)) || !matches(node, rule.selector)) continue;
     for (let [key, value] of Object.entries(rule.declarations)) {
       const important = value.endsWith('!important');
       if (important) value = value.slice(0, -10).trim();

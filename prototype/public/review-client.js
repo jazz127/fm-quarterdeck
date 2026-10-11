@@ -58,6 +58,29 @@ function setReviewTab(tab) {
   el("review-panel").setAttribute("data-review-tab", phone ? tab : annotation ? "annotation" : sentOpen ? "review" : "conversation");
   syncReviewScrollLock();
   el("review-phone-thread").hidden = !phone || tab !== "review";
+  el("review-history-actions").hidden = phone && tab !== "review";
+  placeReviewActions();
+}
+// Relocate the existing controls; Queue keeps its explicit composer form owner.
+// Closing Review or returning to Message restores the original composer order.
+function placeReviewActions() {
+  const actions = document.querySelector("#review-form .review-actions");
+  const history = el("review-history-actions");
+  if (!actions?.insertBefore || !history?.append) return;
+  const phone = Boolean(phoneReview?.matches);
+  const reviewing = !el("review-panel").hidden && (!phone || activeReviewTab === "review");
+  const queueButton = el("review-queue");
+  const sendButton = el("review-send");
+  const focused = document.activeElement;
+  const destination = reviewing ? history : actions;
+  if (reviewing && !phone) {
+    if (queueButton.parentElement !== history) history.append(queueButton);
+  } else if (queueButton.parentElement !== actions) actions.insertBefore(queueButton, actions.firstChild);
+  if (sendButton.parentElement !== destination) {
+    if (reviewing) history.append(sendButton);
+    else actions.insertBefore(sendButton, queueButton.nextSibling);
+  }
+  if ((focused === sendButton || (focused === queueButton && !phone)) && document.activeElement !== focused) focused.focus();
 }
 function endPicking() {
   pickingRegion = false;
@@ -69,6 +92,8 @@ let hoveredNode = null;
 let config = { ready: false, version: "unknown", sessionId: "", delivery: "local" };
 let queue = [];
 let queueIds = []; // Tab-local authoring identities; never sent in the review payload.
+// Prompt Queue last took from the compose box. Send must not add that text again.
+let composeQueuedText = "";
 let sent = []; // Receipt-confirmed batches in this tab, including across a document reload.
 const openBatches = new Set();
 const openNotes = new Set();
@@ -231,7 +256,7 @@ function syncReviewScrollLock() {
     bodyOverflowBeforeReview = null;
   }
 }
-phoneReview?.addEventListener?.("change", () => { syncReviewScrollLock(); updateReviewControl(); });
+phoneReview?.addEventListener?.("change", () => { setReviewTab(activeReviewTab); updateReviewControl(); });
 window.visualViewport?.addEventListener?.("resize", syncReviewViewport);
 window.visualViewport?.addEventListener?.("scroll", syncReviewViewport);
 window.addEventListener("resize", syncReviewViewport);
@@ -240,6 +265,7 @@ syncReviewViewport();
 function panel(open) {
   if (open) closeAnnotation();
   el("review-panel").hidden = !open;
+  placeReviewActions();
   if (!open) {
     selectedNode = null;
     el("review-form").classList?.remove("review-form-anchored");
@@ -273,14 +299,20 @@ const statusShort = {
   unavailable: "Status unavailable",
 };
 const noteCount = (count) => `${count} ${count === 1 ? "note" : "notes"}`;
+// Pending and announced in the inbox is the pending receipt posture. The collapsed
+// header and the expanded header both use that posture's sent label.
+function pendingReceiptLabel() {
+  const owned = window.callLifecycle?.sentLabel?.("pending");
+  return typeof owned === "string" && owned ? owned : "Sent - waiting for Firstmate to read";
+}
 function batchStatusFull(batch) {
   if (config.delivery === "lavish") return "Delivery confirmed; downstream status unavailable";
-  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return "Accepted durably · queued for Firstmate; awaiting acknowledgement";
+  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return pendingReceiptLabel();
   return statusLabels[batch.state] || statusLabels.accepted;
 }
 function batchStatusShort(batch) {
   if (config.delivery === "lavish") return "Sent";
-  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return "Queued for Firstmate";
+  if (batch.state === "accepted" && batch.intake === "accepted" && batch.announced) return pendingReceiptLabel();
   return statusShort[batch.state] || "Accepted";
 }
 // A real batch id is shortened for the closed header. The call-answer group and an
@@ -321,6 +353,48 @@ function copyBatchId(node, text) {
   if (typeof write !== "function") { select(); return; }
   try { Promise.resolve(write.call(navigator.clipboard, text)).then(mark).catch(select); }
   catch { select(); }
+}
+// The message plus the batch sentence, real id, and sent time. Call-answer groups
+// and unsaved drafts are not batch ids.
+function reviewMessageCopyText(text, batch = {}) {
+  const lines = [typeof text === "string" ? text : ""];
+  const details = [];
+  if (batch.full) details.push(batch.full);
+  const id = typeof batch.id === "string" ? batch.id.trim() : "";
+  if (id && id !== "call-answers" && id !== "draft") details.push(id);
+  const when = batchWhen(batch.sentAt);
+  if (when) details.push(`${when.iso} · ${when.relative}`);
+  if (details.length) lines.push("", ...details);
+  return lines.join("\n");
+}
+function copyReviewMessage(button, text) {
+  const mark = () => { button.textContent = "Copied"; button.setAttribute("data-copied", "true"); };
+  const select = () => {
+    const body = button.closest?.("article")?.querySelector?.(".review-note-text");
+    const selection = document.getSelection?.();
+    if (!body || !selection || !document.createRange) return;
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+  const write = typeof navigator !== "undefined" && navigator.clipboard?.writeText;
+  if (typeof write !== "function") { select(); return; }
+  try { Promise.resolve(write.call(navigator.clipboard, text)).then(mark).catch(select); }
+  catch { select(); }
+}
+function appendMessageCopy(card, text, batch) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "review-note-copy";
+  button.textContent = "Copy";
+  button.setAttribute("aria-label", "Copy message and batch details");
+  button.addEventListener("click", (event) => {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    copyReviewMessage(button, reviewMessageCopyText(text, batch));
+  });
+  card.append(button);
 }
 // The closed summary shows one short line: chevron, title, then sent time and a
 // short batch id when this batch has them. The full sentence stays on the tooltip
@@ -380,11 +454,7 @@ async function refreshStatuses() {
       batch.updatedAt = status.updatedAt;
       batch.reply = status.reply;
     } catch { batch.state = "unavailable"; }
-    if (batch.end && ["accepted", "received", "handling", "completed", "replied"].includes(batch.state)) {
-      sent = sent.filter((item) => item.id !== batch.id);
-      openBatches.clear(); openNotes.clear();
-    }
-    if (!el("review-panel").hidden) el("review-state").textContent = `${batch.state === "accepted" && batch.intake === "accepted" && batch.announced ? "Accepted durably · queued for Firstmate; awaiting acknowledgement" : statusLabels[batch.state]} · receipt ${batch.receiptId}`;
+    if (sent.includes(batch) && !el("review-panel").hidden) el("review-state").textContent = `${batchStatusFull(batch)} · receipt ${batch.receiptId}`;
   }
   update();
 }
@@ -410,10 +480,10 @@ function update() {
   el("review-queue").textContent = "Queue";
   el("review-queue").setAttribute("aria-label", `${queueLabel} (Enter)`);
   el("review-context").textContent = `Version ${config.version.slice(0, 12)} · ${config.delivery === "lavish" ? `Lavish session ${config.sessionId}` : config.intakeReady ? "Firstmate inbox intake" : "Local receipt · Firstmate intake unavailable"}`;
-  const sendable = calls.length || queue.length || retryBatches.length || (!reviewHistoryTab() && el("review-message").value.trim());
+  const sendable = window.quarterdeckInboxPending?.count?.() || calls.length || queue.length || retryBatches.length || (!reviewHistoryTab() && el("review-message").value.trim());
   // Queued call answers use their own route, so review delivery being down does not block them.
   el("review-send").disabled = !sendable || pending || (!config.ready && !calls.some((entry) => entry.phase !== "sending"));
-  el("review-end").disabled = pending || !config.ready || !sendable;
+  el("review-clear-messages").disabled = !sent.length;
   el("review-queue").disabled = false;
   el("review-pick").hidden = !hovered || Boolean(desktopComposer?.matches);
   const thread = el("review-thread");
@@ -426,7 +496,7 @@ function update() {
   el("review-sent-summary").setAttribute("aria-label", `Sent batches, ${sent.length}`);
   el("review-queued-count").textContent = String(queuedCount);
   saveDraft();
-  function renderNote(entry, key, removeIndex = null) {
+  function renderNote(entry, key, removeIndex = null, batch = null) {
     if (entry.prompt !== undefined) entry = { ...entry, text: entry.prompt, kind: entry.tag === "message" ? "message" : "annotation", target: null, region: entry.label ? { label: entry.label } : null, version: entry.version || config.version, route: entry.route || route() };
     const card = document.createElement("article");
     const header = document.createElement("div");
@@ -487,6 +557,7 @@ function update() {
       remove.addEventListener("click", () => { queue.splice(removeIndex, 1); queueIds.splice(removeIndex, 1); if (!queue.length) batchId = null; openNotes.clear(); update(); });
       header.append(remove);
     }
+    appendMessageCopy(card, entry.text, batch);
     return card;
   }
   function renderSentBatch(batch) {
@@ -498,7 +569,7 @@ function update() {
     const sentFull = `${batchStatusFull(batch)} · ${noteCount(batch.entries.length)} · receipt ${batch.receiptId}`;
     fillBatchSummary(summary, `${batchStatusShort(batch)} · ${noteCount(batch.entries.length)}`, sentFull, { id: batch.id, sentAt: batch.sentAt });
     details.append(summary);
-    for (const [index, entry] of batch.entries.entries()) details.append(renderNote({ ...entry, delivered: true }, `${batch.id}:${index}`));
+    for (const [index, entry] of batch.entries.entries()) details.append(renderNote({ ...entry, delivered: true }, `${batch.id}:${index}`, null, { full: sentFull, id: batch.id, sentAt: batch.sentAt }));
     if (batch.reply) {
       const reply = document.createElement("p");
       reply.textContent = batch.reply;
@@ -528,7 +599,7 @@ function update() {
     const summary = document.createElement("summary");
     fillBatchSummary(summary, `Queued · ${noteCount(queue.length)}`, `Queued batch · ${noteCount(queue.length)}`, { id: batchId });
     details.append(summary);
-    for (const [index, entry] of queue.entries()) details.append(renderNote(entry, `queued:${index}`, index));
+    for (const [index, entry] of queue.entries()) details.append(renderNote(entry, `queued:${index}`, index, { full: `Queued batch · ${noteCount(queue.length)}`, id: batchId }));
     details.addEventListener("toggle", () => {
       const key = batchId || "draft";
       if (details.open) openBatches.add(key); else openBatches.delete(key);
@@ -543,7 +614,7 @@ function update() {
     const capturedCount = noteCount(captured.payload.entries.length);
     fillBatchSummary(summary, `${title === "Retry needed" ? "Retry" : title} · ${capturedCount}`, `${title} batch · ${capturedCount}`, { id: captured.id });
     details.append(summary);
-    captured.payload.entries.forEach((entry, index) => details.append(renderNote(entry, `${captured.id}:${index}`)));
+    captured.payload.entries.forEach((entry, index) => details.append(renderNote(entry, `${captured.id}:${index}`, null, { full: `${title} batch · ${capturedCount}`, id: captured.id })));
     if (title === "Retry needed") {
       const retry = document.createElement("button");
       retry.type = "button";
@@ -580,7 +651,7 @@ function update() {
     const header = document.createElement("div");
     header.className = "review-note-header";
     const heading = document.createElement("strong");
-    heading.textContent = `${entry.phase === "sending" ? "Sending" : entry.phase === "failed" ? "Retry needed" : "Queued"} Captain's Call answer · ${entry.label}`;
+    heading.textContent = `${entry.phase === "sending" ? "Pending · batching" : entry.phase === "failed" ? "Retry needed" : "Queued"} Captain's Call answer · ${entry.label}`;
     header.append(heading);
     const text = document.createElement("p");
     text.className = "review-note-text";
@@ -594,6 +665,7 @@ function update() {
       header.append(remove);
     }
     card.append(header, text);
+    appendMessageCopy(card, entry.text, { full: `Queued Captain's Call answers · ${calls.length}`, id: "call-answers" });
     return card;
   }
   function renderCallBatch() {
@@ -606,11 +678,11 @@ function update() {
     details.addEventListener("toggle", () => { if (details.open) openBatches.add("call-answers"); else openBatches.delete("call-answers"); });
     return details;
   }
-  const capturedBatches = [[inFlight, "Sending"], ...retryBatches.map((batch) => [batch, "Retry needed"])].filter(([captured]) => captured);
+  const capturedBatches = [[inFlight, "Pending · batching"], ...retryBatches.map((batch) => [batch, "Retry needed"])].filter(([captured]) => captured);
   // Desktop: Sent list over an always-listed queue (count lives in the section heading).
   for (const batch of sent) sentList.append(renderSentBatch(batch));
   for (const entry of calls) thread.append(renderCallAnswer(entry));
-  for (const [index, entry] of queue.entries()) thread.append(renderNote(entry, `queued:${index}`, index));
+  for (const [index, entry] of queue.entries()) thread.append(renderNote(entry, `queued:${index}`, index, { full: `Queued batch · ${noteCount(queue.length)}`, id: batchId }));
   for (const [captured, title] of capturedBatches) thread.append(renderCaptured(captured, title));
   // Phone: the Review tab lists sent batches, the queued batch, then in-flight/retry batches.
   for (const batch of sent) phoneThread.append(renderSentBatch(batch));
@@ -694,13 +766,20 @@ async function loadConfig() {
   // Status reads would fail too; keep the unavailable reason visible instead.
   if (config.ready) void refreshStatuses();
 }
-// Recovery re-reads run one at a time: while the open composer cannot send, and on tab return.
+// Recovery re-reads run one at a time while a composer can send: the review
+// panel, or the desktop inline composer while that panel is hidden. Tab return
+// re-reads too.
 let recheck = null;
 function recheckConfig() { recheck ||= loadConfig().finally(() => { recheck = null; }); }
+function reviewComposerOpen() {
+  const panel = el("review-panel");
+  const inline = el("review-annotation");
+  return Boolean(panel && !panel.hidden) || Boolean(inline && !inline.hidden);
+}
 // Live Captain's Call reuses this one update notice; it never reloads on its own.
 window.quarterdeckRevision = { recheck: recheckConfig, showUpdate: () => { updateNotice.hidden = false; } };
 if (typeof setInterval === "function") setInterval(() => {
-  if (!config.ready && !el("review-panel").hidden) recheckConfig();
+  if (!config.ready && reviewComposerOpen()) recheckConfig();
   else if (config.ready && sent.some((batch) => !["completed", "failed", "replied"].includes(batch.state))) void refreshStatuses();
 }, 5000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "hidden") recheckConfig(); });
@@ -739,7 +818,7 @@ function placeComposer() {
 }
 function placeSelectionAction() {
   const action = el("review-select-location");
-  const destination = phoneReview?.matches ? document.querySelector(".review-header-actions") : document.querySelector(".review-section-head");
+  const destination = phoneReview?.matches ? document.querySelector(".review-header-actions") : document.querySelector("#review-form .review-actions");
   if (action && destination?.insertBefore && action.parentElement !== destination) {
     if (phoneReview?.matches) destination.insertBefore(action, destination.firstChild); else destination.append(action);
   }
@@ -907,13 +986,12 @@ document.addEventListener("click", (event) => {
   if (!regionFor(event.target)) return;
   selectRegion(event.target, pickingRegion ? undefined : { x: event.clientX, y: event.clientY });
 }, true);
-el("review-message").addEventListener("input", () => { resizeMessage(); update(); });
+el("review-message").addEventListener("input", () => { composeQueuedText = ""; resizeMessage(); update(); });
 el("review-message").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.isComposing) return;
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault();
-    if (el("review-message").value.trim() && !enqueue()) return;
-    void send(false);
+    void send();
   } else if (!event.shiftKey && !event.altKey && !window.matchMedia?.("(pointer: coarse)")?.matches) {
     event.preventDefault();
     el("review-form").requestSubmit();
@@ -933,6 +1011,7 @@ function enqueue() {
   queue.push(note);
   queueIds.push(crypto.randomUUID());
   batchId ||= crypto.randomUUID();
+  composeQueuedText = text;
   el("review-message").value = "";
   closeAnnotation();
   resizeMessage();
@@ -948,54 +1027,53 @@ function enqueue() {
 }
 el("review-form").addEventListener("submit", (event) => { event.preventDefault(); enqueue(); });
 let sendingCalls = false;
-async function sendCallAnswers() {
+async function sendCallAnswers(options = {}) {
   const ready = callQueue().filter((entry) => entry.phase !== "sending");
   if (!ready.length || sendingCalls) return false;
   sendingCalls = true;
   el("review-state").textContent = `Sending ${ready.length} Captain's Call ${ready.length === 1 ? "answer" : "answers"}…`;
   let ok = false;
-  try { ok = await window.quarterdeckCallQueue.send(); } catch {}
+  try { ok = await window.quarterdeckCallQueue.send(options); } catch {}
   finally { sendingCalls = false; }
   el("review-state").textContent = ok ? `Sent ${ready.length} Captain's Call ${ready.length === 1 ? "answer" : "answers"}; receipts show on each card.` : "Some Captain's Call answers were not confirmed; their cards say why and keep them for retry.";
   update();
   try { window.quarterdeckCallQueue?.refresh?.(); } catch {}
   return ok;
 }
-async function send(end) {
-  // Await only when answers are queued, so an ordinary batch posts in the same tick.
-  if (callQueue().some((entry) => entry.phase !== "sending")) await sendCallAnswers();
+async function send() {
+  const immediate = true;
+  // The same action flushes saved server work and submits staged items on their own routes.
+  // Calls and review batches retain their independent request IDs and receipt contexts.
+  void window.quarterdeckInboxPending?.flush?.();
+  if (callQueue().some((entry) => entry.phase !== "sending")) void sendCallAnswers({ immediate });
   if (pending || !config.ready) return;
-  if (!reviewHistoryTab() && el("review-message").value.trim() && (!queue.length || end) && !enqueue()) return;
-  if (!queue.length && retryBatches.length && !end) { await submitBatch(retryBatches[0]); return; }
-  if (!queue.length && (!end || !retryBatches.length)) return;
-  // Capture the entire persisted board at the action cutoff, before any await.
-  // Earlier unconfirmed identities are retried separately, never joined to it.
-  const previous = end ? [...retryBatches] : [];
-  let captured = null;
-  if (queue.length) {
-    if (queue.some((entry) => entry.record && !entry.record.recordId && !entry.record.sha256)) { el("review-state").textContent = "Message identity is still being captured. Check targets before sending."; return; }
-    const id = batchId || crypto.randomUUID();
-    captured = { id, payload: { schema: "fm-agentos-review.v2", batchId: id, sessionId: config.sessionId, version: config.version, route: route(), end,
-      entries: queue.map((entry) => {
-        const { version, route: entryRoute, ...wire } = capture ? capture.migrateEntry(entry) : entry;
-        if (entryRoute && entryRoute !== route()) wire.route = entryRoute;
-        return JSON.parse(JSON.stringify(wire));
-      }) } };
-    queue = [];
-    queueIds = [];
-    batchId = null;
-    // If earlier delivery must finish first, retain this snapshot durably too.
-    if (previous.length) retryBatches.push(captured);
-    saveDraft();
+  // Capture queued notes and the current draft once. A full board keeps the extra draft.
+  if (!reviewHistoryTab()) {
+    const draft = el("review-message").value.trim();
+    const alreadyQueued = Boolean(draft) && draft === composeQueuedText && queue.some((entry) => entry.prompt === draft);
+    if (alreadyQueued) {
+      el("review-message").value = "";
+      resizeMessage();
+      update();
+    } else if (draft && queue.length < 30 && !enqueue()) return;
   }
-  for (const prior of previous) if (!await submitBatch(prior)) return;
-  if (captured && !await submitBatch(captured)) return;
-  if (end && !captured && !queue.length && !retryBatches.length && !el("review-message").value.trim()) {
-    selected = null; hovered = null; panel(false);
-    el("review-state").textContent += " · review ended";
-  }
+  if (!queue.length && retryBatches.length) { await submitBatch(retryBatches[0], { immediate }); return; }
+  if (!queue.length) return;
+  if (queue.some((entry) => entry.record && !entry.record.recordId && !entry.record.sha256)) { el("review-state").textContent = "Message identity is still being captured. Check targets before sending."; return; }
+  const id = batchId || crypto.randomUUID();
+  const captured = { id, payload: { schema: "fm-agentos-review.v2", batchId: id, sessionId: config.sessionId, version: config.version, route: route(), end: false,
+    entries: queue.map((entry) => {
+      const { version, route: entryRoute, ...wire } = capture ? capture.migrateEntry(entry) : entry;
+      if (entryRoute && entryRoute !== route()) wire.route = entryRoute;
+      return JSON.parse(JSON.stringify(wire));
+    }) } };
+  queue = [];
+  queueIds = [];
+  batchId = null;
+  saveDraft();
+  await submitBatch(captured, { immediate });
 }
-async function submitBatch(captured) {
+async function submitBatch(captured, { immediate = false } = {}) {
   if (pending || !config.ready || !captured) return;
   const retryIndex = retryBatches.findIndex((batch) => batch.id === captured.id);
   retryBatches = retryBatches.filter((batch) => batch.id !== captured.id);
@@ -1007,7 +1085,7 @@ async function submitBatch(captured) {
   update();
   try {
     const payload = captured.payload;
-    const response = await fetch("/api/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    const response = await fetch("/api/review", { method: "POST", headers: { "content-type": "application/json", ...(immediate ? { "x-quarterdeck-send-now": "1" } : {}) }, body: JSON.stringify(payload) });
     const result = await response.json();
     if (!response.ok) {
       if (response.status === 400 && result.error === "Invalid review payload or version") {
@@ -1025,19 +1103,15 @@ async function submitBatch(captured) {
       throw new Error(result.error || "Delivery failed");
     }
     if (typeof result.receiptId !== "string" || !result.receiptId) throw new Error("Delivery receipt missing");
-    // Only a confirmed receipt closes a review; keep later queued notes and
-    // independent unconfirmed identities available for their own delivery.
-    if (captured.payload.end) { sent = []; openBatches.clear(); openNotes.clear(); }
-    else sent.push({ id: captured.id, receiptId: result.receiptId, state: result.delivery === "local" ? "accepted" : null, sentAt: new Date().toISOString(), entries: captured.payload.entries, route: payload.route, version: payload.version, end: false });
+    // A confirmed receipt adds history; only explicit Review clearing removes it.
+    // Legacy end payloads still retry unchanged, without resetting this tab.
+    sent.push({ id: captured.id, receiptId: result.receiptId, state: result.delivery === "local" ? "accepted" : null, sentAt: new Date().toISOString(), entries: captured.payload.entries, route: payload.route, version: payload.version, end: false });
     void loadConfig();
     retryBatches = retryBatches.filter((batch) => batch.id !== captured.id);
     openBatches.delete(captured.id);
     el("review-state").textContent = `${result.delivery === "local" ? statusLabels.accepted : "Delivery confirmed; downstream status unavailable"} · receipt ${result.receiptId}`;
+    window.dispatchEvent?.(new Event("quarterdeck-sent"));
     if (result.delivery === "local") void refreshStatuses();
-    if (captured.payload.end && !queue.length && !retryBatches.length && !el("review-message").value.trim()) {
-      selected = null; hovered = null; panel(false);
-      el("review-state").textContent += " · review ended";
-    } else if (captured.payload.end) el("review-state").textContent += " · later notes remain on the board; send them separately before ending";
     return true;
   } catch (error) {
     if (!retryBatches.some((batch) => batch.id === captured.id)) retryBatches.splice(retryIndex < 0 ? retryBatches.length : retryIndex, 0, captured);
@@ -1045,7 +1119,16 @@ async function submitBatch(captured) {
     return false;
   } finally { inFlight = null; inFlightIndex = null; pending = false; update(); }
 }
-el("review-send").addEventListener("click", () => send(false));
+el("review-send").addEventListener("click", () => send());
+el("review-clear-messages").addEventListener("click", () => {
+  // Clear receipt-confirmed history in this tab only, never drafts or delivery identities.
+  const clearedIds = new Set(sent.map((batch) => batch.id));
+  sent = [];
+  for (const id of clearedIds) openBatches.delete(id);
+  for (const key of openNotes) if (clearedIds.has(key.split(":")[0])) openNotes.delete(key);
+  el("review-state").textContent = "Delivered message history cleared in this tab. Drafts, pending submissions and durable receipts are kept.";
+  update();
+});
+window.addEventListener("quarterdeck-inbox-pending", () => update());
 window.quarterdeckReviewQueue = { refresh: () => update(), sendCallAnswers, sending: () => sendingCalls };
-el("review-end").addEventListener("click", () => send(true));
 update();

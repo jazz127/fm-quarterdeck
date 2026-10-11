@@ -1,9 +1,9 @@
 ---
-name: fm-lanes
+name: fmqd-lanes
 description: Wrap every captain-facing message in a high-level project, feature, repository, or General lane block for the Quarterdeck UI. Use whenever composing any output for the captain.
 ---
 
-# fm-lanes: Project Demuxing
+# fmqd-lanes: Project Demuxing
 
 When managing projects, tasks, or distinct workspaces, you MUST use lane tags for ALL your output. This ensures the Quarterdeck UI correctly routes every message to the appropriate visual channel.
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { answerEnvelope, validateAnswer } from "../bearings-answer.js";
-import { applyBoardDecisionOptions, createSnapshotRunner, extractBoardPayload, normalizeSnapshot, readBearingsBoard } from "../bearings.js";
+import { applyBoardDecisionOptions, contentRevision, createSnapshotRunner, extractBoardPayload, normalizeSnapshot, readBearingsBoard } from "../bearings.js";
 
 const fixture = async () => JSON.parse(await readFile(new URL("./fixtures/bearings/two-calls.json", import.meta.url), "utf8"));
 const uuid = "00000000-0000-4000-8000-000000000010";
@@ -36,6 +36,99 @@ const decisionCard = (extra = {}) => ({
 });
 const page = (payload) => `<!doctype html><script>globalThis.__boardExecuted = true</script><script id="bearings-data" type="application/json">\n${JSON.stringify(payload).replaceAll("<", "\\u003c")}\n</script>`;
 const answerFor = (raw, key = "decision:alpha-call") => normalizeSnapshot(raw).cards.find((card) => card.key === key).answer;
+
+test("board text obeys the public path-redaction contract for local and read-only decisions", async () => {
+  const raw = await fixture();
+  const fields = {
+    title: "Title: /home/example/projects/sample/title.md",
+    about: "About: /home/example/projects/sample/about.md",
+    decide: "Decide: /home/example/projects/sample/decide.md",
+    detail: "Report: /home/example/projects/sample/report.md",
+    freeform_hint: "Read /home/example/projects/sample/hint.md",
+    pr_url: "file:///home/example/projects/sample/report.md",
+    close: { report: "/home/example/projects/sample/report.md" },
+    allow_freeform: true,
+  };
+  applyBoardDecisionOptions(raw, board({ captains_call: [
+    decisionCard(fields),
+    decisionCard({ ...fields, key: "gamma-credential", type: "credential" }),
+  ] }));
+  const model = normalizeSnapshot(raw);
+  for (const key of ["decision:alpha-call", "decision:gamma-credential"]) {
+    const card = model.cards.find((entry) => entry.key === key);
+    assert.equal(card.boardTitle, "Title: …/title.md");
+    assert.equal(card.boardAbout, "About: …/about.md");
+    assert.equal(card.boardDecide, "Decide: …/decide.md");
+    assert.equal(card.boardDetail, "Report: …/report.md");
+    assert.equal(card.boardFreeformHint, "Read …/hint.md");
+    assert.equal(card.boardPrUrl, null);
+    assert.equal(card.boardClose, null);
+    assert.equal(card.boardAllowFreeform, true);
+  }
+  const local = model.cards.find((entry) => entry.key === "decision:alpha-call");
+  assert.equal(local.answer.freeform_hint, "Read …/hint.md");
+  const remote = model.cards.find((entry) => entry.key === "decision:gamma-credential");
+  assert.equal(remote.readOnly, true);
+  assert.equal(remote.answer, null);
+  assert.doesNotMatch(JSON.stringify(model), /\/home\/example/);
+
+  const firstRev = contentRevision(model);
+  for (const row of raw.decisions_open) {
+    for (const field of ["board_title", "board_about", "board_decide", "board_detail", "board_freeform_hint"]) {
+      row[field] = row[field].replaceAll("/home/example/projects/sample", "/home/example/other/checkout");
+    }
+  }
+  const relocated = normalizeSnapshot(raw);
+  assert.deepEqual(relocated.cards.map((card) => card.rev), model.cards.map((card) => card.rev));
+  assert.equal(contentRevision(relocated), firstRev);
+});
+
+test("public board metadata preserves full safe context and snapshot answer authority", async () => {
+  const raw = await fixture();
+  raw.decisions_open[0].close = "release";
+  const detail = `Full context ${"rollout evidence ".repeat(40)}final evidence`;
+  const fields = { title: "Choose a window", about: "Example application", decide: "Tuesday or Friday?", detail,
+    pr_url: "https://example.invalid/pr/42", freeform_hint: "Explain the timing", allow_freeform: true, close: "done" };
+  applyBoardDecisionOptions(raw, board({ captains_call: [decisionCard(fields)] }));
+  const card = normalizeSnapshot(raw).cards.find((entry) => entry.key === "decision:alpha-call");
+  assert.equal(card.boardTitle, fields.title);
+  assert.equal(card.boardAbout, fields.about);
+  assert.equal(card.boardDecide, fields.decide);
+  assert.equal(card.boardDetail, detail);
+  assert.equal(card.boardPrUrl, fields.pr_url);
+  assert.equal(card.boardFreeformHint, fields.freeform_hint);
+  assert.equal(card.boardAllowFreeform, true);
+  assert.equal(card.boardClose, "done");
+  assert.equal(card.answer.close, "release");
+});
+
+test("public board metadata rejects untyped text, unsafe URLs and invalid close modes", async () => {
+  const raw = await fixture();
+  const row = raw.decisions_open[0];
+  for (const value of [{ path: "/home/example/report.md" }, ["/home/example/report.md"], 42, true, null, ""]) {
+    for (const field of ["board_title", "board_about", "board_decide", "board_detail", "board_freeform_hint"]) row[field] = value;
+    const card = normalizeSnapshot(raw).cards.find((entry) => entry.key === "decision:alpha-call");
+    for (const field of ["boardTitle", "boardAbout", "boardDecide", "boardDetail", "boardFreeformHint"]) assert.equal(card[field], null);
+    assert.equal(card.answer.freeform_hint, null);
+  }
+  for (const value of ["/home/example/report.md", "file:///home/example/report.md", "http://example.invalid/pr/42", "javascript:alert(1)", "https://example:secret@example.invalid/pr/42", {}, []]) {
+    row.board_pr_url = value;
+    assert.equal(normalizeSnapshot(raw).cards.find((entry) => entry.key === "decision:alpha-call").boardPrUrl, null);
+  }
+  for (const value of ["/home/example/report.md", "unknown", {}, [], true, 42, null]) {
+    row.board_close = value;
+    const card = normalizeSnapshot(raw).cards.find((entry) => entry.key === "decision:alpha-call");
+    assert.equal(card.boardClose, null);
+  }
+  for (const value of ["true", "done", {}, [], 42, null, false]) {
+    row.board_allow_freeform = value;
+    assert.equal(normalizeSnapshot(raw).cards.find((entry) => entry.key === "decision:alpha-call").boardAllowFreeform, false);
+  }
+  for (const value of ["done", "release"]) {
+    row.board_close = value;
+    assert.equal(normalizeSnapshot(raw).cards.find((entry) => entry.key === "decision:alpha-call").boardClose, value);
+  }
+});
 
 test("a fresh board decision supplies its options and recommendation, and the answer relay is unchanged", async () => {
   const raw = await fixture();

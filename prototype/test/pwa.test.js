@@ -73,13 +73,31 @@ test("manifest defines an online-only standalone Quarterdeck and serves opaque P
   }
 });
 
+test("Fleet app's shared ask dependency is served at root and the registered host prefix", async (t) => {
+  const base = await listen(t, {}, { previewRegistry: [
+    { id: "main", name: "Main", branch: "main", commit: revision, remoteCheckpoint: revision, validation: "accepted" },
+  ] });
+  for (const prefix of ["", "/preview/main"]) {
+    const app = await fetch(`${base}${prefix}/app.js`);
+    assert.equal(app.status, 200);
+    await app.arrayBuffer();
+    const dependency = await fetch(`${base}${prefix}/chat-ask-extraction.js`);
+    assert.equal(dependency.status, 200, `${prefix}/chat-ask-extraction.js`);
+    assert.match(dependency.headers.get("content-type"), /^text\/javascript/);
+    assert.equal(dependency.headers.get("cache-control"), "no-store");
+    const source = await dependency.text();
+    const { extractAskSections } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+    assert.deepEqual(extractAskSections('DECISION NEEDED: Choose example-app. Reply "staged" or "wait".')[0].ask.replies, ["staged", "wait"]);
+  }
+});
+
 test("all public root assets and HTML are no-store outside dev mode", async (t) => {
   const base = await listen(t);
   const files = await readdir(new URL("../public/", import.meta.url), { withFileTypes: true });
   for (const file of files.filter((entry) => entry.isFile() && entry.name !== "dev-reload.js")) {
     const route = file.name === "index.html" ? "/" : `/${file.name}`;
     const response = await fetch(base + route);
-    assert.equal(response.status, 200, route);
+    assert.equal(response.status, file.name === "notifications-worker.js" ? 403 : 200, route);
     assert.equal(response.headers.get("cache-control"), "no-store", route);
     await response.arrayBuffer();
   }

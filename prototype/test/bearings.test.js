@@ -5,11 +5,41 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
-import { BearingsUnavailable, MODEL_SCHEMA, contentRevision, createBearingsHub, createSnapshotRunner, normalizeSnapshot, publicText } from "../bearings.js";
+import { validateAnswer } from "../bearings-answer.js";
+import { applyBoardDecisionOptions, BearingsUnavailable, MODEL_SCHEMA, contentRevision, createBearingsHub, createSnapshotRunner, normalizeSnapshot, publicText } from "../bearings.js";
 import { createServer } from "../server.js";
 
 const fixture = async (name) => JSON.parse(await readFile(new URL(`./fixtures/bearings/${name}.json`, import.meta.url), "utf8"));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test('Underway runner reads stock canonical records for full text and all registered homes', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'quarterdeck-underway-'));
+  try {
+    await mkdir(path.join(home, 'bin')); await mkdir(path.join(home, 'data'));
+    const title = `Build example-app ${'full context '.repeat(30)}final title`;
+    const child = { id: 'build', name: 'Check example-app', kind: 'ship', state: 'working', source: 'run-step', doing: 'validating (running)' };
+    const raw = await fixture('clear'); raw.in_flight = [{ id: 'build', name: 'Build example-app…', state: 'working', doing: 'Working…' }];
+    const canonical = { schema: 'fm-fleet-snapshot.v1', tasks: [{ id: 'build', kind: 'ship', backlog: { title, repo: 'example-app' },
+      current_state: { state: 'working', source: 'run-step', detail: 'validating (running)', freshness: 'fresh' } }],
+      secondmate_current: { registry: { available: true }, records: ['home-alpha', 'home-beta'].map(id => ({ id, registered: true,
+        provenance: { selected: 'structured-home' }, freshness: { status: 'fresh' }, active_children: [child] })) } };
+    await writeFile(path.join(home, 'bearings.json'), JSON.stringify(raw));
+    await writeFile(path.join(home, 'canonical.json'), JSON.stringify(canonical));
+    for (const [script, file] of [['fm-bearings-snapshot.sh', 'bearings.json'], ['fm-fleet-snapshot.sh', 'canonical.json']]) {
+      const executable = path.join(home, 'bin', script);
+      await writeFile(executable, `#!/bin/sh\n${file === 'canonical.json' ? '[ "$FM_CREW_STATE_NO_FORGE" = 1 ] && [ "$FM_SNAPSHOT_SECONDMATES" = 0 ] || exit 7\n' : ''}cat "$FM_HOME/${file}"\n`);
+      await chmod(executable, 0o755);
+    }
+    const run = createSnapshotRunner(home), model = normalizeSnapshot(JSON.parse(await run()));
+    assert.equal(model.underway[0].title, title);
+    assert.deepEqual(model.underway.map(row => row.home), ['Main home', 'home-alpha', 'home-beta']);
+    assert.ok(model.underway.every(row => row.stage === 'Validating / review'));
+    await rm(path.join(home, 'bin', 'fm-fleet-snapshot.sh'));
+    const unavailable = normalizeSnapshot(JSON.parse(await run()));
+    assert.equal(unavailable.underway[0].stage, 'Stage unavailable');
+    assert.match(unavailable.workCoverage.underwayDisclosures.join(' '), /Canonical work records unavailable/);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
 
 // Deterministic timers for the scheduler: nothing here waits on wall time.
 function fakeClock(start = 10_000_000) {
@@ -138,6 +168,39 @@ test("cached decisions reject malformed scoped identity components", async () =>
   assert.deepEqual(model.omitted, [{ kind: "invalid-rows", count: invalidIds.length }]);
 });
 
+test("a decision with lettered lines offers those letters, and a card without them stays free text", async () => {
+  const raw = await fixture("two-calls");
+  const letters = "Choose the sample window.\na) Staged rollout — fewer users at once\nb) Ship now — faster delivery\nc) Wait — need another check";
+  raw.decisions_open[0].summary = letters;
+  raw.decisions_open[0].reason = "a) shorter\nb) list";
+  const answer = normalizeSnapshot(raw).cards[0].answer;
+  assert.deepEqual(answer.options, [
+    { value: "a", label: "a", hint: "Staged rollout — fewer users at once" },
+    { value: "b", label: "b", hint: "Ship now — faster delivery" },
+    { value: "c", label: "c", hint: "Wait — need another check" },
+  ]);
+  assert.equal(answer.recommend, null);
+  const model = { schema: "fm-quarterdeck-call.v1", rev: "model", state: "ready", ...normalizeSnapshot(raw) };
+  const card = model.cards[0];
+  assert.equal(validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "a", note: "" }, model).selection, "a");
+  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "z", note: "" }, model), /not offered/);
+  raw.decisions_open[0].summary = "Provide the gamma sandbox credential";
+  raw.decisions_open[0].reason = "No lettered choice is recorded.";
+  assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options, []);
+  raw.decisions_open[0].summary = "a) keep /srv/synthetic/workspace/data/secret\nb) drop the sample";
+  delete raw.decisions_open[0].reason;
+  const redacted = normalizeSnapshot(raw).cards[0].answer.options[0].hint;
+  assert.equal(redacted.includes("synthetic"), false);
+  assert.match(redacted, /secret/);
+  raw.decisions_open[0].options = [{ value: "later", label: "Later" }];
+  raw.decisions_open[0].summary = "a) staged\nb) now";
+  assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options.map((option) => option.value), ["later"]);
+  raw.decisions_open[0].options = [{ value: "reconcile", label: "Reconcile" }];
+  assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options, []);
+  raw.contributions.captain.find((row) => row.task === "beta-merge").reason = "a) merge it\nb) wait";
+  assert.deepEqual(normalizeSnapshot(raw).cards.find((card) => card.type === "merge").answer.options.map((option) => option.value), ["merge"]);
+});
+
 test("content revision ignores the snapshot clock but follows every visible change", async () => {
   const raw = await fixture("two-calls");
   const before = normalizeSnapshot(raw);
@@ -172,7 +235,79 @@ async function syntheticHome(context, script) {
   return home;
 }
 
-test("runner invokes only the guarded snapshot with --json under FM_HOME and shares one run", async (context) => {
+test("merge eligibility follows current selected-home holds and released source transitions", async (context) => {
+  const home = await syntheticHome(context, 'cat "$FM_HOME/fixture.json"');
+  const run = createSnapshotRunner(home);
+  const task = "example-app-release";
+  const contribution = { task, kind: "pr", url: "https://example.invalid/example-org/example-app/pull/1", owner: "(main)", hold: null, checked_at: "2026-10-10T12:00:00Z" };
+  const sibling = { ...contribution, task: "example-app-sibling", url: "https://example.invalid/example-org/example-app/pull/2" };
+  const decision = { id: "example-app-choice", owner: "(main)", summary: "Choose the example-app window" };
+  const encoded = Buffer.from("Hold this task; do not merge yet.").toString("base64");
+  const raw = { schema: "fm-bearings.v1", decisions_open: [decision], contributions: { captain: [contribution, sibling], known: 2, checked: 2, proven_clear: false }, omitted: [] };
+  const read = async (metadata, captain = [contribution, sibling], body = "") => {
+    const ledger = `## In Flight\n- [ ] ${task} - Release example-app ${metadata}\n${body}`;
+    await writeFile(path.join(home, "data/backlog.md"), ledger);
+    await writeFile(path.join(home, "fixture.json"), JSON.stringify({ ...raw, contributions: { ...raw.contributions, captain } }));
+    const model = normalizeSnapshot(JSON.parse(await run()));
+    assert.equal(await readFile(path.join(home, "data/backlog.md"), "utf8"), ledger);
+    assert.doesNotMatch(JSON.stringify(model), /fm-quarterdeck-bearings-/);
+    return model;
+  };
+  const initial = await read("(repo: example-app)");
+  const otherCards = initial.cards.filter(card => card.task !== task);
+  assert.ok(initial.cards.some(card => card.key === `merge:${task}`));
+  for (const metadata of [
+    `(hold: fm-hold-v1:${encoded}) (hold-kind: captain)`,
+    `(hold: fm-hold-v1:${encoded}) (hold-kind: captain) (hold-until: 2099-01-01)`,
+  ]) {
+    const model = await read(metadata);
+    assert.ok(!model.cards.some(card => card.key === `merge:${task}`), "a current captain hold excludes Merge even when not in decisions_open");
+    assert.deepEqual(model.cards, otherCards, "decision and sibling Merge remain unchanged");
+  }
+  // The producer excludes unheld draft, closed and merged observations from captain.
+  for (const state of ["draft", "closed", "merged"]) {
+    const model = await read("(repo: example-app)", [sibling]);
+    assert.deepEqual(model.cards, otherCards, state);
+  }
+  const released = await read("(hold-kind: parked)", undefined, "  Resolution recorded by fm-captain-hold.\n  Resolution mode: released\n");
+  assert.deepEqual(released.cards, initial.cards, "release restores the eligible source contribution deterministically");
+  const prose = await read('Document "(hold-kind: captain)" syntax (repo: example-app)');
+  assert.deepEqual(prose.cards, initial.cards, "quoted prose is not authoritative hold metadata");
+});
+
+test("contribution holds cannot become Merge when their decision is omitted or belongs to another task", async () => {
+  const raw = await fixture("two-calls");
+  const merge = raw.contributions.captain.find(row => row.task === "beta-merge");
+  const otherCards = normalizeSnapshot(raw).cards.filter(card => card.task !== merge.task);
+  for (const owner of ["(main)", "registered-mate"]) {
+    merge.owner = owner;
+    merge.hold = "example-app-gate";
+    assert.deepEqual(normalizeSnapshot(raw).cards, otherCards, "structured contribution hold suppresses only its false Merge projection");
+  }
+  merge.hold = null;
+  assert.ok(normalizeSnapshot(raw).cards.some(card => card.task === merge.task), "released contribution remains eligible");
+});
+
+test("selected-home holds match exact task and main owner without hiding decisions", async () => {
+  const raw = await fixture("two-calls");
+  const merge = raw.contributions.captain.find(row => row.task === "beta-merge");
+  const before = normalizeSnapshot(raw).cards;
+  for (const hold of [
+    { task: "beta", open: true, source: "data/backlog.md" },
+    { task: merge.task, open: false, source: "data/backlog.md" },
+    { task: merge.task, open: true, source: "other-source" },
+  ]) {
+    raw.quarterdeck_holds = [hold];
+    assert.deepEqual(normalizeSnapshot(raw).cards, before);
+  }
+  raw.quarterdeck_holds = [{ task: merge.task, open: true, source: "data/backlog.md" }, { task: "alpha-call", open: true, source: "data/backlog.md" }];
+  merge.owner = "registered-mate";
+  assert.equal(normalizeSnapshot(raw).cards.length, before.length, "root hold must not hide a sibling owner's same task id");
+  merge.owner = "(main)";
+  assert.deepEqual(normalizeSnapshot(raw).cards, before.filter(card => card.task !== merge.task), "only the main owner's exact Merge is removed; decisions remain");
+});
+
+test("runner shares the guarded expanded snapshot run under FM_HOME", async (context) => {
   const raw = await fixture("two-calls");
   const home = await syntheticHome(context, `echo "$# $*|$FM_HOME" >> "$FM_HOME/calls"\nsleep 0.2\ncat "$FM_HOME/fixture.json"`);
   await writeFile(path.join(home, "fixture.json"), JSON.stringify(raw));
@@ -180,7 +315,7 @@ test("runner invokes only the guarded snapshot with --json under FM_HOME and sha
   const [first, second] = await Promise.all([run(), run()]);
   assert.equal(first, second);
   assert.equal(JSON.parse(first).schema, "fm-bearings.v1");
-  assert.equal(await readFile(path.join(home, "calls"), "utf8"), `1 --json|${home}\n`);
+  assert.equal(await readFile(path.join(home, "calls"), "utf8"), `3 --json --all-in-flight --all-secondmates|${home}\n`);
 });
 
 test("runner bounds time and output and reports a missing or failing snapshot as unavailable", async (context) => {
@@ -459,6 +594,44 @@ async function liveServer(context, { revision = "a".repeat(40), snapshot, source
   return { server, hub, source: hubSource, port: server.address().port, base: `http://127.0.0.1:${server.address().port}`, moveHead: (value) => { head = value; } };
 }
 
+test("board paths are redacted before the cached API, stream and Overview receive them", async (context) => {
+  const raw = await fixture("two-calls");
+  applyBoardDecisionOptions(raw, {
+    schema: "fm-bearings-board.v1", home: "synthetic-home", generated: "2026-06-01T12:00:00Z",
+    captains_call: [{ key: "alpha-call", type: "decision", title: "Title: /home/example/projects/sample/title.md",
+      about: "About: /home/example/projects/sample/about.md", decide: "Decide: /home/example/projects/sample/decide.md",
+      detail: "Report: /home/example/projects/sample/report.md", freeform_hint: "Read /home/example/projects/sample/hint.md",
+      pr_url: "file:///home/example/projects/sample/report.md", close: { path: "/home/example/projects/sample/report.md" } }],
+  });
+  const { base, port } = await liveServer(context, { source: controlledRunner(raw), clock: fakeClock(Date.now()) });
+  const client = streamClient(port);
+  context.after(() => client.stop());
+  await client.until(() => client.events.some((event) => event.event === "model" && event.data.state === "ready"), "redacted board model");
+  const response = await fetch(`${base}/api/bearings`);
+  assert.equal(response.status, 200);
+  const models = [await response.json(), client.events.find((event) => event.event === "model" && event.data.state === "ready").data];
+  const window = {};
+  vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
+  for (const model of models) {
+    const card = model.cards.find((entry) => entry.key === "decision:alpha-call");
+    assert.equal(card.boardTitle, "Title: …/title.md");
+    assert.equal(card.boardAbout, "About: …/about.md");
+    assert.equal(card.boardDecide, "Decide: …/decide.md");
+    assert.equal(card.boardDetail, "Report: …/report.md");
+    assert.equal(card.boardFreeformHint, "Read …/hint.md");
+    assert.equal(card.boardPrUrl, null);
+    assert.equal(card.boardClose, null);
+    assert.doesNotMatch(JSON.stringify(model), /\/home\/example/);
+    const html = window.bearingsView.cardHtml(card);
+    assert.match(html, /Title: …\/title\.md/);
+    assert.match(html, /About: …\/about\.md/);
+    assert.match(html, /Decide: …\/decide\.md/);
+    assert.match(html, /Report: …\/report\.md/);
+    assert.doesNotMatch(html, /\/home\/example/);
+  }
+  client.stop();
+});
+
 test("cached native decisions reach the bearings API and Overview alongside their landing", async (context) => {
   // Oracle: fm-bearings.v1 output captured from unmodified Firstmate fb75c1f,
   // reading a parent cache emitted by fm-fleet-snapshot.sh --secondmate-home-summary.
@@ -639,4 +812,12 @@ test("an unwatched last-good snapshot becomes stale at its age ceiling", async (
   assert.equal(hub.current().stale, true);
   assert.equal(hub.freshness().ageMs, 300000);
   hub.close();
+});
+
+test('Overview work module is served as JavaScript from the host asset allowlist', async (context) => {
+  const { base } = await liveServer(context);
+  const response = await fetch(`${base}/bearings-work.js`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /text\/javascript/);
+  assert.equal(await response.text(), await readFile(new URL('../public/bearings-work.js', import.meta.url), 'utf8'));
 });
