@@ -149,6 +149,21 @@ test('registered canonical homes retain same-named work, exclude idle mates and 
   assert.equal(partial.rows[1].stage, 'Stage unavailable');
 });
 
+test('malformed canonical identities disclose gaps without inventing home or task names', async () => {
+  const { projectUnderwayRecords } = await import('../underway-records.js');
+  const children = [{ name: 'Build example-app', state: 'working' }];
+  const home = id => ({ id, registered: true, provenance: { selected: 'structured-home' }, active_children: children });
+  const work = projectUnderwayRecords({ schema: 'fm-fleet-snapshot.v1', tasks: [{ kind: 'ship' }],
+    secondmate_current: { registry: { available: true }, records: [home(undefined), home(42), home('home-alpha')] } });
+  assert.deepEqual(work.rows, []);
+  assert.deepEqual(work.disclosures, ['Main-home work record unavailable: invalid identity',
+    'Registered-home record unavailable: invalid identity', 'Registered-home record unavailable: invalid identity',
+    'home-alpha: child work record unavailable: invalid identity']);
+  const model = normalizeSnapshot({ ...base(), in_flight: work.rows, quarterdeckWorkDisclosures: work.disclosures });
+  assert.deepEqual(model.underway, []);
+  assert.equal(model.workCoverage.underwayDisclosures.length, 4);
+});
+
  test('chat composition retains work-only revisions through the existing stream model', () => {
   const raw = source(), first = normalizeSnapshot(raw);
   const chat = { state: 'ready', sources: [], resolved: [], checkedAt: null };

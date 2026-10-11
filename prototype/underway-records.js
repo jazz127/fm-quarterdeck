@@ -2,6 +2,7 @@
 // lifecycle reconciliation and registered-home collection remain stock owners.
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+const validId = value => typeof value === 'string' && idPattern.test(value);
 
 export function currentStage(current, { cached = false } = {}) {
   if (!object(current) || cached || current.freshness === 'stale') return 'Stage unavailable';
@@ -28,7 +29,8 @@ export function projectUnderwayRecords(snapshot) {
       || !object(snapshot.secondmate_current) || !Array.isArray(snapshot.secondmate_current.records)) throw Error('Canonical work records unavailable');
   const rows = [], disclosures = [];
   for (const task of snapshot.tasks) {
-    if (!object(task) || !idPattern.test(task.id) || task.kind === 'secondmate' || task.backlog?.current_role === 'program'
+    if (!object(task) || !validId(task.id)) { disclosures.push('Main-home work record unavailable: invalid identity'); continue; }
+    if (task.kind === 'secondmate' || task.backlog?.current_role === 'program'
         || (task.backlog?.current_role === 'held' && task.current_state?.state !== 'working')) continue;
     rows.push({ id: task.id, owner: '(main)', home: 'Main home', name: task.backlog?.title || task.id,
       repo: task.backlog?.repo || task.project, kind: task.kind, state: task.current_state?.state,
@@ -38,7 +40,9 @@ export function projectUnderwayRecords(snapshot) {
   if (registry.registry?.available !== true) disclosures.push('Registered-home registry unavailable');
   if (registry.truncated || registry.registry?.input_truncated || registry.registry?.records_truncated) disclosures.push('Registered-home inventory incomplete: source bound reached');
   for (const home of registry.records) {
-    if (!object(home) || home.registered !== true || !idPattern.test(home.id)) continue;
+    if (!object(home)) { disclosures.push('Registered-home record unavailable: invalid identity'); continue; }
+    if (home.registered !== true) continue;
+    if (!validId(home.id)) { disclosures.push('Registered-home record unavailable: invalid identity'); continue; }
     if (home.provenance?.selected !== 'structured-home' || !Array.isArray(home.active_children)) {
       disclosures.push(`${home.id}: work records unavailable`); continue;
     }
@@ -47,7 +51,8 @@ export function projectUnderwayRecords(snapshot) {
     if (home.provenance?.trust === 'partial-structured') disclosures.push(`${home.id}: work inventory incomplete`);
     if ((home.counts?.active_children ?? 0) > home.active_children.length) disclosures.push(`${home.id}: active work omitted by source bound`);
     for (const task of home.active_children) {
-      if (!object(task) || !idPattern.test(task.id) || task.kind === 'secondmate') continue;
+      if (!object(task) || !validId(task.id)) { disclosures.push(`${home.id}: child work record unavailable: invalid identity`); continue; }
+      if (task.kind === 'secondmate') continue;
       rows.push({ id: `${home.id}/${task.id}`, owner: home.id, home: home.id, name: task.name || task.id,
         repo: task.repo, kind: task.kind, state: task.state, doing: task.doing,
         stage: currentStage({ state: task.state, source: task.source, detail: task.doing }, { cached }) });
