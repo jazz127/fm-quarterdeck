@@ -4,6 +4,30 @@ export class HistoryLimitError extends Error {
   constructor() { super("History exceeds safe read limits; source files are unchanged."); }
 }
 
+// Resolve only supplied controls so specialized consumers retain their own defaults.
+// Server startup owns validation; readers never consult a mutable environment.
+export function resolveHistoryLimits(env = {}) {
+  const controls = {
+    FM_HISTORY_MAX_FILE_BYTES: "maxFileBytes",
+    FM_HISTORY_MAX_TOTAL_BYTES: "maxTotalBytes",
+    FM_HISTORY_MAX_LINE_BYTES: "maxLineBytes",
+    FM_HISTORY_MAX_FILES: "maxFiles",
+    FM_HISTORY_MAX_RECORDS: "maxRecords",
+    FM_HISTORY_MAX_MESSAGES: "maxMessages",
+  };
+  const limits = {};
+  for (const [variable, key] of Object.entries(controls)) {
+    const raw = env[variable];
+    if (raw === undefined) continue;
+    const value = Number(raw);
+    if (typeof raw !== "string" || !/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value)) {
+      throw new Error(`${variable} must be a non-negative safe integer (decimal digits, 0 to ${Number.MAX_SAFE_INTEGER}).`);
+    }
+    limits[key] = value;
+  }
+  return Object.freeze(limits);
+}
+
 // One reader per request, shared by transcript, status and legacy note loaders.
 // Bounds apply to actual bytes (including a file growing after stat), not pages
 // rendered in the browser. Fail the request explicitly rather than omit records;

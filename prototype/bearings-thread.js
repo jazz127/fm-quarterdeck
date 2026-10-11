@@ -124,12 +124,12 @@ export function noteForCard(note, key, card) {
 
 // Firstmate's own text in the newest window of each primary source. Cached per source by
 // inode, size and mtime, so an unchanged transcript is never re-parsed.
-export function createTranscriptTurns({ home, claudeConfigDir = null, discover = discoverPrimarySources, windowBytes = TRANSCRIPT_WINDOW_BYTES, discoverEveryMs = 30000, now = Date.now } = {}) {
+export function createTranscriptTurns({ home, claudeConfigDir = null, historyLimits = {}, discover = discoverPrimarySources, windowBytes = TRANSCRIPT_WINDOW_BYTES, discoverEveryMs = 30000, now = Date.now } = {}) {
   const cache = new Map();
   let sources = null, discoveredAt = -Infinity;
   return async function firstmateTurns() {
     if (!home) return { turns: [], omitted: false };
-    if (!sources || now() - discoveredAt >= discoverEveryMs) { sources = (await discover(home, { claudeConfigDir })).sources; discoveredAt = now(); }
+    if (!sources || now() - discoveredAt >= discoverEveryMs) { sources = (await discover(home, { claudeConfigDir, reader: createHistoryReader(historyLimits) })).sources; discoveredAt = now(); }
     const turns = [];
     let omitted = false;
     for (const entry of sources) {
@@ -138,7 +138,7 @@ export function createTranscriptTurns({ home, claudeConfigDir = null, discover =
       const stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
       let cached = cache.get(entry.file);
       if (cached?.stamp !== stamp) {
-        const reader = createHistoryReader({ maxFileBytes: windowBytes, maxTotalBytes: windowBytes * 2, windowReserveBytes: 0, maxRecords: 200000, maxLineBytes: 2 * 1024 * 1024 });
+        const reader = createHistoryReader({ maxFileBytes: windowBytes, maxTotalBytes: windowBytes * 2, windowReserveBytes: 0, maxRecords: 200000, maxLineBytes: 2 * 1024 * 1024, ...historyLimits });
         const window = await reader.recent(entry.file, windowBytes);
         const found = [];
         const toolNames = new Map();

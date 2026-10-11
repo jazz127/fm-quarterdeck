@@ -221,7 +221,7 @@ async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillByte
 
 // ---------------------------------------------------------------------------------------
 // The scanner owns the chat-ask state. scan() is cheap when nothing grew (stat only).
-export function createChatAskScanner({ home, claudeConfigDir = null, statePath = null, store = statePath ? createStateFile(statePath) : memoryStateFile(),
+export function createChatAskScanner({ home, claudeConfigDir = null, historyLimits = {}, statePath = null, store = statePath ? createStateFile(statePath) : memoryStateFile(),
   now = Date.now, discover = discoverPrimarySources, discoverEveryMs = 30000, backfillBytes = 4 * MiB, backfillMaxAgeMs = 24 * 3600 * 1000,
   maxScanBytes = 4 * MiB, maxLineBytes = 2 * MiB } = {}) {
   let state = null;
@@ -280,7 +280,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
 
   async function sourcesNow() {
     if (sources && now() - discoveredAt < discoverEveryMs) return sources;
-    const found = await discover(home, { claudeConfigDir });
+    const found = await discover(home, { claudeConfigDir, reader: createHistoryReader(historyLimits) });
     sources = found.sources;
     discoveredAt = now();
     view = { ...view, warnings: found.warnings };

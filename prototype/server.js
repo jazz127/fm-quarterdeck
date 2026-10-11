@@ -4,7 +4,7 @@ import { parseReviewNote } from "./review-note.js";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { watch, readFileSync } from "node:fs";
-import { createHistoryReader, HistoryLimitError } from "./history-reader.js";
+import { createHistoryReader, HistoryLimitError, resolveHistoryLimits } from "./history-reader.js";
 import { validateRegistry, previewPath, proxyPreview } from "./previews.js";
 import { validChatView } from "./chat-view.js";
 import { createAgentStateOwner, configuredStatePath, emptyAgentState, fingerprint } from "./agent-state.js";
@@ -1038,8 +1038,8 @@ function fleetFromFirstmate(firstmate) {
   };
 }
 
-async function loadFleet(env, agentStateOwner, durability) {
-  if (env.FM_HOME) return fleetFromFirstmate(await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability }));
+async function loadFleet(env, agentStateOwner, durability, historyLimits) {
+  if (env.FM_HOME) return fleetFromFirstmate(await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability, reader: createHistoryReader(historyLimits) }));
   const configuredPath = env.FM_STATUS_PATH ? path.resolve(env.FM_STATUS_PATH) : null;
   const fleet = await readJson(configuredPath || DEFAULT_FLEET_PATH);
   validateFleet(fleet);
@@ -1076,8 +1076,8 @@ export async function loadExpenses(env = {}, { canonicalPath = CANONICAL_LEDGER_
   }
 }
 
-export async function dashboardData(env = process.env, agentStateOwner = createAgentStateOwner(configuredStatePath(env)), durability = verifyDurability, expenseReader = loadExpenses) {
-  const [fleet, expenses, firstmateActivity] = await Promise.all([loadFleet(env, agentStateOwner, durability), expenseReader(env), readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) })]);
+export async function dashboardData(env = process.env, agentStateOwner = createAgentStateOwner(configuredStatePath(env)), durability = verifyDurability, expenseReader = loadExpenses, historyLimits = resolveHistoryLimits(env)) {
+  const [fleet, expenses, firstmateActivity] = await Promise.all([loadFleet(env, agentStateOwner, durability, historyLimits), expenseReader(env), readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) })]);
   const configuredRefresh = Number(env.FM_REFRESH_MS || 0);
   return {
     generatedAt: new Date().toISOString(),
@@ -1106,6 +1106,7 @@ async function sendJson(request, response, status, body) {
 }
 
 export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), bearingsSource, bearingsStream = {}, answerRelay, threadRelay, costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options), procrastination = createProcrastinationStore(env), landedAcks = createLandedAckStore(env), notificationOptions = {} } = {}) {
+  const historyLimits = resolveHistoryLimits(env);
   const review = reviewConfiguration(env);
   const agentStatePath = configuredStatePath(env);
   const agentStateOwner = createAgentStateOwner(agentStatePath);
@@ -1114,9 +1115,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) throw new Error("Quarterdeck presentation state must be outside FM_HOME");
   }
   const inboxBatcher = createInboxBatcher({ home: env.FM_HOME, statePath: agentStatePath });
-  bearingsSource ||= createCallSource({ home: env.FM_HOME, receipts: inboxBatcher.receipts, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), statePath: chatAsksPath(configuredStatePath(env)) }) });
+  bearingsSource ||= createCallSource({ home: env.FM_HOME, receipts: inboxBatcher.receipts, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits, statePath: chatAsksPath(configuredStatePath(env)) }) });
   answerRelay ||= createAnswerRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts });
-  threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env) }) });
+  threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits }) });
   const servedCommit = revisionResolver.initial;
   const registered = validateRegistry(previewRegistry ?? (env.FM_PREVIEW_REGISTRY_PATH ? JSON.parse(readFileSync(env.FM_PREVIEW_REGISTRY_PATH, "utf8")) : []));
   const deploymentTier = env.FM_DEPLOYMENT_TIER || "";
@@ -1302,7 +1303,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         let body;
         try { body = JSON.parse(text); } catch {}
         if (!body || !["acknowledge", "classify", "create-taxonomy"].includes(body.action) || !/^[a-f0-9]{64}$/.test(body.taskFingerprint || "")) { await sendJson(request, response, 400, { error: "Invalid presentation request" }); return; }
-        const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier });
+        const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier, reader: createHistoryReader(historyLimits) });
         const item = current.workSplit.items.find((entry) => entry.taskFingerprint === body.taskFingerprint);
         if (!item || current.workSplit.warning) { await sendJson(request, response, 409, { error: "Current task or Quarterdeck state unavailable" }); return; }
         try {
@@ -1313,7 +1314,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
           } else {
             if (body.action === "classify" && Object.keys(body).sort().join(",") !== "action,laneId,taskFingerprint,themeId") throw new Error("Invalid assignment");
             if (body.action === "create-taxonomy" && Object.keys(body).sort().join(",") !== "action,kind,laneName,taskFingerprint,themeName") throw new Error("Invalid taxonomy");
-            const backlog = await readBacklog(env.FM_HOME);
+            const backlog = await readBacklog(env.FM_HOME, createHistoryReader(historyLimits));
             let meta = {};
             try { meta = parseMeta(await readFile(path.join(env.FM_HOME, "state", `${item.id}.meta`), "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
             const recordedRepository = meta.project || backlog.get(item.id)?.repositoryPath;
@@ -1411,7 +1412,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         }
       }
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
-        await sendJson(request, response, 200, await dashboardData(env, agentStateOwner, durabilityVerifier, expenseReader));
+        await sendJson(request, response, 200, await dashboardData(env, agentStateOwner, durabilityVerifier, expenseReader, historyLimits));
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/lanes") {
@@ -1421,7 +1422,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         const requestedBytes = Number(url.searchParams.get("windowBytes"));
         const windowBytes = url.searchParams.has("windowBytes") && Number.isSafeInteger(requestedBytes)
           ? Math.min(8 * 1024 * 1024, Math.max(1024 * 1024, requestedBytes)) : null;
-        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env), windowBytes });
+        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env), windowBytes, reader: createHistoryReader(historyLimits) });
         await sendJson(request, response, 200, {
           generatedAt: new Date().toISOString(),
           source: firstmate.source,
