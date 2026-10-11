@@ -1949,6 +1949,9 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .call-thread-head { margin: 0 0 4px; color: var(--muted); font-size: var(--text-small); overflow-wrap: anywhere; }
 .call-thread-head strong { color: var(--text); }
 .call-thread-text { margin: 0; font-size: var(--text-small); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.call-message-link { display: inline-flex; align-items: center; box-sizing: border-box; min-width: 44px; min-height: 44px; max-width: 100%; padding: 8px 6px; border-radius: 4px; color: var(--blue); text-decoration: underline; text-underline-offset: 3px; white-space: normal; overflow-wrap: anywhere; vertical-align: middle; }
+.call-message-link:hover { text-decoration-thickness: 2px; background: var(--surface); }
+.call-message-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 .call-thread-entry button { min-height: 44px; margin-top: 8px; white-space: normal; }
 
 .call-answer-actions { display: flex; flex-wrap: wrap; gap: 8px; }

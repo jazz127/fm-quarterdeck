@@ -137,7 +137,7 @@ for (let i = 0; i < threadIds.length; i++) {
   const answered = repliedIds.has(requestId);
   if (answered || acked.has(requestId)) data.handled.push(note);
   else data.pending.push(note);
-  if (answered) data.replies.push({ id: note.id, at: '2026-01-02T11:' + minute + ':00.000Z', body: 'This call chooses the synthetic release window.' });
+  if (answered) data.replies.push({ id: note.id, at: '2026-01-02T11:' + minute + ':00.000Z', body: 'This call chooses the synthetic release window. Read https://example.invalid/acme/example-app/guide. Then https://example.invalid/acme/example-app/details?mode=phone&section=notes (keep this note).' });
 }
 console.log(JSON.stringify(data));
 `);
@@ -452,6 +452,60 @@ try {
   await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); const history=card.querySelector('[data-call-thread-history]'); const expand=card.querySelector('[data-call-thread-expand]'); if(!history.hidden||!expand||expand.hidden)throw Error('thread should start collapsed'); expand.click(); if(history.hidden)throw Error('expand did not open the thread'); if(!card.querySelector('[data-call-thread-log]').textContent.includes('Firstmate replied')){ const more=card.querySelector('[data-call-thread-history-toggle]'); if(more&&!more.hidden)more.click(); } const entries=[...card.querySelectorAll('.call-thread-entry')]; if(!entries.some(e=>e.textContent.includes('You asked'))||!entries.some(e=>e.textContent.includes('Firstmate replied')&&e.textContent.includes('synthetic release window')))throw Error('thread reply/order missing'); if(!entries.every(e=>e.querySelector('time[datetime]')&&e.querySelector('button')))throw Error('thread time/copy missing'); const box=card.querySelector('[data-call-answer-text]'); if(!(expand.compareDocumentPosition(box)&Node.DOCUMENT_POSITION_FOLLOWING)||!(history.compareDocumentPosition(box)&Node.DOCUMENT_POSITION_FOLLOWING))throw Error('thread is not above the text box'); if(history.getBoundingClientRect().bottom>box.getBoundingClientRect().top+1)throw Error('open history paints below the text box'); return 'thread history reply ordered'; }`);
   await browser('screenshot', path.join(proof, 'captain-thread-expanded-390.png'));
   await browser('screenshot', path.join(proof, 'captain-thread-replied-390.png'));
+  // Native link activation is observed at the last event boundary and cancelled
+  // only by this offline fixture, so no external site is contacted during acceptance.
+  await evaluate(`() => {
+    window.__linkActivations = [];
+    window.__observeLink = event => {
+      const link = event.target.closest?.('.call-message-link');
+      if (!link) return;
+      window.__linkActivations.push({ href: link.href, target: link.target, rel: link.rel, trusted: event.isTrusted, prevented: event.defaultPrevented });
+      event.preventDefault();
+    };
+    window.addEventListener('click', window.__observeLink);
+    return 'offline native link activation observer ready';
+  }`);
+  for (const width of [1280, 820, 390]) {
+    await browser('emulate', '--viewport', `${width}x844x1${width < 1280 ? ',touch' : ''}`);
+    await evaluate(`() => {
+      const card = document.querySelector('[data-call-key="decision:alpha-call"]');
+      const banner = card.querySelector('[data-fm-reply]');
+      const reply = [...card.querySelectorAll('.call-thread-firstmate .call-thread-text')].find(node => node.textContent.startsWith('This call chooses the synthetic release window.'));
+      const links = [...banner.querySelectorAll('a'), ...reply.querySelectorAll('a')];
+      if (links.length !== 4 || !reply.textContent.endsWith('(keep this note).')) throw Error('recorded reply links/text lost');
+      if (card.dataset.callLifecycle !== 'active' || card.querySelector('[data-call-answer-text]').readOnly) throw Error('link rendering changed reply authority');
+      for (const link of links) {
+        const rect = link.getBoundingClientRect();
+        if (rect.width < 44 || rect.height < 44 || rect.right > card.getBoundingClientRect().right + 1 || rect.left < card.getBoundingClientRect().left - 1) throw Error('link target or containment');
+        if (getComputedStyle(link).textDecorationLine !== 'underline') throw Error('link affordance');
+      }
+      if (document.documentElement.scrollWidth > innerWidth || card.scrollWidth > card.clientWidth + 1) throw Error('link overflow');
+      const first = banner.querySelector('a');
+      first.scrollIntoView({block:'center'});
+      first.focus();
+      if (document.activeElement !== first) throw Error('link focus');
+      return 'recorded reply link geometry and focus ' + innerWidth;
+    }`);
+    await browser('press', 'Enter');
+    await browser('press', 'Tab');
+    await evaluate(`() => {
+      const second = document.querySelector('[data-call-key="decision:alpha-call"] [data-fm-reply] a:nth-of-type(2)');
+      if (document.activeElement !== second) throw Error('native link tab order');
+      if (getComputedStyle(second).outlineStyle === 'none') throw Error('link focus indicator');
+      return 'native keyboard link activation and next focus';
+    }`);
+    const work = exec('chrome-devtools-axi', ['run'], { env, timeout: 45000, maxBuffer: 1024 * 1024 });
+    work.child.stdin.end(`await page.click('[data-call-key="decision:alpha-call"] .call-thread-text a[href="https://example.invalid/acme/example-app/guide"]'); console.log('thread link activated');`);
+    results.push((await work).stdout);
+    await evaluate(`() => {
+      const activations = window.__linkActivations.splice(0);
+      if (activations.length !== 2 || activations.some(item => !item.trusted || item.prevented || item.target !== '_blank' || item.rel !== 'noopener noreferrer' || item.href !== 'https://example.invalid/acme/example-app/guide')) throw Error('native link activation intercepted or wrong target ' + JSON.stringify(activations));
+      return 'PASS trusted keyboard and pointer activation, safe blank targets; touch viewport ' + navigator.maxTouchPoints;
+    }`);
+    await browser('screenshot', path.join(proof, `captain-reply-links-${width}.png`));
+  }
+  await evaluate(`() => { window.removeEventListener('click', window.__observeLink); document.activeElement?.blur(); document.body.click(); return 'link observer removed'; }`);
+  await browser('emulate', '--viewport', '1280x844x1');
   await browser('resize', '1280', '844');
   // Shared queue: alpha text is a thread note, and the merge option is an answer.
   const queueWakeCount = (await readFile(path.join(home, 'wake-attempts'), 'utf8')).trim().split('\n').length;

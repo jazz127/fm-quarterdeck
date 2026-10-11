@@ -54,7 +54,7 @@ window.bearingsThread = (() => {
       const body = doc.createElement("p");
       body.className = "call-thread-text";
       const text = entry.text || "";
-      body.textContent = text;
+      window.bearingsView.messageText(body, text, doc);
       item.append(head, body);
       const copy = doc.createElement("button");
       copy.type = "button";

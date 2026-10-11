@@ -114,7 +114,7 @@ window.bearingsLanded = (() => {
           head.append(who);
           const body = doc.createElement("p");
           body.className = "call-thread-text";
-          body.textContent = entry.text || "";
+          window.bearingsView.messageText(body, entry.text || "", doc);
           item.append(head, body);
           return item;
         }));

@@ -1816,7 +1816,7 @@ function renderCallLifecycle() {
       banner.hidden = !showReply;
       if (showReply && api.replyBanner) {
         const text = api.replyBanner(posture.reply);
-        if (banner.textContent !== text) banner.textContent = text;
+        if (banner.textContent !== text) window.bearingsView.messageText(banner, text);
       }
     }
     callProcrastinate?.render(node);
