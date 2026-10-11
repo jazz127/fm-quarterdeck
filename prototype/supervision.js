@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHistoryReader } from "./history-reader.js";
 
 // Outcome ledgers only grow, so each is read as a window of its newest whole
-// records; omitted older outcomes are reported, never a failed request.
+// records; omitted older outcomes are reported. Other reader limits still fail.
 export async function readSupervisionOutcomes(home, publicMessage, reader = createHistoryReader()) {
   const messages = [];
   const sources = [];
