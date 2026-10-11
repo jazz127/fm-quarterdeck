@@ -806,40 +806,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
       if (!projectName) return null;
 
-      let statusEvents = [];
-      const statusActivity = stateNames.includes(statusName) ? new Date((await stat(path.join(resolvedHome, "state", statusName))).mtimeMs) : null;
+      const statusStat = stateNames.includes(statusName) ? await stat(path.join(resolvedHome, "state", statusName)) : null;
+      const statusActivity = statusStat ? new Date(statusStat.mtimeMs) : null;
       // Registered parent-channel files are projected once by the mate adapter.
-      if (stateNames.includes(statusName) && !secondmates.sources.some(({ id }) => id === taskId)) {
-        const statusPath = path.join(resolvedHome, "state", statusName);
-        // Task events are history: a long status log shows its newest whole lines.
-        // Work classification above still folds the whole file.
-        const window = await reader.recent(statusPath);
-        const lines = [];
-        if (!window) statusWarnings.push(`state/${statusName} was not loaded: this request's read budget went to other sources.`);
-        else {
-          if (window.omittedBytes) statusWarnings.push(`state/${statusName}: only its newest whole lines loaded within this request's read budget; older task events are not shown.`);
-          for await (const { line } of window.lines) if (line.trim()) lines.push(line.trim());
-        }
-        statusEvents = lines.map((line, index) => {
-          reader.takeMessage();
-          const event = parseStatusLine(line);
-          // A status file only supplies one clock. Keep its lines on that real mtime
-          // and use file order solely as a stable tie-break, never fake milliseconds.
-          const timestamp = statusActivity;
-          return publicMessage({
-            ...event,
-            timestamp,
-            timestampSource: "mtime",
-            sourceSequence: index,
-            author: taskId,
-            role: "crew",
-            source: `state/${statusName}`,
-            taskId,
-            text: `${event.state}: ${event.text}`,
-            kind: "crew",
-          });
-        });
-      }
+      const eventSource = statusStat && !secondmates.sources.some(({ id }) => id === taskId) ? { statusName, size: statusStat.size, mtime: statusActivity } : null;
       const [briefIntent, lastSteer] = await Promise.all([readBriefIntent(resolvedHome, taskId), includeHistory ? steerActivity(resolvedHome, taskId) : null]);
       return {
         id: taskId,
@@ -849,26 +819,72 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         state: currentWork.get(taskId)?.sourceState || "unknown",
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),
-        events: statusEvents,
+        events: [],
+        eventSource,
         activityAt: lastSteer && (!statusActivity || lastSteer > statusActivity) ? lastSteer : statusActivity,
       };
     }));
     const tasks = taskResults.filter(Boolean);
-    // The fleet outcome ledgers only grow; read them after task events so a long
-    // ledger takes what is left of the record budget rather than starving lanes.
-    const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
     const byTask = new Map(tasks.map((task) => [task.id, task]));
-    for (const event of [...captainNotes, ...outboxMessages, ...supervision.messages]) {
-      const task = byTask.get(event.taskId);
-      if (task && event.timestamp && (!task.activityAt || event.timestamp > task.activityAt)) task.activityAt = event.timestamp;
-    }
+    const raiseActivity = (messages) => {
+      for (const event of messages) {
+        const task = byTask.get(event.taskId);
+        if (task && event.timestamp && (!task.activityAt || event.timestamp > task.activityAt)) task.activityAt = event.timestamp;
+      }
+    };
+    raiseActivity([...captainNotes, ...outboxMessages]);
     // History loading is independent of live execution and completion attention.
-    const visibleTasks = new Set(sessionIds.slice(0, 60));
+    const requestedTasks = new Set(sessionIds.slice(0, 60));
+    const visibleTasks = new Set(requestedTasks);
     for (const project of projects) {
       const ordered = publicSessions(tasks.filter((task) => task.projectName === project.name));
       for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
       for (const session of ordered) if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
     }
+    // Task events are history: a long status log shows its newest whole lines, and
+    // work classification above still folds the whole file. Only tasks this response
+    // shows are read, requested first, then open work, then newest, so an unshown or
+    // older task cannot spend the event budget the shown ones need.
+    const admission = (session) => requestedTasks.has(session.id) ? 0 : ["done", "failed"].includes(session.state) ? 2 : 1;
+    if (includeHistory) for (const { id } of publicSessions(tasks.filter((task) => visibleTasks.has(task.id) && task.eventSource)).sort((a, b) => admission(a) - admission(b))) {
+      const task = byTask.get(id);
+      const { statusName, size, mtime } = task.eventSource;
+      // An empty log is fully read; nonempty history the budget cannot reach is not loaded.
+      const window = size ? await reader.recent(path.join(resolvedHome, "state", statusName)) : null;
+      task.eventsLoaded = !size || Boolean(window);
+      if (!task.eventsLoaded) {
+        statusWarnings.push(`state/${statusName} was not loaded: this request's read budget went to other sources.`);
+        continue;
+      }
+      if (!window) continue;
+      task.eventsOmittedBytes = window.omittedBytes;
+      if (window.omittedBytes) statusWarnings.push(`state/${statusName}: only its newest whole lines loaded within this request's read budget; older task events are not shown.`);
+      let index = 0;
+      for await (const { line: raw } of window.lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        reader.takeMessage();
+        const event = parseStatusLine(line);
+        // A status file only supplies one clock. Keep its lines on that real mtime
+        // and use file order solely as a stable tie-break, never fake milliseconds.
+        task.events.push(publicMessage({
+          ...event,
+          timestamp: mtime,
+          timestampSource: "mtime",
+          sourceSequence: index++,
+          author: task.id,
+          role: "crew",
+          source: `state/${statusName}`,
+          taskId: task.id,
+          text: `${event.state}: ${event.text}`,
+          kind: "crew",
+        }));
+      }
+    }
+    // The fleet outcome ledgers only grow; read them after task events so a long
+    // ledger takes what is left of the record budget rather than starving lanes.
+    const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
+    raiseActivity(supervision.messages);
     if (includeHistory) await Promise.all(tasks.filter((task) => visibleTasks.has(task.id)).map(async (task) => {
       task.events.push(...await readTaskSteers(resolvedHome, task.id, reader));
     }));
@@ -950,7 +966,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         crew: liveTasks.length,
         progress,
         items,
-        sessions: publicSessions(projectTasks).map((session) => ({ ...session, loaded: visibleTasks.has(session.id) })),
+        sessions: publicSessions(projectTasks).map((session) => {
+          const task = byTask.get(session.id);
+          return { ...session, loaded: visibleTasks.has(session.id) && task.eventsLoaded !== false, ...(task.eventsOmittedBytes ? { omittedBytes: task.eventsOmittedBytes } : {}) };
+        }),
         messages: includeHistory ? messages : [],
       };
     });

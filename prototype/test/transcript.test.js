@@ -271,34 +271,70 @@ test("outcome IDs address source bytes across whole, byte-windowed and record-wi
   }
 });
 
-test("task sessions retain status activity clocks when event windows are omitted or trimmed", async (t) => {
+test("task sessions keep status activity clocks and report budget-unread history as not loaded", async (t) => {
   const home = await fixture(t);
   const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
-  await writeFile(path.join(home, "data/backlog.md"), "## Done\n- [x] a - Old work (repo: Alpha)\n- [x] b - Recent work (repo: Alpha)\n- [x] c - Newest work (repo: Alpha)\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## Done\n- [x] a - Old work (repo: Alpha)\n- [x] b - Recent work (repo: Alpha)\n- [x] c - Newest work (repo: Alpha)\n- [x] d - Empty log (repo: Alpha)\n");
   for (const [id, clock] of Object.entries(clocks)) {
     const file = path.join(home, "state", `${id}.status`);
     await writeFile(file, "working: underway\ndone: completed\n");
     await utimes(file, new Date(clock), new Date(clock));
   }
-  for (const [reserve, eventCount] of [[23, 0], [22, 1], [0, 6]]) {
-    const data = await loadFirstmateHome(home, { reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: reserve }) });
-    const lane = data.lanes[0];
-    assert.deepEqual(lane.sessions.map(({ id, updatedAt, loaded }) => ({ id, updatedAt, loaded })), [
-      { id: "c", updatedAt: clocks.c, loaded: true },
-      { id: "b", updatedAt: clocks.b, loaded: true },
-      { id: "a", updatedAt: clocks.a, loaded: false },
-    ], "the two newest completed sessions win independently of retained events");
-    assert.equal(lane.sessions.reduce((count, session) => count + session.eventCount, 0), eventCount);
-    if (eventCount === 0) {
-      assert.deepEqual(lane.messages, []);
-      for (const id of Object.keys(clocks)) assert.ok(data.transcript.warnings.some(warning => warning.includes(`state/${id}.status was not loaded`)));
-    } else if (eventCount === 1) {
-      assert.ok(data.transcript.warnings.some(warning => warning.includes("older task events are not shown")));
-    } else {
-      assert.equal(data.transcript.warnings.some(warning => warning.includes(".status")), false);
-      assert.deepEqual(lane.messages.map(message => message.taskId), ["b", "b", "c", "c"]);
-    }
+  // A genuinely empty log is a successfully read source, not unread history.
+  const empty = path.join(home, "state/d.status");
+  await writeFile(empty, "");
+  await utimes(empty, new Date("2025-12-31T00:00:00.000Z"), new Date("2025-12-31T00:00:00.000Z"));
+  const sessions = (data) => Object.fromEntries(data.lanes[0].sessions.map(({ id, updatedAt, loaded, eventCount }) => [id, { updatedAt, loaded, eventCount }]));
+  const exhausted = await loadFirstmateHome(home, { sessionIds: ["d"], reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: 40 }) });
+  assert.deepEqual(sessions(exhausted), {
+    c: { updatedAt: clocks.c, loaded: false, eventCount: 0 },
+    b: { updatedAt: clocks.b, loaded: false, eventCount: 0 },
+    a: { updatedAt: clocks.a, loaded: false, eventCount: 0 },
+    d: { updatedAt: "2025-12-31T00:00:00.000Z", loaded: true, eventCount: 0 },
+  }, "unread nonempty history keeps its clock but is not loaded; an empty log is loaded");
+  assert.deepEqual(exhausted.lanes[0].messages, []);
+  for (const id of ["b", "c"]) assert.ok(exhausted.transcript.warnings.some(warning => warning.includes(`state/${id}.status was not loaded`)));
+  assert.equal(exhausted.transcript.warnings.some(warning => /state\/[ad]\.status/.test(warning)), false, "unshown and empty logs are not budget gaps");
+  const whole = await loadFirstmateHome(home, { reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: 0 }) });
+  assert.deepEqual(Object.fromEntries(Object.entries(sessions(whole)).map(([id, { loaded }]) => [id, loaded])), { c: true, b: true, a: false, d: false });
+  assert.deepEqual(whole.lanes[0].messages.map(message => message.taskId), ["b", "b", "c", "c"], "only the shown sessions' events are read");
+  assert.equal(whole.transcript.warnings.some(warning => warning.includes(".status")), false);
+});
+
+test("task event windows admit requested, then newest shown sessions within real default limits", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  for (const [id, clock] of Object.entries(clocks)) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await utimes(file, new Date(clock), new Date(clock));
   }
+  const server = createServer({ FM_HOME: home });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const read = async (query = "") => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes${query}`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    const lane = data.lanes.find(entry => entry.sessions.length);
+    return { data, sessions: Object.fromEntries(lane.sessions.map(session => [session.id, session])), texts: new Set(lane.messages.map(message => message.text)) };
+  };
+  for (const query of ["", "?session=c"]) {
+    const { sessions, texts } = await read(query);
+    assert.ok(texts.has("done: c completed") && texts.has("working: c step 0"), `the newest task keeps all its events (${query || "default"})`);
+    assert.equal(sessions.c.loaded, true);
+    assert.equal(sessions.c.omittedBytes, undefined);
+    assert.ok(texts.has("done: b completed"), "the next shown task keeps its newest events");
+    assert.equal([...texts].some(text => text.startsWith("working: a ")), false, "an unshown older task spends no event budget");
+    assert.equal(sessions.a.loaded, false);
+  }
+  const older = await read("?session=a");
+  assert.ok(older.texts.has("done: a completed") && older.texts.has("working: a step 0"), "an explicitly requested older task is read first");
+  assert.equal(older.sessions.a.loaded, true);
+  assert.ok(older.texts.has("done: c completed"), "the newest shown task follows the request");
+  assert.equal(older.sessions.b.loaded, false, "a shown task the budget cannot reach is reported unloaded");
+  assert.ok(older.data.transcript.warnings.some(warning => warning.includes("state/b.status was not loaded")));
 });
 
 test("an outcome ledger beyond the record limit keeps /api/lanes online with its newest outcomes", async (t) => {
