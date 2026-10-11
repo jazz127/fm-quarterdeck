@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       latest_native_bottom:
-        description: 'Run both CI-Q3 retained Latest native-bottom assertions (restoration issue 83)'
+        description: 'Run whole CI-Q3 Latest suite with all assertions (restoration issue 83)'
         type: boolean
         default: false
 permissions:
@@ -69,12 +69,12 @@ jobs:
         continue-on-error: true
         run: npm run test:integration
         working-directory: prototype
-      - name: Chromium reload, retry, history and layout gate
+      - name: Chromium reload, retry, history and layout gate (whole Latest EXCLUDED; opt-in only)
         id: chromium
         continue-on-error: true
         run: npm run test:browser
         working-directory: prototype
-      - name: Opt-in CI-Q3 Latest native-bottom assertions
+      - name: Opt-in CI-Q3 whole Latest suite (all assertions)
         id: native_bottom
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.latest_native_bottom }}
         continue-on-error: true

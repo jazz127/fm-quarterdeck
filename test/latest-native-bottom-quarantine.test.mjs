@@ -6,11 +6,14 @@ import test from 'node:test';
 const source = readFileSync(new URL('../prototype/scripts/latest-browser-pass.mjs', import.meta.url), 'utf8');
 const pkg = JSON.parse(readFileSync(new URL('../prototype/package.json', import.meta.url), 'utf8'));
 const workflow = readFileSync(new URL('../.github/workflows/source-preview.yml', import.meta.url), 'utf8');
+const suites = ['hardening', 'mixed-lane', 'lanes-first-paint', 'last-viewed', 'latest', 'compact-messages', 'kind-navigation', 'message-classification', 'review-annotation-format', 'authorship', 'primary-input', 'captain-call-live', 'notifications'];
+const defaultSuites = suites.filter(name => name !== 'latest');
+const optInArgv = pkg.scripts['test:browser:quarantine-native-bottom'].split(' ').slice(2);
 const contexts = ['post-pointer/touch', 'after-PageUp/Latest-click'];
 const declaration = source.match(/    const atLatest = async [\s\S]*?\n    };/)[0];
 const flag = source.match(/const includeNativeBottom = ([^;]+);/)[1];
 
-// Execute the production function and CLI selection, without launching Chromium.
+// Controlled contract probes execute the retained helper and CLI selection; no Chromium or native acceptance.
 function fixture(argv = [], bottom = 0, failedCompanion = -1) {
   const output = [], probes = [];
   const atLatest = new Function('assert', 'distance', 'evaluate', 'process', 'console', 'width', 'height',
@@ -23,7 +26,7 @@ function fixture(argv = [], bottom = 0, failedCompanion = -1) {
 }
 
 for (const context of contexts) {
-  test(`default excludes ${context} distance assertion and reports its exclusion truthfully`, async () => {
+  test(`direct Latest invocation without opt-in retains ${context} exclusion behavior`, async () => {
     const f = fixture([], 120);
     await f.atLatest({ quarantineNativeBottom: context });
     assert.equal(f.probes.length, 3, 'all hidden/page/row companion assertions still execute');
@@ -35,20 +38,20 @@ for (const context of contexts) {
   });
 
   test(`explicit opt-in executes ${context} unchanged assertion and propagates failure`, async () => {
-    const f = fixture(['--include-quarantined-native-bottom'], 2);
+    const f = fixture(optInArgv, 2);
     await assert.rejects(f.atLatest({ quarantineNativeBottom: context }), {
       code: 'ERR_ASSERTION', message: 'Latest reaches the native scroll bottom',
     });
     assert.deepEqual(f.probes, ['distance']);
     assert.deepEqual(f.output, []);
-    const passing = fixture(['--include-quarantined-native-bottom'], 1);
+    const passing = fixture(optInArgv, 1);
     await passing.atLatest({ quarantineNativeBottom: context });
     assert.equal(passing.probes.length, 4);
     assert.deepEqual(passing.output, []);
   });
 
   test(`${context} hidden/page/row companion failures remain failures with and without opt-in`, async () => {
-    for (const argv of [[], ['--include-quarantined-native-bottom']]) {
+    for (const argv of [[], optInArgv]) {
       for (const companion of [0, 1, 2]) {
         const f = fixture(argv, 0, companion);
         await assert.rejects(f.atLatest({ quarantineNativeBottom: context }), { code: 'ERR_ASSERTION' });
@@ -58,7 +61,7 @@ for (const context of contexts) {
   });
 }
 
-test('both nominated callers report distinct exclusions in the default run', async () => {
+test('direct Latest invocation without opt-in retains distinct caller exclusions', async () => {
   const f = fixture([], 120);
   for (const context of contexts) await f.atLatest({ quarantineNativeBottom: context });
   assert.equal(f.output.length, 2);
@@ -66,7 +69,7 @@ test('both nominated callers report distinct exclusions in the default run', asy
   assert.doesNotMatch(f.output.join('\n'), /passed/);
 });
 
-test('only the two nominated callers are quarantined; all other Latest contexts and default suites remain', () => {
+test('whole Latest opt-in retains all caller contexts, native actions and companions', () => {
   assert.deepEqual([...source.matchAll(/await atLatest\(\{ quarantineNativeBottom: "([^"]+)" \}\);/g)].map(match => match[1]), contexts);
   assert.equal((source.match(/await atLatest\(\);/g) || []).length, 6);
   assert.match(source, /assert\.ok\(await distance\(\) <= 1, "Latest reaches the native scroll bottom"\);/);
@@ -77,9 +80,62 @@ test('only the two nominated callers are quarantined; all other Latest contexts 
     assert.ok(source.includes(retained), retained);
   }
   assert.doesNotMatch(source, /catch\s*\(/, 'assertion failures cannot be caught and passed');
-  const suites = ['hardening', 'mixed-lane', 'lanes-first-paint', 'last-viewed', 'latest', 'compact-messages', 'kind-navigation', 'message-classification', 'review-annotation-format', 'authorship', 'primary-input', 'captain-call-live', 'notifications'];
-  assert.equal(pkg.scripts['test:browser'], suites.map(name => `node scripts/${name}-browser-pass.mjs`).join(' && '));
   assert.equal(pkg.scripts['test:browser:quarantine-native-bottom'], 'node scripts/latest-browser-pass.mjs --include-quarantined-native-bottom');
+  assert.deepEqual(optInArgv, ['--include-quarantined-native-bottom']);
+});
+
+test('opt-in enables native bottom and all companions at every retained Latest caller', async () => {
+  const callers = [...source.matchAll(/await atLatest\((?:\{ quarantineNativeBottom: "([^"]+)" \})?\);/g)];
+  assert.equal(callers.length, 8);
+  for (const [, context] of callers) {
+    const options = context ? { quarantineNativeBottom: context } : undefined;
+    const passing = fixture(optInArgv, 1);
+    await passing.atLatest(options);
+    assert.equal(passing.probes.length, 4);
+    assert.deepEqual(passing.output, []);
+    await assert.rejects(fixture(optInArgv, 2).atLatest(options), /Latest reaches the native scroll bottom/);
+    for (const companion of [0, 1, 2]) {
+      await assert.rejects(fixture(optInArgv, 0, companion).atLatest(options), { code: 'ERR_ASSERTION' });
+    }
+  }
+});
+
+// Substitute only the node process for shell entry-point probes, never launch a browser.
+function entryPoint(script, failedScript = '') {
+  return spawnSync('/bin/bash', ['-c', `node() { printf 'probe:%s\\n' "$*"; [ "$1" != "$FAILED_SCRIPT" ]; }\n${script}`], {
+    env: { FAILED_SCRIPT: failedScript }, encoding: 'utf8',
+  });
+}
+
+test('default gate explicitly excludes whole Latest and invokes every other suite in order', () => {
+  const parts = pkg.scripts['test:browser'].split(' && ');
+  assert.match(parts[0], /^echo 'CI-Q3 whole Latest browser pass EXCLUDED; opt-in: npm run test:browser:quarantine-native-bottom; https:\/\/github.com\/sthi-1005\/fm-quarterdeck\/issues\/83 \(not native acceptance\)'$/);
+  assert.deepEqual(parts.slice(1), defaultSuites.map(name => `node scripts/${name}-browser-pass.mjs`));
+  const result = entryPoint(pkg.scripts['test:browser']);
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split('\n');
+  assert.match(lines[0], /whole Latest browser pass EXCLUDED.*opt-in.*not native acceptance/);
+  assert.doesNotMatch(result.stdout, /passed/);
+  assert.deepEqual(lines.slice(1), defaultSuites.map(name => `probe:scripts/${name}-browser-pass.mjs`));
+  assert.ok(!lines.some(line => line.startsWith('probe:scripts/latest-browser-pass.mjs')));
+});
+
+test('unchanged opt-in entry invokes whole Latest with native assertions enabled and propagates process failure', () => {
+  const script = pkg.scripts['test:browser:quarantine-native-bottom'];
+  for (const failed of ['', 'scripts/latest-browser-pass.mjs']) {
+    const result = entryPoint(script, failed);
+    assert.equal(result.status, failed ? 1 : 0, result.stderr);
+    assert.equal(result.stdout, 'probe:scripts/latest-browser-pass.mjs --include-quarantined-native-bottom\n');
+    assert.doesNotMatch(result.stdout, /EXCLUDED|passed/);
+  }
+});
+
+test('default gate still propagates unrelated suite failures', () => {
+  const result = entryPoint(pkg.scripts['test:browser'], 'scripts/primary-input-browser-pass.mjs');
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /whole Latest browser pass EXCLUDED/);
+  assert.match(result.stdout, /probe:scripts\/primary-input-browser-pass.mjs/);
+  assert.doesNotMatch(result.stdout, /probe:scripts\/(captain-call-live|notifications)-browser-pass.mjs/);
 });
 
 test('CI opt-in is explicit dispatch only, and its failure fails the advisory job', () => {
