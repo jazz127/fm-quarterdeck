@@ -241,6 +241,38 @@ test("fleet notes use the durable ledger, real epoch, project routing and no sil
   assert.equal(data.transcript.outcomeSources.length, 2);
 });
 
+test("an outcome ledger beyond the record limit keeps /api/lanes online with its newest outcomes", async (t) => {
+  const home = await fixture(t);
+  await writeFile(path.join(home, "state/alpha-task.meta"), "project=Alpha\n");
+  await writeFile(path.join(home, "state/alpha-task.status"), "working: underway\n");
+  const outcome = (i) => JSON.stringify({ epoch: 1700000000 + i, task: "alpha-task", summary: `Outcome ${i}` }) + "\n";
+  const ledger = path.join(home, "state/branch-outcomes.jsonl");
+  await writeFile(ledger, Array.from({ length: 20001 }, (_, i) => outcome(i)).join(""));
+  const server = createServer({ FM_HOME: home });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const read = async () => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    return { data, messages: data.lanes.flatMap(lane => lane.messages) };
+  };
+  const { data, messages } = await read();
+  const notes = messages.filter(m => m.kind === "supervision");
+  assert.ok(notes.some(m => m.text === "alpha-task: Outcome 20000"), "the newest outcome is shown");
+  assert.equal(notes.some(m => m.text === "alpha-task: Outcome 0"), false, "older outcomes are not loaded");
+  assert.ok(messages.some(m => m.text === "working: underway"), "task status events still load");
+  const [source] = data.transcript.outcomeSources;
+  assert.ok(source.loaded && source.omittedBytes > 0 && source.messageCount < 20001);
+  assert.ok(data.transcript.warnings.some(w => /branch-outcomes\.jsonl: only its newest whole records loaded.*older outcomes are not shown/.test(w)));
+  // Windowed outcomes are identified by byte offset, so appending keeps their identity.
+  const id = notes.find(m => m.text === "alpha-task: Outcome 20000").recordId;
+  await appendFile(ledger, outcome(20001));
+  const later = await read();
+  assert.equal(later.messages.find(m => m.text === "alpha-task: Outcome 20000").recordId, id);
+  assert.ok(later.messages.some(m => m.text === "alpha-task: Outcome 20001"));
+});
+
 test("oversized sources share the request budget: newest active windows load, a starved source is reported unloaded", async (t) => {
   const home = await fixture(t);
   for (const [n, day] of [["a", 1], ["b", 2], ["c", 3]]) {
@@ -482,7 +514,11 @@ test("actual 8 MiB reader boundary retains newest whole records within byte and 
   await writeFile(file, largeTurn("x".repeat(MiB)));
   await assert.rejects(createHistoryReader().recent(file), HistoryLimitError, "retained oversized single records still fail");
   await writeFile(file, "{}\n".repeat(20001));
-  await assert.rejects(createHistoryReader().recent(file), HistoryLimitError, "retained records still obey the request bound");
+  const capped = await createHistoryReader().recent(file);
+  const kept = await largeEntries(capped);
+  assert.equal(kept.length, 15000, "a window keeps only the newest records its record budget holds");
+  assert.equal(capped.omittedBytes, 5001 * 3);
+  assert.equal(kept.at(-1).offset, 20000 * 3, "the newest record is retained");
 });
 
 test("actual Claude /api/lanes stays fresh at and above 8 MiB, including append and partial-tail rereads", async (t) => {
@@ -529,7 +565,7 @@ test("actual Claude /api/lanes stays fresh at and above 8 MiB, including append 
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /History exceeds safe read limits/);
   await writeFile(file, "{}\n".repeat(20001));
-  response = await fetch(base);
-  assert.equal(response.status, 503);
-  assert.match((await response.json()).error, /History exceeds safe read limits/);
+  const capped = await read();
+  assert.ok(capped.data.transcript.sessions[0].loaded && capped.data.transcript.sessions[0].omittedBytes > 0, "a record-capped window stays online");
+  assert.ok(capped.data.transcript.warnings.some(w => /older history in this source is not shown/.test(w)));
 });

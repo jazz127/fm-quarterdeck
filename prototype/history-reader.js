@@ -7,15 +7,27 @@ export class HistoryLimitError extends Error {
 // One reader per request, shared by transcript, status and legacy note loaders.
 // Bounds apply to actual bytes (including a file growing after stat), not pages
 // rendered in the browser. Fail the request explicitly rather than omit records;
-// only `recent` windows a source, and it reports what it left unread.
+// only `recent` windows a source (by bytes and records), and it reports what it left unread.
 export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBytes = 32 * 1024 * 1024,
   maxLineBytes = 1024 * 1024, maxFiles = 2048, maxRecords = 20000, maxMessages = 20000,
-  windowReserveBytes = 8 * 1024 * 1024 } = {}) {
+  windowReserveBytes = 8 * 1024 * 1024, windowReserveRecords = Math.floor(maxRecords / 4) } = {}) {
   let bytes = 0, files = 0, records = 0, messages = 0;
   const takeMessage = () => { if (++messages > maxMessages) throw new HistoryLimitError(); };
-  // Bytes a transcript window may still take while leaving the reserve for
-  // status, outcome and note loaders sharing this request.
+  // Bytes a window may still take while leaving the reserve for whole-file
+  // reads (backlog, metadata, notes) sharing this request.
   const windowBudget = () => Math.max(0, Math.min(maxFileBytes, maxTotalBytes - windowReserveBytes - bytes));
+  // Records a window may still take, with a reserve for the same whole-file reads.
+  const windowRecords = () => Math.max(0, maxRecords - windowReserveRecords - records);
+  // Offset after the oldest records that do not fit `allowed`; a final record
+  // without a newline is the newest and counts as one.
+  function newestRecordsStart(buffer, allowed) {
+    let total = 0;
+    for (const byte of buffer) if (byte === 10) total += 1;
+    if (buffer.length && buffer[buffer.length - 1] !== 10) total += 1;
+    let drop = total - allowed, offset = 0;
+    while (drop-- > 0) offset = buffer.indexOf(10, offset) + 1;
+    return offset;
+  }
   function countRecords(buffer) {
     let lineBytes = 0;
     for (const byte of buffer) {
@@ -27,6 +39,8 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     if (lineBytes && ++records > maxRecords) throw new HistoryLimitError();
   }
   async function read(filename, { firstOnly = false, window = false, maxBytes = maxFileBytes } = {}) {
+    // No record budget left for a window: leave the source unread.
+    if (window && !windowRecords()) return null;
     if (++files > maxFiles) throw new HistoryLimitError();
     const file = await open(filename, "r");
     try {
@@ -66,6 +80,12 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
         omittedBytes += newline < 0 ? buffer.length : newline + 1;
         buffer = newline < 0 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
       }
+      if (window) {
+        // Keep the newest whole records the request's record budget can still hold.
+        const kept = newestRecordsStart(buffer, windowRecords());
+        omittedBytes += kept;
+        buffer = buffer.subarray(kept);
+      }
       countRecords(buffer);
       const text = buffer.toString("utf8");
       return window ? { text, omittedBytes, totalBytes: start + size } : text;
@@ -92,7 +112,7 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     text: (filename) => read(filename),
     firstLine: (filename) => read(filename, { firstOnly: true }),
     lines: async function* (filename) { yield* split(await read(filename)); },
-    // Newest whole records of a transcript within the remaining window budget.
+    // Newest whole records of a source within the remaining byte and record budgets.
     // Null when this request's remaining budget cannot hold a useful window.
     recent: async (filename, maxBytes = maxFileBytes) => {
       const window = await read(filename, { window: true, maxBytes });

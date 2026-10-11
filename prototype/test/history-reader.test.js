@@ -20,7 +20,7 @@ test("history budgets bound bytes, lines, records and file count without changin
   assert.equal(await createHistoryReader().text(file), "abc\ndef\n", "limits never edit source");
 });
 
-test("recent windows keep only whole newest records, report omitted bytes and respect the request budget", async (t) => {
+test("recent windows keep only whole newest records, report omitted bytes and respect the request byte and record budgets", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "history-window-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, "source.jsonl");
@@ -45,4 +45,13 @@ test("recent windows keep only whole newest records, report omitted bytes and re
   await shared.recent(file);
   assert.equal(await shared.recent(file), null, "a window that cannot hold one record is left unread");
   await assert.rejects(shared.text(file), HistoryLimitError, "whole-file reads keep the total bound");
+  const counted = createHistoryReader({ maxRecords: 6, windowReserveRecords: 2 });
+  const capped = await read(counted);
+  assert.deepEqual(capped.records.map(({ line }) => JSON.parse(line).n), [6, 7, 8, 9], "a record budget keeps the newest records");
+  assert.equal(capped.window.omittedBytes, capped.records[0].offset, "records left out are reported as omitted bytes");
+  assert.equal(await counted.recent(file), null, "a window with no record budget left is left unread");
+  const metadata = path.join(root, "metadata.md");
+  await writeFile(metadata, "a\nb\n");
+  assert.equal(await counted.text(metadata), "a\nb\n", "the reserve stays available to whole-file reads");
+  await assert.rejects(counted.text(metadata), HistoryLimitError, "whole-file reads keep the record bound");
 });
