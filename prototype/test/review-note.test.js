@@ -98,6 +98,71 @@ test("emitted outcome IDs and legacy anchors round-trip through review API recei
   }
 });
 
+test("emitted mate status and reply identities and lane-block anchors survive v1/v2 submissions", async (t) => {
+  const root = await temp(t);
+  const home = path.join(root, "home"), receipts = path.join(root, "receipts");
+  await mkdir(path.join(home, "data"), { recursive: true });
+  await mkdir(path.join(home, "state/inbox/.replies"), { recursive: true });
+  await writeFile(path.join(home, "data/projects.md"), "- Demo - Synthetic review identities.\n");
+  const mateIds = ["mate-alpha", "m".repeat(100)];
+  await writeFile(path.join(home, "data/secondmates.md"), mateIds.map(id =>
+    `- ${id} - Example mate (home: /home/example/${id}; scope: Synthetic checks; projects: Demo; added 2026-01-01)`
+  ).join("\n"));
+  const firstLine = "working [at=1700000000]: é first update\n";
+  for (const id of mateIds) await writeFile(path.join(home, `state/${id}.status`), `${firstLine}done [at=1700000001]: Second update\n`);
+  const replyId = "1700000002-header";
+  const mixedId = `123456789012-${"a".repeat(100)}`;
+  await writeFile(path.join(home, "state/inbox/.replies/1700000001"), "at=2026-01-01T00:00:00Z\n--\nPlain reply");
+  await writeFile(path.join(home, "state/inbox/.replies/1700000002_file"), `id=${replyId}\nat=2026-01-01T00:00:01Z\n--\nHeader-identified reply`);
+  await writeFile(path.join(home, `state/inbox/.replies/${mixedId}`), "at=2026-01-01T00:00:02Z\n--\n[fm-lane General]\nGeneral update\n[end General]\n\n[fm-lane Demo]\nDemo update\n[end Demo]");
+  const messages = (await loadFirstmateHome(home)).lanes.flatMap(lane => lane.messages);
+  const recordIds = [...new Set(messages.map(message => message.recordId))];
+  assert.deepEqual(recordIds.sort(), [
+    ...mateIds.flatMap(id => [`state/${id}.status@0`, `state/${id}.status@${Buffer.byteLength(firstLine)}`]),
+    "state/inbox/.replies/1700000001", `state/inbox/.replies/${replyId}`,
+    `state/inbox/.replies/${mixedId}`,
+  ].sort());
+  const replyBlocks = [`state/inbox/.replies/${mixedId}:block:0`, `state/inbox/.replies/${mixedId}:block:1`];
+  const server = createServer({}, {
+    revisionResolver: { initial: version, snapshot: async () => version },
+    localReviewDeliver: body => deliverLocalReview(body, receipts),
+    localReviewReceipt: body => reconcileLocalReview(body, receipts),
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = wire => fetch(`${base}/api/review`, { method: "POST", headers: { origin: base, "content-type": "application/json" }, body: JSON.stringify(wire) });
+  for (const schema of ["fm-agentos-review.v1", "fm-agentos-review.v2"]) {
+    const entriesFor = ids => ids.map(recordId => schema === "fm-agentos-review.v2"
+      ? { ...entry, record: { recordId } }
+      : { kind: "lane-message-annotation", text: "Clarify this", route: payload.route, version, region: null, target: { type: "record", recordId } });
+    const wire = { ...payload, schema, batchId: randomUUID(), entries: entriesFor([...recordIds, ...replyBlocks]) };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await post(wire);
+      assert.equal(response.status, 200, schema);
+      assert.deepEqual(await response.json(), { receiptId: `local:${wire.batchId}`, delivery: "local" });
+    }
+    const saved = JSON.parse(await readFile(path.join(receipts, `${wire.batchId}.json`), "utf8")).payload;
+    assert.deepEqual(saved.entries, wire.entries);
+    assert.deepEqual((await reconcileLocalReview(wire, receipts)).payload, saved);
+    if (schema === "fm-agentos-review.v2") assert.deepEqual(parseReviewNote(formatReviewNote(saved)).prompts, wire.entries);
+    for (const recordId of [
+      "/state/mate-alpha.status@0", "state/../mate-alpha.status@0", "state/./mate-alpha.status@0", "state/nested/mate-alpha.status@0",
+      `state/${"m".repeat(101)}.status@0`, "state/mate-alpha.status", "state/mate-alpha.status:1", "state/mate-alpha.status@01",
+      "state/mate-alpha.status@-1", "state/mate-alpha.status@1.5", "state/mate-alpha.status@0:0", "state/mate-alpha.status@0:block:0", "state/mate-alpha.status@0\n",
+      "state/inbox/.replies/../1700000001", "state/inbox/.replies/./1700000001", "state/inbox/.replies/1700000001/extra",
+      "state/inbox/.replies/%2e%2e", "state/inbox/.replies/reply", "state/inbox/.replies/1234567890123", "state/inbox/.replies/1-",
+      `state/inbox/.replies/1-${"a".repeat(101)}`, "state/inbox/.replies/1700000001@0", "state/inbox/.replies/1700000001:0",
+      "state/inbox/.replies/1700000001:block:-1", "state/inbox/.replies/1700000001:block:01", "state/inbox/.replies/1700000001:block:1.5",
+      "state/inbox/.replies/1700000001:block:0:block:1", "state/inbox/.replies/1700000001:block:0\n", "x".repeat(1001),
+    ]) {
+      const rejected = { ...wire, batchId: randomUUID(), entries: entriesFor([recordIds[0], recordId]) };
+      assert.equal((await post(rejected)).status, 400, `${schema} ${recordId}`);
+      await assert.rejects(readFile(path.join(receipts, `${rejected.batchId}.json`)), { code: "ENOENT" });
+    }
+  }
+});
+
 test("mixed v1/v2 receipts retain same-ID reconciliation and annotation counts", async (t) => {
   const dir = await temp(t);
   const legacy = { ...payload, schema: "fm-agentos-review.v1", batchId: "00000000-0000-4000-8000-000000000001", entries: [{ kind: "annotation", text: "Fix", route: payload.route, version, region: { id: "card", label: "Card" } }] };

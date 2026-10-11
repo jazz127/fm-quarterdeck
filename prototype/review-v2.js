@@ -3,9 +3,11 @@ const keys = (value, allowed) => value && typeof value === "object" && !Array.is
 const string = (value, max) => typeof value === "string" && value.length <= max;
 export const validReviewRoute = (value) => string(value, 512) && /^#(?:lanes(?:\/[^\s#?]*)?|overview|work|expenses|quota|preferences|closed)$/.test(value);
 export function validRecordId(value) {
-  if (!string(value, 1000)) return false;
+  if (!string(value, 1000) || /[\r\n]/.test(value) || value.split("/").some((part) => part === "." || part === "..")) return false;
+  if (/^state\/[A-Za-z0-9._-]{1,100}\.status@(0|[1-9]\d*)$/.test(value) ||
+      /^state\/inbox\/\.replies\/[0-9]{1,12}(?:[-_.][A-Za-z0-9_.-]{1,100})?(?::block:(0|[1-9]\d*))?$/.test(value)) return true;
   const match = value.match(/^((?:main-pi-session|claude-main-session|state)\/[a-zA-Z0-9._/\-]+\.jsonl)(?::([1-9]\d*)|@(0|[1-9]\d*))(?::(0|[1-9]\d*))?(?::block:(0|[1-9]\d*))?$/);
-  if (!match || match[1].split("/").some((part) => part === "." || part === "..")) return false;
+  if (!match) return false;
   return ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"].includes(match[1]) ? match[4] === undefined && match[5] === undefined : match[4] !== undefined;
 }
 const lanes = (value) => Array.isArray(value) && value.length > 0 && value.length <= 30 && value.every((lane) => string(lane, 160) && lane.length > 0);
