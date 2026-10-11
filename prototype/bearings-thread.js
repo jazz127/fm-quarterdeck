@@ -19,7 +19,7 @@ export const THREAD_NOTE_TAG = "fm-quarterdeck-thread";
 export const MAX_THREAD_BODY_BYTES = 4096;
 export const MAX_QUESTION_BYTES = 2000;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CARD_KEY = /^(?:decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})?|(?:merge|chat|landed):[A-Za-z0-9._-]{1,160})$/;
+const CARD_KEY = /^(?:(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}|decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})$/;
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const PREFIX = "quarterdeck-thread:";
@@ -173,24 +173,23 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
     while (sent.size > MAX_REMEMBERED) sent.delete(sent.keys().next().value);
   };
   return {
-    // A question may be asked about an interactive open card, answerable or not.
-    // A retry of the same request id resends the identical note (idempotent in Firstmate)
-    // even after the card left.
-    async submit(body, model) {
+    // A question may be asked about any open card, answerable or not. A retry of the same
+    // request id resends the identical note (idempotent in Firstmate) even after the card left.
+    async submit(body, model, { immediate = false } = {}) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
       const digest = shortHash([parsed.key, parsed.text]);
-      const previous = sent.get(parsed.requestId);
+      const previous = sent.get(parsed.requestId) || await note.lookup?.(threadRequestId(parsed.key, parsed.requestId));
       if (previous && previous.digest !== digest) refuse(409, "request-reused", "This request id was already used for a different question");
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
         if (card.readOnly) refuse(409, "read-only", "This call is answered in its own home");
-        return { digest, key: parsed.key, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
+        return { digest, key: parsed.key, display: parsed.text, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);
       let receipt;
-      try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
+      try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text, { record, immediate }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
       return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at };
     },
     // The card's own history, oldest first. Inbox receipts are required; the transcript is
@@ -202,7 +201,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const entries = [];
       const data = await receipts(home);
       const notes = new Map();
-      for (const item of [...data.pending, ...data.handled]) if (item?.id && !notes.has(item.id)) notes.set(item.id, item);
+      for (const item of [...data.pending, ...data.handled]) if (item?.id && !notes.has(item.request_id || item.id)) notes.set(item.request_id || item.id, item);
       for (const item of notes.values()) {
         const match = noteForCard(item, key, card);
         if (!match) continue;

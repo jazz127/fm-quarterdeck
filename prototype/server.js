@@ -1,3 +1,5 @@
+import { createNotificationService, notificationConfiguration } from "./notifications.js";
+import { deviceId } from "./notification-state.js";
 import { parseReviewNote } from "./review-note.js";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
@@ -12,6 +14,7 @@ import { parseStatusLine, parseBacklogTask, holdWaitingOn } from "./firstmate-re
 import { PreviewLifecycle } from "./preview-lifecycle.js";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
+import { readSecondmateMessages } from "./secondmate-messages.js";
 import { readConversationTranscript } from "./transcript.js";
 import { readFirstmateActivity } from "./firstmate-activity.js";
 import { compactLanes } from "./lane-payload.js";
@@ -29,8 +32,10 @@ import { readPreferences } from "./preferences.js";
 import { readHealthPreferences, saveHealthPreferences, validHealthPreferences } from "./health-preferences.js";
 import { createRevisionResolver } from "./revision.js";
 import { reviewVersion, reviewConfiguration, validateReviewPayload, reconcileLocalReview, deliverReview, deliverLocalReview, awaitingReviewCount, localReviewStatus } from "./review.js";
-import { announceReview, inboxReady, inboxReceipts, inboxReviewState } from "./inbox.js";
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { createInboxBatcher } from "./inbox-batcher.js";
+import { announceReview, inboxReady, inboxReviewState, SAFE_NOTE_ID } from "./inbox.js";
+import { VERIFIED_CAPTAIN, inboxInput, verifiedQuarterdeckNote } from "./authorship.js";
+import { lstat, open, readFile, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,7 +57,10 @@ const STATIC_FILES = new Map([
   ["/icons/quarterdeck-192.png", ["icons/quarterdeck-192.png", "image/png"]],
   ["/icons/quarterdeck-512.png", ["icons/quarterdeck-512.png", "image/png"]],
   ["/icons/apple-touch-icon-180.png", ["icons/apple-touch-icon-180.png", "image/png"]],
+  ["/notifications-ui.js", ["notifications-ui.js", "text/javascript; charset=utf-8"]],
+  ["/notifications-worker.js", ["notifications-worker.js", "text/javascript; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/chat-ask-extraction.js", ["chat-ask-extraction.js", "text/javascript; charset=utf-8"]],
   ["/sidebar-version.js", ["sidebar-version.js", "text/javascript; charset=utf-8"]],
   ["/work-hierarchy.js", ["work-hierarchy.js", "text/javascript; charset=utf-8"]],
   ["/bulk-controls.js", ["bulk-controls.js", "text/javascript; charset=utf-8"]],
@@ -62,6 +70,7 @@ const STATIC_FILES = new Map([
   ["/message-font-size.js", ["message-font-size.js", "text/javascript; charset=utf-8"]],
   ["/quota-view-model.js", ["quota-view-model.js", "text/javascript; charset=utf-8"]],
   ["/cost-view-model.js", ["cost-view-model.js", "text/javascript; charset=utf-8"]],
+  ["/inbox-pending.js", ["inbox-pending.js", "text/javascript; charset=utf-8"]],
   ["/review-target.js", ["review-target.js", "text/javascript; charset=utf-8"]],
   ["/review-client.js", ["review-client.js", "text/javascript; charset=utf-8"]],
   ["/panel-resize.js", ["panel-resize.js", "text/javascript; charset=utf-8"]],
@@ -79,6 +88,7 @@ const STATIC_FILES = new Map([
   ["/bearings-thread-panel.js", ["bearings-thread-panel.js", "text/javascript; charset=utf-8"]],
   ["/bearings-procrastinate.js", ["bearings-procrastinate.js", "text/javascript; charset=utf-8"]],
   ["/bearings-landed.js", ["bearings-landed.js", "text/javascript; charset=utf-8"]],
+  ["/bearings-work.js", ["bearings-work.js", "text/javascript; charset=utf-8"]],
   ["/overview-tabs.js", ["overview-tabs.js", "text/javascript; charset=utf-8"]],
   ["/call-lifecycle.js", ["call-lifecycle.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
@@ -387,8 +397,8 @@ function publicMessage({ author, role, source, text, timestamp, timestampSource 
 }
 
 function messageOrder(message) {
-  if (message.role === "captain") return 0;
-  if (message.kind === "thinking") return 1;
+  if (message.role === "captain" || message.kind === "input") return 0;
+  if (message.kind === "thinking" || message.kind === "narration") return 1;
   if (message.kind === "crew") return 3;
   return 2;
 }
@@ -420,7 +430,8 @@ function publicSessions(tasks) {
   }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
-async function readRecordFile(filePath, source, role, defaultAuthor, reader) {
+// `identify(headers, body)` returns the record's author/role/state/kind.
+async function readRecordFile(filePath, source, identify, reader) {
   const [text, fileStat] = await Promise.all([reader.text(filePath), stat(filePath)]);
   const parsed = parseHeaderRecord(text);
   if (!parsed.body) return null;
@@ -428,16 +439,13 @@ async function readRecordFile(filePath, source, role, defaultAuthor, reader) {
   const isSteer = parsed.headers.schema === "fm-task-inbox.v1";
   reader.takeMessage();
   return publicMessage({
-    author: isSteer ? "Firstmate" : parsed.headers.author || defaultAuthor,
-    role: isSteer ? "firstmate" : role,
-    kind: isSteer ? "steer" : "conversation",
+    ...(isSteer ? { author: "Firstmate", role: "firstmate", kind: "steer", state: "firstmate" } : await identify(parsed.headers, parsed.body)),
     source,
     text: parsed.body,
     ...(/^agentos-review:[0-9a-f-]{36}$/i.test(parsed.headers.request_id || "") ? { review: parseReviewNote(parsed.body) } : {}),
     timestamp,
     timestampSource,
     taskId: parsed.headers.task_id || parsed.headers.work_id || parsed.headers.endpoint_task_id || null,
-    state: role,
   });
 }
 
@@ -469,25 +477,44 @@ async function readTaskSteers(home, taskId, reader) {
   for (const [directory, sourceRoot] of locations) {
     for (const name of await filesInOptionalDirectory(directory)) {
       if (!name.endsWith(".msg")) continue;
-      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, "firstmate", "Firstmate", reader);
+      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, (headers) => ({ author: headers.author || "Firstmate", role: "firstmate", kind: "conversation", state: "firstmate" }), reader);
       if (message) messages.push({ ...message, taskId, kind: "steer" });
     }
   }
   return messages;
 }
 
+// Presence in an inbox is not authorship: only a verified Quarterdeck send is the
+// Captain's (authorship.js). Every other note, including any `author=` header, is
+// unverified input. Firstmate's own inbox is state/inbox; legacy inbox/ never verifies.
 async function readCaptainNotes(home, reader) {
+  const firstmateInbox = path.join(home, "state", "inbox");
   const locations = [
-    [path.join(home, "inbox"), "inbox"],
-    [path.join(home, "inbox", "handled"), "inbox/handled"],
-    [path.join(home, "state", "inbox"), "state/inbox"],
-    [path.join(home, "state", "inbox", "handled"), "state/inbox/handled"],
+    [path.join(home, "inbox"), "inbox", false],
+    [path.join(home, "inbox", "handled"), "inbox/handled", false],
+    [firstmateInbox, "state/inbox", true],
+    [path.join(firstmateInbox, "handled"), "state/inbox/handled", true],
   ];
+  // A reservation is one short note id; read at most 256 bytes outside the history budget.
+  const reservation = async (requestId) => {
+    const reserved = path.join(firstmateInbox, ".requests", requestId);
+    let file;
+    try {
+      if (!(await lstat(reserved)).isFile()) return null;
+      file = await open(reserved, "r");
+    } catch (error) { if (error.code === "ENOENT" || error.code === "ENOTDIR") return null; throw error; }
+    try {
+      const buffer = Buffer.alloc(256);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      return buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/)[0].trim();
+    } finally { await file.close(); }
+  };
   const messages = [];
-  for (const [directory, sourceRoot] of locations) {
+  for (const [directory, sourceRoot, inFirstmateInbox] of locations) {
     for (const name of await filesInOptionalDirectory(directory)) {
       if (!name.endsWith(".note") && !name.endsWith(".msg")) continue;
-      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, "captain", "Captain", reader);
+      const identify = async (headers, body) => await verifiedQuarterdeckNote({ name, inFirstmateInbox, headers, body, reservation }) ? VERIFIED_CAPTAIN : inboxInput();
+      const message = await readRecordFile(path.join(directory, name), `${sourceRoot}/${name}`, identify, reader);
       if (message) messages.push(message);
     }
   }
@@ -681,6 +708,58 @@ async function readOptionalBrief(home, id) {
   } finally { await handle?.close(); }
 }
 
+// Captain-facing replies written by `fm-inbox.sh reply` live in state/inbox/.replies.
+// Review reads them through receipts; Fleet Chats reads the same files directly.
+// Symlinks are not followed. Names that are not note ids are ignored.
+async function readInboxReplies(home, reader) {
+  const directory = path.join(home, "state", "inbox", ".replies");
+  let info;
+  try { info = await lstat(directory); }
+  catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return []; throw error; }
+  if (!info.isDirectory()) return [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  const messages = [];
+  const seen = new Set();
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!SAFE_NOTE_ID.test(entry.name) || entry.isSymbolicLink() || !entry.isFile()) continue;
+    const fullPath = path.join(directory, entry.name);
+    let fileStat;
+    try { fileStat = await lstat(fullPath); }
+    catch (error) { if (error?.code === "ENOENT") continue; throw error; }
+    if (!fileStat.isFile()) continue;
+    const parsed = parseHeaderRecord(await reader.text(fullPath));
+    if (!parsed.body) continue;
+    const headerId = SAFE_NOTE_ID.test(parsed.headers.id || "") ? parsed.headers.id : "";
+    const inReplyTo = headerId || entry.name;
+    const recordId = `state/inbox/.replies/${inReplyTo}`;
+    if (seen.has(recordId)) continue;
+    seen.add(recordId);
+    const { timestamp, timestampSource } = recordTimestamp(parsed.headers, fileStat);
+    reader.takeMessage();
+    messages.push({
+      ...publicMessage({
+        author: "Firstmate",
+        role: "firstmate",
+        kind: "conversation",
+        state: "reply",
+        source: `state/inbox/.replies/${entry.name}`,
+        text: parsed.body,
+        timestamp,
+        timestampSource,
+        sourceSequence: Number(parsed.headers.seq) || 0,
+      }),
+      recordId,
+      inReplyTo,
+    });
+  }
+  return messages;
+}
+
+function noteIdFromSource(source) {
+  const stem = String(source || "").split("/").pop()?.replace(/\.(?:note|msg)$/, "") || "";
+  return SAFE_NOTE_ID.test(stem) ? stem : "";
+}
+
 // Claude Code keeps transcripts under the server user's config directory;
 // only this home's encoded project directory inside it is ever read.
 export function claudeConfigDir(env) {
@@ -692,14 +771,15 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
   if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
   try {
-    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision] = await Promise.all([
+    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, inboxReplies, mateMessages] = await Promise.all([
       readFile(path.join(resolvedHome, "data", "projects.md"), "utf8"),
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
       includeHistory ? readCaptainNotes(resolvedHome, reader) : [],
       includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir, windowBytes }) : { messages: [], coverage: {} },
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
-      includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
+      includeHistory ? readInboxReplies(resolvedHome, reader) : [],
+      includeHistory ? readSecondmateMessages(resolvedHome, publicMessage, { reader, windowBytes }) : { messages: [], sources: [], warnings: [] },
     ]);
     const projects = parseProjects(registry);
     const repositoryPaths = await repositoryPathsForHome(resolvedHome, projects);
@@ -717,6 +797,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
 
     const metaNames = stateNames.filter((name) => name.endsWith(".meta") && !name.startsWith(".")).sort();
     const metaTaskIds = new Set(metaNames.map((name) => name.slice(0, -5)));
+    const statusWarnings = [];
     const taskIdsToLoad = new Set([...metaTaskIds].filter((id) => !secondmates.ids.has(id)));
     for (const [taskId, task] of backlogTasks) {
       if (!secondmates.ids.has(taskId) && (task.inFlight || stateNames.includes(`${taskId}.status`))) taskIdsToLoad.add(taskId);
@@ -731,31 +812,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
       if (!projectName) return null;
 
-      let statusEvents = [];
-      if (stateNames.includes(statusName)) {
-        const statusPath = path.join(resolvedHome, "state", statusName);
-        const [statusText, statusStat] = await Promise.all([readFile(statusPath, "utf8"), stat(statusPath)]);
-        const lines = statusText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        statusEvents = lines.map((line, index) => {
-          reader.takeMessage();
-          const event = parseStatusLine(line);
-          // A status file only supplies one clock. Keep its lines on that real mtime
-          // and use file order solely as a stable tie-break, never fake milliseconds.
-          const timestamp = new Date(statusStat.mtimeMs);
-          return publicMessage({
-            ...event,
-            timestamp,
-            timestampSource: "mtime",
-            sourceSequence: index,
-            author: taskId,
-            role: "crew",
-            source: `state/${statusName}`,
-            taskId,
-            text: `${event.state}: ${event.text}`,
-            kind: "crew",
-          });
-        });
-      }
+      const statusStat = stateNames.includes(statusName) ? await stat(path.join(resolvedHome, "state", statusName)) : null;
+      const statusActivity = statusStat ? new Date(statusStat.mtimeMs) : null;
+      // Registered parent-channel files are projected once by the mate adapter.
+      const eventSource = statusStat && !mateMessages.sources.some(({ id }) => id === taskId) ? { statusName, size: statusStat.size, mtime: statusActivity } : null;
       const [briefIntent, lastSteer] = await Promise.all([readBriefIntent(resolvedHome, taskId), includeHistory ? steerActivity(resolvedHome, taskId) : null]);
       return {
         id: taskId,
@@ -765,23 +825,80 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         state: currentWork.get(taskId)?.sourceState || "unknown",
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),
-        events: statusEvents,
-        activityAt: lastSteer && (!statusEvents.length || lastSteer > statusEvents[0].timestamp) ? lastSteer : statusEvents[0]?.timestamp || null,
+        events: [],
+        eventsLoaded: false,
+        eventSource,
+        activityAt: lastSteer && (!statusActivity || lastSteer > statusActivity) ? lastSteer : statusActivity,
       };
     }));
     const tasks = taskResults.filter(Boolean);
     const byTask = new Map(tasks.map((task) => [task.id, task]));
-    for (const event of [...captainNotes, ...outboxMessages, ...supervision.messages]) {
-      const task = byTask.get(event.taskId);
-      if (task && event.timestamp && (!task.activityAt || event.timestamp > task.activityAt)) task.activityAt = event.timestamp;
+    const raiseActivity = (messages) => {
+      for (const event of messages) {
+        const task = byTask.get(event.taskId);
+        if (task && event.timestamp && (!task.activityAt || event.timestamp > task.activityAt)) task.activityAt = event.timestamp;
+      }
+    };
+    raiseActivity([...captainNotes, ...outboxMessages]);
+    const displayedProjects = new Set(projects.filter(({ id }) => id !== "general").map(({ name }) => name));
+    const admittedTasks = new Set();
+    const loadTaskEvents = async (task) => {
+      if (!includeHistory || !task || !displayedProjects.has(task.projectName) || admittedTasks.has(task.id)) return;
+      admittedTasks.add(task.id);
+      // Registered parent-channel history is owned/read only by the mate adapter.
+      if (!task.eventSource) {
+        task.eventsLoaded = mateMessages.sources.find(({ id }) => id === task.id)?.loaded ?? true;
+        return;
+      }
+      const { statusName, size, mtime } = task.eventSource;
+      // An empty log is fully read; nonempty history the budget cannot reach is not loaded.
+      const window = size ? await reader.recent(path.join(resolvedHome, "state", statusName)) : null;
+      task.eventsLoaded = !size || Boolean(window);
+      if (!task.eventsLoaded) {
+        statusWarnings.push(`state/${statusName} was not loaded: this request's read budget went to other sources.`);
+        return;
+      }
+      if (!window) return;
+      task.eventsOmittedBytes = window.omittedBytes;
+      if (window.omittedBytes) statusWarnings.push(`state/${statusName}: only its newest whole lines loaded within this request's read budget; older task events are not shown.`);
+      let index = 0;
+      for await (const { line: raw } of window.lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        reader.takeMessage();
+        const event = parseStatusLine(line);
+        // A status file only supplies one clock. Keep its lines on that real mtime
+        // and use file order solely as a stable tie-break, never fake milliseconds.
+        task.events.push(publicMessage({
+          ...event,
+          timestamp: mtime,
+          timestampSource: "mtime",
+          sourceSequence: index++,
+          author: task.id,
+          role: "crew",
+          source: `state/${statusName}`,
+          taskId: task.id,
+          text: `${event.state}: ${event.text}`,
+          kind: "crew",
+        }));
+      }
+    };
+    // Requested/nonterminal displayed tasks are guaranteed visible independently
+    // of outcomes, so their sequential windows precede competing ledger reads.
+    const visibleTasks = new Set(sessionIds.slice(0, 60).filter((id) => displayedProjects.has(byTask.get(id)?.projectName)));
+    for (const session of publicSessions(tasks.filter((task) => displayedProjects.has(task.projectName)))) {
+      if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
     }
-    // History loading is independent of live execution and completion attention.
-    const visibleTasks = new Set(sessionIds.slice(0, 60));
-    for (const project of projects) {
+    for (const id of visibleTasks) await loadTaskEvents(byTask.get(id));
+    const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
+    raiseActivity(supervision.messages);
+    // Retained genuine clocks finish recent membership; discarded windows have
+    // spent no event records, and already attempted sources are never reread.
+    for (const project of projects.filter((project) => displayedProjects.has(project.name))) {
       const ordered = publicSessions(tasks.filter((task) => task.projectName === project.name));
       for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
-      for (const session of ordered) if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
     }
+    for (const session of publicSessions(tasks)) if (visibleTasks.has(session.id)) await loadTaskEvents(byTask.get(session.id));
     if (includeHistory) await Promise.all(tasks.filter((task) => visibleTasks.has(task.id)).map(async (task) => {
       task.events.push(...await readTaskSteers(resolvedHome, task.id, reader));
     }));
@@ -789,8 +906,29 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     // The outcome ledger is authoritative when Pi also stores a displayed ⛵ mirror.
     const outcomeTexts = new Set(supervision.messages.map((message) => message.text));
     const transcriptMessages = transcript.messages.filter((message) => message.kind !== "supervision" || !outcomeTexts.has(message.text.replace(/^⛵\s*/, "")));
-    const allCaptainMessages = [...captainNotes, ...transcriptMessages];
-    const unscopedCaptainNotes = captainNotes.filter((message) => !message.taskId);
+    const surfaced = new Set();
+    for (const message of [...captainNotes, ...transcriptMessages, ...outboxMessages, ...supervision.messages]) {
+      if (typeof message.recordId === "string") surfaced.add(message.recordId);
+    }
+    const noteById = new Map();
+    for (const note of captainNotes) {
+      if (!note.source.endsWith(".note")) continue;
+      const id = noteIdFromSource(note.source);
+      if (id && !noteById.has(id)) noteById.set(id, note);
+    }
+    const linkedReplies = [];
+    const orphanReplies = [];
+    for (const reply of inboxReplies) {
+      if (surfaced.has(reply.recordId) || surfaced.has(reply.source)) continue;
+      surfaced.add(reply.recordId);
+      surfaced.add(reply.source);
+      const note = noteById.get(reply.inReplyTo);
+      if (!note) { orphanReplies.push(reply); continue; }
+      if (note.taskId) reply.taskId = note.taskId;
+      linkedReplies.push(reply);
+    }
+    const allCaptainMessages = [...captainNotes, ...transcriptMessages, ...linkedReplies, ...orphanReplies];
+    const unscopedCaptainNotes = [...captainNotes.filter((message) => !message.taskId), ...linkedReplies.filter((message) => !message.taskId)];
     const unroutedOutbox = outboxMessages.filter((message) => !message.taskId || !taskIds.has(message.taskId));
     const markedReplies = new Map(allCaptainMessages.map((message) => [message, explicitLaneBlocks(message, projects)]));
     const sharedMessages = [...unscopedCaptainNotes, ...unroutedOutbox];
@@ -806,7 +944,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }] : []) || [];
     };
     const generalMessages = [...allCaptainMessages.flatMap((message) => markedReplies.get(message)
-      ? projectedBlocks(message, "general") : [message]), ...unroutedOutbox, ...supervision.messages];
+      ? projectedBlocks(message, "general") : [message]), ...unroutedOutbox, ...supervision.messages, ...mateMessages.messages];
 
     const registeredGeneral = projects.find((project) => project.id === "general");
     const lanes = projects.filter((project) => project.id !== "general").map((project) => {
@@ -822,7 +960,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
           || (message.transcriptSessionId && projectTerms.some((term) => term.length > 2 && slug(message.text).includes(term))) ? [message] : [];
       });
       const routedSupervision = supervision.messages.filter((message) => message.taskId && projectTaskIds.has(message.taskId));
-      const messages = publicTimeline([...projectTasks.filter((task) => visibleTasks.has(task.id)).flatMap((task) => task.events), ...sharedMessages.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedCaptainNotes.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedOutbox.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedSupervision.filter((message) => !message.taskId || visibleTasks.has(message.taskId))]);
+      const messages = publicTimeline([...projectTasks.filter((task) => visibleTasks.has(task.id)).flatMap((task) => task.events), ...sharedMessages.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedCaptainNotes.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedOutbox.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...routedSupervision.filter((message) => !message.taskId || visibleTasks.has(message.taskId)), ...mateMessages.messages.filter((message) => message.secondmateProjects.some((name) => name === project.id || name === project.name))]);
       // Flat transcript history follows source completion, never a presentation acknowledgement.
       const closed = projectTasks.length > 0 && projectTasks.every((task) => task.state === "done" && ["newly-done", "previously-done"].includes(task.classification?.status));
       const status = closed ? "closed" : laneStatus(projectTasks);
@@ -842,7 +980,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         crew: liveTasks.length,
         progress,
         items,
-        sessions: publicSessions(projectTasks).map((session) => ({ ...session, loaded: visibleTasks.has(session.id) })),
+        sessions: publicSessions(projectTasks).map((session) => {
+          const task = byTask.get(session.id);
+          return { ...session, loaded: visibleTasks.has(session.id) && task.eventsLoaded !== false, ...(task.eventsOmittedBytes ? { omittedBytes: task.eventsOmittedBytes } : {}) };
+        }),
         messages: includeHistory ? messages : [],
       };
     });
@@ -866,7 +1007,9 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     return {
       lanes,
       source: "Firstmate home",
-      transcript: { ...transcript.coverage, outcomeSources: supervision.sources },
+      transcript: { ...transcript.coverage, outcomeSources: supervision.sources, secondmateSources: mateMessages.sources,
+        warnings: [...(transcript.coverage.warnings || []), ...mateMessages.warnings, ...supervision.warnings, ...statusWarnings.sort()],
+        expandable: transcript.coverage.expandable || (windowBytes !== null && windowBytes < 8 * 1024 * 1024 && mateMessages.sources.some((source) => source.omittedBytes > 0)) },
       workSplit: split,
       secondmates: secondmates.view,
       summary: {
@@ -970,7 +1113,7 @@ async function sendJson(request, response, status, body) {
   response.end(payload);
 }
 
-export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), bearingsSource = createCallSource({ home: env.FM_HOME, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), statePath: chatAsksPath(configuredStatePath(env)) }) }), bearingsStream = {}, answerRelay = createAnswerRelay({ home: env.FM_HOME }), threadRelay = createThreadRelay({ home: env.FM_HOME, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env) }) }), costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options), procrastination = createProcrastinationStore(env), landedAcks = createLandedAckStore(env) } = {}) {
+export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaReader = createQuotaReader({ maxAge: env.FM_QUOTA_MAX_AGE }), bearingsSource, bearingsStream = {}, answerRelay, threadRelay, costReader = createConfiguredCostReader(env), expenseReader = loadExpenses, lanesReader = loadFirstmateHome, durabilityVerifier = verifyDurability, reviewDeliver = deliverReview, localReviewDeliver = (payload, statusPath) => deliverLocalReview(payload, undefined, statusPath), localReviewReceipt = reconcileLocalReview, reviewCount = (receipts) => awaitingReviewCount(undefined, receipts), reviewStatus = localReviewStatus, previewRegistry, chatDeliver, revisionResolver = createRevisionResolver(REPO_DIR, reviewVersion), lifecycleFactory = (entries, options) => new PreviewLifecycle(entries, options), procrastination = createProcrastinationStore(env), landedAcks = createLandedAckStore(env), notificationOptions = {} } = {}) {
   const review = reviewConfiguration(env);
   const agentStatePath = configuredStatePath(env);
   const agentStateOwner = createAgentStateOwner(agentStatePath);
@@ -978,6 +1121,10 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     const relative = path.relative(path.resolve(env.FM_HOME), path.resolve(agentStatePath));
     if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) throw new Error("Quarterdeck presentation state must be outside FM_HOME");
   }
+  const inboxBatcher = createInboxBatcher({ home: env.FM_HOME, statePath: agentStatePath });
+  bearingsSource ||= createCallSource({ home: env.FM_HOME, receipts: inboxBatcher.receipts, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), statePath: chatAsksPath(configuredStatePath(env)) }) });
+  answerRelay ||= createAnswerRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts });
+  threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env) }) });
   const servedCommit = revisionResolver.initial;
   const registered = validateRegistry(previewRegistry ?? (env.FM_PREVIEW_REGISTRY_PATH ? JSON.parse(readFileSync(env.FM_PREVIEW_REGISTRY_PATH, "utf8")) : []));
   const deploymentTier = env.FM_DEPLOYMENT_TIER || "";
@@ -995,6 +1142,18 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     const commit = await revisionResolver.snapshot(force);
     return commit === servedCommit ? commit : null;
   };
+  const notifications = createNotificationService({
+    configuration: notificationConfiguration(env), source: bearingsSource, revision: syncRevision,
+    initializeEvidence: async () => { await inboxBatcher.initializeEvidence(); await procrastination.initializeEvidence(); },
+    evidence: async () => {
+      try {
+        const [input, pending, parked] = await Promise.all([bearingsSource.notificationEvidence(), inboxBatcher.pending({ strict: true }), procrastination.evidence()]);
+        return { ...input, pending, procrastination: parked };
+      } catch { return { available: false }; }
+    },
+    ...notificationOptions,
+  });
+  const notificationRate = { at: 0, count: 0 };
   const lastDataRead = new Map();
   // In-flight and confirmed sends in this gateway process share the same receipt.
   // The receiver must also deduplicate messageId durably across gateway restarts.
@@ -1014,7 +1173,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
       Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
   };
-  const previewReads = new Set(["/", "/app.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  const previewReads = new Set(["/notifications-ui.js", "/", "/app.js", "/chat-ask-extraction.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/inbox-pending.js", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/bearings-work.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
   // Live Captain's Call streams (host only; previews poll /api/bearings?since).
   const streamOptions = { heartbeatMs: 20000, recycleMs: 600000, maxStreams: 16, ...bearingsStream };
   const streams = new Set();
@@ -1033,6 +1192,30 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       const registeredSelection = preview ? registry.get(preview.id) : registry.get(hostId);
       const selected = registeredSelection?.id === hostId ? { ...registeredSelection, commit } : registeredSelection;
       const selectedCommit = selected?.commit || commit;
+      if (url.pathname.startsWith("/api/notifications/")) {
+        const pushOrigin = env.FM_QUARTERDECK_PUSH_ORIGIN;
+        const permitted = pushOrigin ? request.headers.host === pushOrigin.slice("https://".length) && request.headers.origin === pushOrigin : authorized(request);
+        if (!permitted || deploymentTier || dev || preview) { await sendJson(request, response, 403, { error: "Notifications require the stable private origin" }); return; }
+        if (request.method !== "POST" || url.search || !["/api/notifications/status", "/api/notifications/enroll", "/api/notifications/disable"].includes(url.pathname) || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 400, { error: "Notification JSON operation required" }); return; }
+        const minute = Math.floor(Date.now() / 60000);
+        if (minute !== notificationRate.at) { notificationRate.at = minute; notificationRate.count = 0; }
+        if (++notificationRate.count > 30) { await sendJson(request, response, 429, { error: "Notification request limit reached" }); return; }
+        let text = "";
+        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 4096) { await sendJson(request, response, 413, { error: "Subscription too large" }); return; } }
+        let body;
+        try { body = JSON.parse(text); } catch {}
+        const enroll = url.pathname.endsWith("/enroll");
+        if (!body || Object.keys(body).sort().join(",") !== (enroll ? "id,subscription" : "id") || !deviceId(body.id)) { await sendJson(request, response, 400, { error: "Exact installation fields required" }); return; }
+        try {
+          const value = await (enroll ? notifications.enroll(body.id, body.subscription) : url.pathname.endsWith("/disable") ? notifications.disable(body.id) : notifications.status(body.id));
+          await sendJson(request, response, 200, value);
+        } catch { await sendJson(request, response, 409, { error: "Notifications unavailable; check configuration or installation state" }); }
+        return;
+      }
+      if (url.pathname === "/notifications-worker.js") {
+        const origin = await notifications.origin();
+        if (!origin || deploymentTier || dev || request.headers.host !== origin.slice("https://".length)) { await sendJson(request, response, 403, { error: "Notification worker requires the configured host" }); return; }
+      }
       if (request.method === "GET" && url.pathname === "/api/previews") {
         await lifecycle.ready;
         await sendJson(request, response, 200, lifecycle.list());
@@ -1170,7 +1353,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         }
         const batch = url.searchParams.get("batchId");
         const status = await reviewStatus(batch);
-        const intake = status && env.FM_HOME ? inboxReviewState(await inboxReceipts(env.FM_HOME), batch) : null;
+        const intake = status && env.FM_HOME ? inboxReviewState(await inboxBatcher.receipts(), batch) : null;
         await sendJson(request, response, status ? 200 : 404, status ? { ...status, ...(intake && status.state === "accepted" ? intake : {}), intake: intake?.state || null } : { error: "Receipt not found; keep the batch and retry Send" });
         return;
       }
@@ -1178,7 +1361,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         if (request.method === "GET") {
           used = true;
           const intakeReady = review.delivery === "local" && env.FM_HOME ? await inboxReady(env.FM_HOME).catch(() => false) : false;
-          const receipts = review.delivery === "local" && env.FM_HOME ? await inboxReceipts(env.FM_HOME).catch(() => null) : null;
+          const receipts = review.delivery === "local" && env.FM_HOME ? await inboxBatcher.receipts().catch(() => null) : null;
           await sendJson(request, response, 200, { version: selectedCommit, sessionId: review.sessionId, ready: review.ready, delivery: review.delivery,
             intakeReady, awaitingReview: review.delivery === "local" && (!env.FM_HOME || receipts) ? await reviewCount(receipts) : null });
           return;
@@ -1213,7 +1396,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
           try {
             const existing = review.delivery === "local" ? await localReviewReceipt(payload) : null;
             if (existing) {
-              if (env.FM_HOME) await announceReview(env.FM_HOME, existing.payload);
+              if (env.FM_HOME) await announceReview(env.FM_HOME, existing.payload, inboxBatcher.note, { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
               await sendJson(request, response, 200, { receiptId: existing.receiptId, delivery: "local" });
               return;
             }
@@ -1227,7 +1410,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
             const receipt = review.delivery === "lavish"
               ? await reviewDeliver(attributed, review.endpoint)
               : await localReviewDeliver(attributed, env.FM_REVIEW_STATUS_PATH);
-            if (review.delivery === "local" && env.FM_HOME) await announceReview(env.FM_HOME, attributed);
+            if (review.delivery === "local" && env.FM_HOME) await announceReview(env.FM_HOME, attributed, inboxBatcher.note, { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
             await sendJson(request, response, 200, receipt);
           } catch {
             await sendJson(request, response, 502, { error: "Review delivery unconfirmed; queue retained for retry" });
@@ -1311,6 +1494,19 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         openBearingsStream(request, response);
         return;
       }
+      if (url.pathname === "/api/inbox/pending" && request.method === "GET") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        try { await sendJson(request, response, 200, { items: await inboxBatcher.pending() }); }
+        catch { await sendJson(request, response, 503, { error: "Pending inbox state unavailable; saved items retained" }); }
+        return;
+      }
+      if (url.pathname === "/api/inbox/send-now" && request.method === "POST") {
+        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
+        try { await inboxBatcher.flush(); await sendJson(request, response, 200, { state: "sent" }); }
+        catch { await sendJson(request, response, 502, { error: "Delivery unconfirmed; pending items retained for retry" }); }
+        return;
+      }
       // Captain's Call answers: host only, an explicit captain submit relayed to Firstmate (BEARINGS.md "Answers").
       if (url.pathname === "/api/bearings/answer" && request.method === "POST") {
         if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
@@ -1323,7 +1519,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         // A request spanning a fast-forward is refused rather than answered under a mixed identity.
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         try {
-          const accepted = await answerRelay.submit(body, bearingsSource.current());
+          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
           // A chat ask has no Firstmate hold to close it; the confirmed relay resolves it here.
           if (accepted.envelope?.type === "chat") await bearingsSource.resolveChat?.(accepted.key, "answered", { requestId: accepted.requestId }).catch(() => {});
           await sendJson(request, response, 202, accepted);
@@ -1427,7 +1623,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         let body = null;
         try { body = JSON.parse(text); } catch {}
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
-        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current())); }
+        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" })); }
         catch (error) {
           if (!(error instanceof ThreadRefused)) throw error;
           await sendJson(request, response, error.status, { error: error.message, code: error.code });
@@ -1534,13 +1730,15 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   const closeServer = server.close.bind(server);
   server.close = (callback) => {
     for (const stream of [...streams]) stream.end("bye");
+    notifications.close();
     bearingsSource.close?.();
     return closeServer(callback);
   };
   server.bearings = bearingsSource;
+  server.notifications = notifications;
   server.previewLifecycle = lifecycle;
   server.shutdownPreviews = () => lifecycle.close();
-  server.on("close", () => { lifecycle.close().catch(() => {}); });
+  server.on("close", () => { inboxBatcher.close(); lifecycle.close().catch(() => {}); });
   if (dev) {
     let watcher;
     let pending;

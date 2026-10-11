@@ -49,17 +49,17 @@ test("quota CLI uses the configured max age with existing live-read safety argum
     return { stdout: JSON.stringify(fixture()) };
   } });
   const reading = await reader();
-  assert.equal(reading.maxAgeMs, 420000);
+  assert.equal(reading.maxAgeMs, 300000);
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0][0], "quota-axi");
-  assert.deepEqual(calls[0][1], ["--full", "--json", "--no-credential-refresh", "--max-age", "7m"]);
+  assert.deepEqual(calls[0][1], ["--full", "--json", "--no-credential-refresh", "--max-age", "5m"]);
   assert.equal(calls[0][2].timeout, 15000);
   let fallbackArgs;
   const capped = await createQuotaReader({ maxAge: "90m", execute: async (_command, args) => {
     fallbackArgs = args;
     return { stdout: JSON.stringify(fixture()) };
   } })();
-  assert.equal(capped.maxAgeMs, 300000, "configured reuse cannot exceed quota-axi's one-hour bound");
+  assert.equal(capped.maxAgeMs, 300000, "configured reuse cannot exceed the five-minute refresh cadence");
   assert.equal(fallbackArgs.at(-1), "5m");
 });
 
@@ -409,4 +409,29 @@ test("response and per-provider size limits remain bounded", () => {
   assert.equal(result[0].scopes.length, 100);
   raw.providers.push({ provider: "future-provider" });
   assert.throws(() => sanitizeQuota(raw), /schema/);
+});
+
+test("a newly returned old capture never resets successful reading age", async () => {
+  const raw = fixture();
+  raw.generatedAt = "2030-01-01T00:00:00Z";
+  const captured = Date.parse(raw.generatedAt);
+  let clock = captured + 2040000;
+  const reader = createQuotaReader({ run: run(raw), now: () => clock });
+  const first = await reader();
+  assert.equal(first.ageMs, 2040000);
+  clock += 60000;
+  const reread = await reader();
+  assert.equal(reread.ageMs, 2100000);
+  assert.equal(reread.readAt, first.readAt);
+});
+
+test("configured reuse cannot exceed the five-minute actual-data refresh cadence", async () => {
+  for (const [configured, expected, milliseconds] of [["7m", "5m", 300000], ["1h", "5m", 300000], ["30s", "30s", 30000]]) {
+    let args;
+    const result = await createQuotaReader({ maxAge: configured, execute: async (_command, input) => {
+      args = input; return { stdout: JSON.stringify(fixture()) };
+    } })();
+    assert.equal(args.at(-1), expected);
+    assert.equal(result.maxAgeMs, milliseconds);
+  }
 });

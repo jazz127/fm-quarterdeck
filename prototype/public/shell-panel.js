@@ -407,7 +407,7 @@ function syncMobileControls() {
   moveControl(reviewPanel, reviewSheet);
   moveControl(annotation, annotationSheet);
   moveControl(document.querySelector("#conversation-filter-shortcut"), document.querySelector(".product-identity > div"), document.querySelector(".product-identity-subtext"));
-  document.querySelector("#review-send").textContent = "Send batch";
+  document.querySelector("#review-send").textContent = "Send";
   moveControl(document.querySelector(".conversation-head-actions"), chatTools);
   moveControl(document.querySelector(".feed-pagination"), chatTools);
   moveControl(document.querySelector(".feed-jump-controls"), chatTools);

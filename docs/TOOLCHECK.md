@@ -1,6 +1,6 @@
-# Private /fm-toolcheck (Quarterdeck-owned)
+# Private /fmqd-toolcheck (Quarterdeck-owned)
 
-`skills/fm-toolcheck/` is the canonical source of this private Firstmate-specific skill. It is **not** an upstream Kunchenguid Firstmate skill, a prototype UI feature, or the general watched-tools poll. No Firstmate checkout changes are needed. The command reads the installed Firstmate `bin/fm-bootstrap.sh` install arms at invocation, never sources them, and joins npm names only to installed manifests claiming an exact `github.com/kunchenguid/<name>` repository. The two bootstrap Kunchenguid install URLs prove scope for treehouse and no-mistakes. An npm dependency with no matching installed ownership evidence is explicitly excluded, rather than guessed. General tools (Pi, runtimes, shell, OS, package managers, Git/gh, tmux, ShellCheck, actionlint, Tailscale, Orca and watched tools) are outside scope.
+`skills/fmqd-toolcheck/` is the canonical source of this private Firstmate-specific skill. It is **not** an upstream Kunchenguid Firstmate skill, a prototype UI feature, or the general watched-tools poll. No Firstmate checkout changes are needed. The command reads the installed Firstmate `bin/fm-bootstrap.sh` install arms at invocation, never sources them, and joins npm names only to installed manifests claiming an exact `github.com/kunchenguid/<name>` repository. The two bootstrap Kunchenguid install URLs prove scope for treehouse and no-mistakes. An npm dependency with no matching installed ownership evidence is explicitly excluded, rather than guessed. General tools (Pi, runtimes, shell, OS, package managers, Git/gh, tmux, ShellCheck, actionlint, Tailscale, Orca and watched tools) are outside scope.
 
 ## Reviewable activation
 
@@ -10,7 +10,7 @@ Firstmate or create user-global projections. Historical user-global links requir
 separate original-owner removal authority; the installer never adopts them.
 Source presence does not activate a skill or reload a harness.
 
-Manually run `node /absolute/path/to/fm-quarterdeck/skills/fm-toolcheck/audit.mjs --firstmate-root /absolute/path/to/installed/firstmate` for a local audit. `--releases` optionally queries a bounded GitHub latest-release endpoint; absence is not evidence of currentness. Run `node --test test/fm-toolcheck.test.mjs` for deterministic executable-interface tests.
+Manually run `node /absolute/path/to/fm-quarterdeck/skills/fmqd-toolcheck/audit.mjs --firstmate-root /absolute/path/to/installed/firstmate` for a local audit. `--releases` optionally queries a bounded GitHub latest-release endpoint; absence is not evidence of currentness. Run `node --test test/fmqd-toolcheck.test.mjs` for deterministic executable-interface tests.
 
 ## Quarterdeck integration section
 

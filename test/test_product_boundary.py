@@ -24,7 +24,7 @@ class ProductBoundaryTests(unittest.TestCase):
                 self.assertIn("retired integration path", gate.findings(name, b""))
 
     def test_generic_markdown_and_live_lane_skill_remain_allowed(self):
-        for name, text in [("skills/fm-lanes/SKILL.md", b"Quarterdeck lane envelopes"),
+        for name, text in [("skills/fmqd-lanes/SKILL.md", b"Quarterdeck lane envelopes"),
                            ("docs/ARCHITECTURE.md", b"Markdown files and document readers"),
                            ("LICENSE", b"Generic historical attribution"),
                            ("vendor/example.txt", b"myobsidianhelper; obsidianite")]:

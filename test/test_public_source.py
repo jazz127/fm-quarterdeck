@@ -73,6 +73,46 @@ class PublicGateTests(unittest.TestCase):
         ]
         self.assertEqual(gate.scan(safe, self.markers, self.blocked), [])
 
+    def test_reviewed_baseline_is_quiet(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(gate.scan(gate.tracked_blobs(root, worktree=True), self.markers, self.blocked), [])
+
+    def test_fixture_review_is_confined_to_exact_files_and_complete_paths(self):
+        private_path = ("/" + "home/" + "acme-private/data/report.md").encode()
+        category = (1, "F04: nonexample absolute home")
+        self.assertIn(category, gate.scan([("test/new-private-path.txt", private_path)], self.markers, self.blocked))
+        for name, paths in gate.REVIEWED_FIXTURE_PATHS.items():
+            for path in paths:
+                data = path.encode()
+                with self.subTest(name=name, path=path):
+                    self.assertIn(category[1], gate.semantic_findings(name, data))
+                    self.assertEqual(gate.scan([(name, data)], self.markers, self.blocked), [])
+                    for unreviewed_name, unreviewed_data in [
+                        ("test/new-fixture.txt", data),
+                        (name, data + b"-new"),
+                        (name, data + b"/new"),
+                        (name, b"/new" + data),
+                        (name, data + b"\n" + private_path),
+                    ]:
+                        self.assertIn(category, gate.scan([(unreviewed_name, unreviewed_data)], self.markers, self.blocked))
+                    self.assertIn((1, "private marker: home-user"), gate.scan(
+                        [(name, data + b"\n" + self.values["home-user"])], self.markers, self.blocked))
+                    token = ("gh" + "p_" + "z" * 36).encode()
+                    self.assertIn((1, "provider token"), gate.scan([(name, data + b"\n" + token)], self.markers, self.blocked))
+
+    def test_icon_review_requires_exact_name_and_bytes_and_keeps_private_checks(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in gate.REVIEWED_BINARY_DIGESTS:
+            data = (root / name).read_bytes()
+            with self.subTest(name=name):
+                self.assertIn("unreviewed binary", gate.semantic_findings(name, data))
+                self.assertEqual(gate.scan([(name, data)], self.markers, self.blocked), [])
+                for other_name, other_data in [("new-icon.png", data), (name, data + b"\x00")]:
+                    self.assertIn((1, "unreviewed binary"), gate.scan([(other_name, other_data)], self.markers, self.blocked))
+                markers = {3: {sha(b"png"): "private-project"}}
+                self.assertIn((1, "private marker: private-project"), gate.scan([(name, data)], markers, self.blocked))
+                self.assertIn((1, "F01/F05/F06/F10: original private/evidence blob"), gate.scan([(name, data)], self.markers, {sha(data)}))
+
 
 if __name__ == "__main__":
     unittest.main()

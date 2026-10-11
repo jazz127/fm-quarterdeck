@@ -23,6 +23,37 @@ EVIDENCE_PATHS = {
 FORBIDDEN_PARTS = {".git", "node_modules", "__pycache__", ".preview-lab", ".taxonomy-lab", ".sanitization-lab",
                    ".agentos-controller", ".agentos-runtime", "review-receipts", "preview-acceptance", "browser-profile"}
 RETIRED_ASSETS = {f"prototype/public/assets/providers/{name}.svg" for name in ("grok", "openai", "gemini", "anthropic")}
+# Reviewed synthetic inputs, confined to their existing file and complete path token.
+# Split the neutral home component so this policy does not itself need an exception.
+REVIEWED_FIXTURE_PATHS = {
+    "prototype/test/bearings-board-options.test.js": {"/srv/synthetic/" + "home/data/secret"},
+    "prototype/test/bearings-thread.test.js": {
+        "/srv/synthetic/" + "home/data/report.md",
+        "/srv/synthetic/" + "home/data/alpha.md",
+    },
+    "prototype/test/fixtures/bearings/two-calls.json": {"/srv/synthetic/" + "home/data/alpha/report.md"},
+}
+# Published Quarterdeck PWA artwork: changed bytes or another filename need review.
+REVIEWED_BINARY_DIGESTS = {
+    "prototype/public/icons/apple-touch-icon-180.png": "ab89d22cc5704dcbe96e5fa255c7bc589d09bbb6a9e8b553c6d5861e8cc2f54a",
+    "prototype/public/icons/quarterdeck-192.png": "742492404432700f9174b8af8dde109ccd78c5eda1466f636b56773ee59c5432",
+    "prototype/public/icons/quarterdeck-512.png": "6070348a55ca3964651908c09d0627bea8d4cb4f07c93cc7bcdcdeb1e7cce403",
+}
+
+
+def reviewed_findings(name, data):
+    """Filter only reviewed findings; semantic detectors remain independently usable."""
+    found = semantic_findings(name, data)
+    if hashlib.sha256(data).hexdigest() == REVIEWED_BINARY_DIGESTS.get(name):
+        found.discard("unreviewed binary")
+    if "F04: nonexample absolute home" in found and name in REVIEWED_FIXTURE_PATHS:
+        review_text = data
+        for path in REVIEWED_FIXTURE_PATHS[name]:
+            pattern = rb"(?<![A-Za-z0-9_.:/@-])" + re.escape(path.encode()) + rb"(?![A-Za-z0-9_.:/@-])"
+            review_text = re.sub(pattern, b"/synthetic-fixture", review_text)
+        if "F04: nonexample absolute home" not in semantic_findings(name, review_text):
+            found.discard("F04: nonexample absolute home")
+    return found
 
 
 def private_signatures(report):
@@ -96,7 +127,7 @@ def semantic_findings(name, data):
 def scan(blobs, markers, blocked):
     failures = []
     for index, (name, data) in enumerate(blobs, 1):
-        found = semantic_findings(name, data)
+        found = reviewed_findings(name, data)
         if hashlib.sha256(data).hexdigest() in blocked:
             found.add("F01/F05/F06/F10: original private/evidence blob")
         if any(digest.encode() in data.lower() for group in markers.values() for digest in group) or any(digest.encode() in data.lower() for digest in blocked):

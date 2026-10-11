@@ -41,7 +41,7 @@ window.bearingsLanded = (() => {
         </div>
         <p class="call-box-hint">Write a follow-up. Firstmate replies in this thread.</p>
         <p class="call-answer-error" data-landed-error role="alert" hidden></p>
-        <div class="call-answer-confirm" data-landed-confirm role="group" aria-label="Queued follow-up" hidden><p>Queued for Firstmate: <strong data-landed-preview></strong></p><p class="call-meta">Send sends this follow-up now. Edit takes it out of the queue. Nothing was decided.</p></div>
+        <div class="call-answer-confirm" data-landed-confirm role="group" aria-label="Queued follow-up" hidden><p>Queued for Firstmate: <strong data-landed-preview></strong></p><p class="call-meta">Send submits this follow-up with a short batching delay. Send in the message composer bypasses it. Edit takes it out of the queue. Nothing was decided.</p></div>
       </form>`;
   }
 
@@ -130,7 +130,7 @@ window.bearingsLanded = (() => {
           const label = entry.from === "captain" ? "You asked" : "Firstmate replied";
           if (who.textContent !== label) who.textContent = label;
           const body = item.querySelector(".call-thread-text");
-          if (body.textContent !== (entry.text || "")) body.textContent = entry.text || "";
+          if (body.textContent !== (entry.text || "")) window.bearingsView.messageText(body, entry.text || "", doc);
         });
         while (log.children.length > entries.length) log.children[log.children.length - 1].remove();
       }
@@ -345,6 +345,7 @@ window.bearingsLanded = (() => {
         draft.attempted = false;
         try { storage.removeItem(STATE_PREFIX + key); } catch {}
         draft.notice = "Question sent to Firstmate";
+        globalThis.dispatchEvent?.(new Event("quarterdeck-sent"));
         draft.error = "";
         paintPhase(node, key);
         await loadHistory(key);

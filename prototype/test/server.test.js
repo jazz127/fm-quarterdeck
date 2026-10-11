@@ -139,7 +139,7 @@ test("Lane Chat has no redundant Options button and preserves desktop identity",
   assert.match(js, /moveControl\(document\.querySelector\("\.conversation-head-actions"\), chatTools\)/);
   assert.match(js, /moveControl\(document\.querySelector\("\.feed-pagination"\), chatTools\)/);
   assert.match(css, /\.conversation-head:not\(:has\(#task-filter-chip:not\(\[hidden\]\)\)\) \{ display: none; \}/);
-  assert.match(js, /document\.querySelector\("#review-send"\)\.textContent = "Send batch"/);
+  assert.match(js, /document\.querySelector\("#review-send"\)\.textContent = "Send"/);
 });
 
 test("standalone UAT launch labels its own revision without claiming Main or a gateway", async (context) => {
@@ -232,7 +232,7 @@ test("message kinds are independent, persisted feed filters with crew off by def
   assert.match(kinds, /id: "thinking", label: "thinking"/);
   assert.match(kinds, /id: "crew", label: "crew status"/);
   assert.match(kinds, /return new Set\(DEFAULT_IDS\)/);
-  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "supervision"\]/);
+  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "primary-input", "supervision"\]/);
   assert.match(kinds, /message\.role === "captain" \? "captain"/);
   assert.match(html, /<script src="\/message-kinds\.js"><\/script>/);
   assert.match(html, /<script src="\/filter-view\.js"><\/script>/);
@@ -246,7 +246,7 @@ test("message kinds are independent, persisted feed filters with crew off by def
   assert.match(script, /messageFormat === "markdown" \? renderMarkdown/);
 });
 
-test("captain records keep causal order when mtime is newer than worker activity", async (context) => {
+test("inbox records keep causal order when mtime is newer than worker activity", async (context) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "fm-quarterdeck-order-"));
   await mkdir(path.join(home, "data"));
   await mkdir(path.join(home, "state"));
@@ -267,7 +267,8 @@ test("captain records keep causal order when mtime is newer than worker activity
   const { port } = server.address();
   const data = await fetch(`http://127.0.0.1:${port}/api/lanes`).then((response) => response.json());
 
-  assert.deepEqual(data.lanes[0].messages.map((message) => message.role), ["captain", "crew"]);
+  // A headerless legacy inbox note is unverified input, not the Captain's (authorship.js).
+  assert.deepEqual(data.lanes[0].messages.map((message) => message.role), ["input", "crew"]);
   assert.equal(data.lanes[0].messages[0].text, "Drive the worker activity.");
 });
 
@@ -501,8 +502,8 @@ test("live lanes and fleet are derived from a fake FM_HOME", async (context) => 
     { role: "crew", source: "state/alpha-task.status" },
     { role: "outbox", source: "state/public-followup/outbox/event.json" },
     { role: "outbox", source: "state/x-outbox/reply.json" },
-    { role: "captain", source: "inbox/captain.note" },
-    { role: "captain", source: "state/branch-session/2026-01-07_session.jsonl" },
+    { role: "input", source: "inbox/captain.note" },
+    { role: "input", source: "state/branch-session/2026-01-07_session.jsonl" },
     { role: "firstmate", source: "state/branch-session/2026-01-07_session.jsonl" },
     { role: "firstmate", source: "state/branch-session/2026-01-07_session.jsonl" },
   ]);
@@ -511,7 +512,7 @@ test("live lanes and fleet are derived from a fake FM_HOME", async (context) => 
   assert.equal(data.lanes[0].messages[0].text, "Start with the live inbox.");
   assert.equal(data.lanes[0].messages[2].text, "working: parsed the registry");
   assert.equal(data.lanes[0].messages[4].text, "Public follow-up staged.");
-  assert.equal(data.lanes[0].messages[6].author, "Captain");
+  assert.deepEqual([data.lanes[0].messages[6].author, data.lanes[0].messages[7].author], ["Inbox note", "Pi session input"], "neither inbox presence nor a [captain] mirror is authorship");
   assert.equal(data.lanes[0].messages[2].kind, "crew");
   assert.equal(data.lanes[0].messages[4].kind, "crew", "worker outbox broadcasts belong to the crew filter");
   assert.equal(data.lanes[0].messages[2].occurredAt, data.lanes[0].messages[3].occurredAt, "status line order must not be fabricated with mtime padding");
@@ -528,7 +529,7 @@ test("live lanes and fleet are derived from a fake FM_HOME", async (context) => 
     data.lanes[0].messages.map((message) => message.occurredAt).toSorted(),
   );
   assert.equal(JSON.stringify(data).includes(home), false);
-  assert.deepEqual(data.lanes[1].messages.map((message) => message.role), ["outbox", "captain"]);
+  assert.deepEqual(data.lanes[1].messages.map((message) => message.role), ["outbox", "input"]);
   assert.equal(data.lanes[2].name, "Gamma");
   assert.equal(data.lanes[2].closed, true);
   assert.equal(data.lanes[2].status, "closed");
@@ -541,7 +542,7 @@ test("live lanes and fleet are derived from a fake FM_HOME", async (context) => 
   assert.equal(data.lanes[3].crew, 0);
   assert.deepEqual(data.lanes[3].items.map(({ classification, ...item }) => item), [{ title: "example-store-task", state: "done", isLive: false, taskIntent: "Task intent not recorded." }]);
   assert.equal(data.lanes[4].name, "General");
-  assert.deepEqual(data.lanes[4].messages.map((message) => message.role), ["outbox", "captain", "captain", "firstmate", "firstmate", "firstmate"]);
+  assert.deepEqual(data.lanes[4].messages.map((message) => message.role), ["outbox", "input", "input", "firstmate", "firstmate", "firstmate"]);
   assert.ok(!data.lanes[4].messages.some((message) => message.text.startsWith("[fm-lane Alpha]")), "explicit Alpha reply is not also General");
   assert.equal(data.lanes[4].messages.at(-1).kind, "conversation");
   assert.equal(data.lanes[4].messages[0].kind, "crew");

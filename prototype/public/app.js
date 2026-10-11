@@ -1,3 +1,5 @@
+import { extractAskSections } from "./chat-ask-extraction.js";
+
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value)
   .replaceAll("&", "&amp;")
@@ -9,7 +11,7 @@ const escapeHtml = (value) => String(value)
 const stateLabel = (state) => state === "review" ? "In review" : state.replaceAll("-", " ");
 const statusChoiceLabel = (state) => stateLabel(state).replace(/^./, (letter) => letter.toUpperCase());
 const money = ({ currency, amount }) => `${currency} ${amount}`;
-const { KEY: MESSAGE_TYPES_KEY, TYPES: MESSAGE_TYPES, LEGACY_KEY: MESSAGE_TYPES_LEGACY_KEY, stored: storedMessageTypes, typeId: messageTypeId, label: messageTypeLabel, icon: messageTypeIcon, svg: messageTypeSvg } = window.messageKinds;
+const { KEY: MESSAGE_TYPES_KEY, TYPES: MESSAGE_TYPES, hasStored: hasStoredMessageTypes, stored: storedMessageTypes, typeId: messageTypeId, label: messageTypeLabel, icon: messageTypeIcon, svg: messageTypeSvg } = window.messageKinds;
 const MESSAGE_FORMAT_KEY = "fm-agentos-message-format-v1";
 const { normalize: normalizeMessageFontSize, stored: storedMessageFontSize, rem: messageFontSizeRem, step: stepMessageFontSizeValue, bounds: messageFontSizeBounds, persist: persistMessageFontSize } = window.messageFontSizePrefs;
 let messageFontSize = storedMessageFontSize();
@@ -64,7 +66,7 @@ let lastViewedHighlightTimer = null;
 function readingScope() {
   const selection = laneSelection();
   return JSON.stringify([selection.all ? "all" : selection.checked.map(({ id }) => id).sort(), laneStatusFilter, feedLaneOverrideId,
-    [...selectedMessageTypes].sort(), selectedSessionId, selectedTranscriptSession, transcriptQuery.trim().toLocaleLowerCase()]);
+    [...selectedMessageTypes].sort(), selectedSessionId, selectedTranscriptSession, selectedSecondmate, transcriptQuery.trim().toLocaleLowerCase()]);
 }
 function captureLastViewed() {
   if (!renderedReadingScope || !$("#conversations-view").classList.contains("active")) return;
@@ -144,6 +146,30 @@ function renderReviewContent(review, query) {
   }).join("")}</ol></div>`;
 }
 
+// A reading treatment only. Canonical marker ranges preserve the exact ask and all
+// remaining text; nothing here matches a board card or adds an answer action.
+function renderChatCallContent(text, key, query = transcriptQuery) {
+  const sections = extractAskSections(text);
+  if (!sections.length) return highlightSearchMatches(renderMarkdown(text), query);
+  const background = [];
+  let end = 0;
+  for (const section of sections) {
+    background.push(text.slice(end, section.start));
+    end = section.end;
+  }
+  background.push(text.slice(end));
+  const detail = background.join("\n");
+  const primary = sections.map(({ ask, raw }) => `<section class="chat-call-primary"><span class="decision-banner">${escapeHtml(`Captain's Call · ${ask.marker}`)}</span>${highlightSearchMatches(renderMarkdown(raw), query)}</section>`).join("");
+  const open = chatCallDetailChoices.get(key) === true;
+  return `${primary}${detail.trim() ? `<details class="decision-context-fold" data-chat-call-detail="${escapeHtml(key)}"${open ? " open" : ""}><summary>Background rationale &amp; technical context</summary><div class="context-fold-body">${highlightSearchMatches(renderMarkdown(detail), query)}</div></details>` : ""}`;
+}
+
+// Disclosure choices stay in this tab and in the existing reading scope.
+const chatCallDetailChoices = new Map();
+function chatCallMessage(message) {
+  return ["conversation", "narration", "branch", "supervision"].includes(message.kind || "conversation");
+}
+
 function compactPreview(text) {
   const value = String(text || "");
   const envelope = value.match(/^\[fm-lane ([^\]\r\n]+)\]\r?\n([\s\S]*)\r?\n\[end \1\]\s*$/);
@@ -185,9 +211,16 @@ function changeCompactMode(compact, clickedLine = null) {
   pendingMessageAnchor = null;
   if (!compact && clickedLine) $("#sr-announcer").textContent = "Expanded all messages. The selected message is outlined until you click elsewhere.";
 }
-function updateLatestControl(atBottom) {
+const LATEST_TOLERANCE = 4;
+function distanceFromBottom(feed = $("#messages")) {
+  return feed.clientHeight > 0 ? Math.max(0, feed.scrollHeight - feed.scrollTop - feed.clientHeight) : 0;
+}
+function updateLatestControl() {
+  const atLatest = distanceFromBottom() <= LATEST_TOLERANCE && transcriptPage === previousPageCount - 1;
   const button = $("#jump-to-latest");
-  if (button) button.disabled = atBottom && transcriptPage === previousPageCount - 1;
+  if (button) button.disabled = atLatest;
+  const floating = $("#jump-to-latest-floating");
+  if (floating) floating.hidden = atLatest;
 }
 // Numeric indices cover loaded history, not just the bounded rendered page.
 const kindRecordIndices = new Map();
@@ -211,7 +244,7 @@ function kindJumpScope() {
   // Default native-thinking detection may change as older records arrive; an
   // explicit kind preference must still cancel any superseded navigation.
   try {
-    if (localStorage.getItem(MESSAGE_TYPES_KEY) === null && localStorage.getItem(MESSAGE_TYPES_LEGACY_KEY) === null) parts[3] = parts[3].filter(id => id !== "thinking");
+    if (!hasStoredMessageTypes()) parts[3] = parts[3].filter(id => id !== "thinking");
   } catch {}
   return JSON.stringify(parts);
 }
@@ -301,7 +334,7 @@ function navigateToRecord(index, { expand = false, announcement = "Returned to y
   $("#sr-announcer").textContent = announcement;
   updateLastViewedControl();
   updateKindNavigation();
-  updateLatestControl(feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60);
+  updateLatestControl();
 }
 function loadEarlierKindWindow() {
   const pending = pendingKindJump;
@@ -369,6 +402,7 @@ const ACTIVE_AGENT_STATES = new Set(["active", "working", "in-progress"]);
 const agentStatusGroup = (state) => ACTIVE_AGENT_STATES.has(state) ? "active" : state;
 let transcriptCoverage = { sessions: [], warnings: [], note: "" };
 let selectedTranscriptSession = "";
+let selectedSecondmate = "";
 let transcriptPage = null;
 let previousPageCount = null;
 let transcriptSelection = "";
@@ -550,15 +584,16 @@ window.fmChatViewContext = function (served) {
   };
 };
 
-function messagesForSelection() {
+function messagesForSelection({ ignoreKinds = false } = {}) {
   const visibleLanes = selectedLanes();
   const merged = new Map();
   for (const lane of visibleLanes) {
     const occurrences = new Map();
     for (const message of lane.messages) {
-      if (!selectedMessageTypes.has(messageTypeId(message))) continue;
+      if (!ignoreKinds && !selectedMessageTypes.has(messageTypeId(message))) continue;
       if (selectedSessionId && message.taskId !== selectedSessionId) continue;
       if (selectedTranscriptSession && message.transcriptSessionId !== selectedTranscriptSession) continue;
+      if (selectedSecondmate && message.secondmateId !== selectedSecondmate) continue;
       // Without a source record ID, preserve repeated identical events within one lane.
       // An ordinal is only a rendering/deduplication key, never a claimed record ID.
       const fingerprint = [message.occurredAt, message.source, message.author, message.text].join("\n");
@@ -577,7 +612,7 @@ function messagesForSelection() {
   const query = transcriptQuery.trim().toLocaleLowerCase();
   const matchesQuery = (message) => !query || [message.text, message.author, message.source, ...message.laneNames]
     .some((value) => String(value || "").toLocaleLowerCase().includes(query));
-  const order = (message) => message.role === "captain" ? 0 : message.kind === "thinking" ? 1 : message.kind === "crew" ? 3 : 2;
+  const order = (message) => message.role === "captain" || message.kind === "input" ? 0 : message.kind === "thinking" || message.kind === "narration" ? 1 : message.kind === "crew" ? 3 : 2;
   return [...merged.values()].filter(matchesQuery).sort((a, b) => String(a.occurredAt).localeCompare(String(b.occurredAt)) || order(a) - order(b));
 }
 
@@ -596,7 +631,7 @@ function renderMixedLaneContent(message) {
     const body = block.text.replace(/^\[fm-lane [^\]\r\n]+\]\r?\n/, "").replace(/\r?\n\[end [^\]\r\n]+\]$/, "");
     const preview = body.replace(/\s+/g, " ").trim().slice(0, 80);
     const lines = body.split(/\r?\n/).length;
-    const content = messageFormat === "markdown" ? renderMarkdown(body) : escapeHtml(body);
+    const content = messageFormat === "markdown" ? (chatCallMessage(message) ? renderChatCallContent(body, JSON.stringify([renderedReadingScope, key]), "") : renderMarkdown(body)) : escapeHtml(body);
     const id = `mixed-lane-${reviewId(key)}`;
     if (compact) return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle message-compact-line" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="false" aria-controls="${id}" title="Expand all messages here">${compactMetadata(message)}<strong class="compact-lane">${escapeHtml(block.name)}</strong><span class="compact-line-preview">${escapeHtml(preview)}</span></button></div><div id="${id}" class="mixed-lane-content" hidden>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
     return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="${expanded}" aria-controls="${id}"><span class="mixed-lane-chevron" aria-hidden="true">${expanded ? "▾" : "▸"}</span>[fm-lane <strong>${escapeHtml(block.name)}</strong>]</button><span class="mixed-lane-summary"${expanded ? " hidden" : ""}><span class="mixed-lane-preview">${escapeHtml(preview)}</span><small>${lines} ${lines === 1 ? "line" : "lines"}</small></span></div><div id="${id}" class="mixed-lane-content"${expanded ? "" : " hidden"}>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
@@ -748,6 +783,8 @@ function renderFeed() {
   }
 
   const messages = messagesForSelection();
+  $("#primary-input-filter-status").hidden = selectedMessageTypes.has("primary-input") ||
+    !messagesForSelection({ ignoreKinds: true }).some((message) => messageTypeId(message) === "primary-input");
   kindRecordIndices.clear();
   fleetRecordIndices.clear();
   messages.forEach((message, index) => {
@@ -759,7 +796,7 @@ function renderFeed() {
       fleetRecordIndices.get(id).push(index);
     }
   });
-  const feedSelection = JSON.stringify([visibleLanes.map((lane) => lane.id), [...selectedMessageTypes], selectedSessionId, selectedTranscriptSession]);
+  const feedSelection = JSON.stringify([visibleLanes.map((lane) => lane.id), [...selectedMessageTypes], selectedSessionId, selectedTranscriptSession, selectedSecondmate]);
   const selectionChanged = feedSelection !== transcriptSelection;
   if (selectionChanged) transcriptPage = null;
   transcriptSelection = feedSelection;
@@ -767,7 +804,7 @@ function renderFeed() {
   const pageCount = Math.max(1, Math.ceil(messages.length / TRANSCRIPT_PAGE_SIZE));
   const feedBefore = $("#messages");
   const followingLatest = !pendingLastViewedJump && !pendingMessageAnchor && (transcriptPage === null || (previousPageCount !== null && transcriptPage === previousPageCount - 1 &&
-    feedBefore.scrollHeight - feedBefore.scrollTop - feedBefore.clientHeight < 60));
+    distanceFromBottom(feedBefore) <= LATEST_TOLERANCE));
   transcriptPage = followingLatest ? pageCount - 1 : Math.min(transcriptPage, pageCount - 1);
   if (preservePageAnchor && !selectionChanged && !followingLatest && lastPageAnchor) {
     const index = messages.findIndex((message) => recordKey(message) === lastPageAnchor);
@@ -788,11 +825,7 @@ function renderFeed() {
   $("#transcript-newer").disabled = transcriptPage === pageCount - 1;
 
   const messagesEl = $("#messages");
-  const clientHeight = Number(messagesEl.clientHeight || 0);
-  const scrollHeight = Number(messagesEl.scrollHeight || 0);
-  const scrollTop = Number(messagesEl.scrollTop || 0);
-  const distanceFromBottom = clientHeight > 0 ? (scrollHeight - scrollTop - clientHeight) : 0;
-  const wasAtBottom = !pendingLastViewedJump && !pendingMessageAnchor && (!hasRenderedFeed || selectionChanged || (followingLatest && distanceFromBottom < 60));
+  const wasAtBottom = !pendingLastViewedJump && !pendingMessageAnchor && (!hasRenderedFeed || selectionChanged || followingLatest);
 
   const trimmedQuery = transcriptQuery.trim();
   const noLaneMessage = !selection.checked.length && !feedLaneOverrideId
@@ -823,7 +856,7 @@ function renderFeed() {
       ? `<span class="avatar-status">${escapeHtml(statusIcon(message.state))}</span>`
       : (messageTypeSvg(typeId) || `<span class="avatar-mono">${escapeHtml(message.author.slice(0, 1).toUpperCase())}</span>`);
     const rawOrRendered = kind !== "tools" && messageFormat === "markdown" ? renderMarkdown(message.text) : escapeHtml(message.text);
-    const content = message.review && messageFormat !== "raw" ? renderReviewContent(message.review, transcriptQuery) : message.mixedLaneMessage ? renderMixedLaneContent(message) : highlightSearchMatches(rawOrRendered, transcriptQuery);
+    const content = message.review && messageFormat !== "raw" ? renderReviewContent(message.review, transcriptQuery) : message.mixedLaneMessage ? renderMixedLaneContent(message) : messageFormat === "markdown" && chatCallMessage(message) ? renderChatCallContent(message.text, JSON.stringify([renderedReadingScope, recordKey(message)])) : highlightSearchMatches(rawOrRendered, transcriptQuery);
     const compact = (kind === "thinking" || kind === "tools") && !(dense && message.mixedLaneMessage);
     const detailOpen = fullDetailChoices.get(JSON.stringify([renderedReadingScope, recordKey(message)])) ?? expandedFullViews.has(renderedReadingScope);
     const previewText = message.review && messageFormat !== "raw" ? message.review.prompts.map((entry) => entry.prompt).join("; ") : message.text;
@@ -843,13 +876,13 @@ function renderFeed() {
   });
   const feedHtml = messages.length ? messageHtml.join("") : `<div class="empty compact">${emptyMessage}</div>`;
   // Don't discard disclosure/annotation DOM or reset scroll for identical pages.
-    const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].map((node) => `${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`));
+    const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].filter((node) => !node.dataset.chatCallDetail).map((node) => `${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`));
     const visibleAnchor = [...messagesEl.querySelectorAll("article.message")].find((node) => node.getBoundingClientRect().bottom > messagesEl.getBoundingClientRect().top);
     const anchorKey = visibleAnchor?.dataset.recordKey;
     const anchorOffset = visibleAnchor ? visibleAnchor.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top : 0;
     messagesEl.innerHTML = feedHtml;
     for (const node of messagesEl.querySelectorAll("article.message details")) {
-      if (open.has(`${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`)) node.open = true;
+      if (!node.dataset.chatCallDetail && open.has(`${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`)) node.open = true;
     }
     if (!wasAtBottom && anchorKey) {
       const moved = [...messagesEl.querySelectorAll("article.message")].find((node) => node.dataset.recordKey === anchorKey);
@@ -872,7 +905,7 @@ function renderFeed() {
       }
     }
   }
-  updateLatestControl(messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60);
+  updateLatestControl();
   hasRenderedFeed = true;
   const bookmark = lastViewed.get(renderedReadingScope);
   lastViewedIndex = bookmark ? messages.findIndex((message) => recordKey(message) === bookmark) : -1;
@@ -917,7 +950,7 @@ function renderLanes(data) {
   lanesLoadError = "";
   $("#messages").setAttribute("aria-busy", "false");
   try {
-    if (localStorage.getItem(MESSAGE_TYPES_KEY) === null && localStorage.getItem(MESSAGE_TYPES_LEGACY_KEY) === null) {
+    if (!hasStoredMessageTypes()) {
       if (lanes.some((lane) => lane.messages.some((message) => message.kind === "thinking"))) selectedMessageTypes.add("thinking");
       else selectedMessageTypes.delete("thinking");
       renderMessageTypeFilters();
@@ -925,8 +958,18 @@ function renderLanes(data) {
   } catch { /* Preferences are optional. */ }
   transcriptCoverage = data.transcript || { sessions: [], warnings: [], note: "Transcript coverage unavailable." };
   const sources = transcriptCoverage.sessions;
+  const mateSources = transcriptCoverage.secondmateSources || [];
+  // Retain a selected unavailable mate honestly until the user returns to All.
+  const mateOptions = mateSources.some(({ id }) => id === selectedSecondmate) || !selectedSecondmate ? mateSources : [...mateSources, { id: selectedSecondmate, loaded: false }];
+  $("#secondmate-filter").innerHTML = '<option value="">All messages</option>' + mateOptions.map(({ id, loaded }) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}${loaded ? "" : " · source unavailable"}</option>`).join("");
+  $("#secondmate-filter").value = selectedSecondmate;
   const windowButton = $("#transcript-load-more");
-  $("#transcript-window-status").hidden = !transcriptCoverage.expandable;
+  const olderHistoryTruncated = [...sources, ...mateSources].some((source) => source.loaded && source.omittedBytes > 0);
+  $("#transcript-window-status").hidden = !olderHistoryTruncated && !transcriptCoverage.expandable;
+  $("#transcript-window-hint").textContent = olderHistoryTruncated
+    ? `Older history truncated · Newest whole records shown. Search covers loaded records.${transcriptWindowBytes >= 8 * 1024 * 1024 ? " 8 MiB/source limit reached." : ""}`
+    : "Recent source windows · Search covers loaded records.";
+  windowButton.hidden = !transcriptCoverage.expandable;
   windowButton.disabled = false;
   windowButton.textContent = `Load more records (${Math.min(8, transcriptWindowBytes / (1024 * 1024) * 2)} MiB/source)`;
   if (!sources.some((session) => session.id === selectedTranscriptSession)) selectedTranscriptSession = "";
@@ -939,7 +982,7 @@ function renderLanes(data) {
     infoTrigger.setAttribute("aria-label", `Transcript coverage: ${summaryText}`);
   }
   $("#transcript-note").textContent = [transcriptCoverage.note, ...transcriptCoverage.warnings].join(" ");
-  $("#transcript-sources").innerHTML = [...sources, ...(transcriptCoverage.outcomeSources || [])].map((session) => `<li>${escapeHtml(session.source)} · ${session.loaded ? `${session.messageCount} messages` : "not loaded"}${session.omittedBytes ? " · newest records only; older history not loaded" : ""}${session.skippedRecords ? ` · ${session.skippedRecords} malformed/undated records skipped` : ""}</li>`).join("");
+  $("#transcript-sources").innerHTML = [...sources, ...(transcriptCoverage.outcomeSources || []), ...mateSources].map((session) => `<li>${escapeHtml(session.source)} · ${session.loaded ? `${session.messageCount} messages` : "not loaded"}${session.omittedBytes ? " · newest records only; older history not loaded" : ""}${session.skippedRecords ? ` · ${session.skippedRecords} malformed/undated records skipped` : ""}</li>`).join("");
   $("#transcript-session").innerHTML = '<option value="">Loaded transcript files</option>' + sources.map((session) => `<option value="${escapeHtml(session.id)}" ${session.id === selectedTranscriptSession ? "selected" : ""}>${escapeHtml(session.source)}${session.loaded ? "" : " · load on selection"}</option>`).join("");
   if (!lanes.length) {
     renderLanesError("No projects are registered in FM_HOME/data/projects.md.");
@@ -971,6 +1014,7 @@ function renderLanesError(message) {
   updateKindNavigation();
   $("#messages").setAttribute("aria-busy", "false");
   $("#transcript-window-status").hidden = true;
+  $("#primary-input-filter-status").hidden = true;
   $("#transcript-summary").textContent = "Transcript unavailable";
   const infoTrigger = $("#transcript-details summary");
   if (infoTrigger) {
@@ -1223,13 +1267,13 @@ function renderExpenseRows() {
   $("#expense-sort-status").textContent = `Sorted by ${sortLabel} ${expenseSort.direction === "asc" ? "ascending" : "descending"}`;
   $("#expense-entries").innerHTML = sorted.length ? sorted.map((entry) => `
     <tr data-review-id="expense:${reviewId(entry.id || [entry.date, entry.projectId, entry.description].join(':'))}">
-      <td><time datetime="${escapeHtml(entry.date)}">${escapeHtml(entry.date)}</time></td>
-      <td><strong>${escapeHtml(entry.projectName)}</strong></td>
-      <td><span class="category-chip">${escapeHtml(entry.category)}</span></td>
-      <td class="numeric amount${entry.amount.startsWith("-") ? " credit" : ""}">${escapeHtml(entry.amount)}</td>
-      <td>${escapeHtml(entry.currency)}</td>
-      <td class="expense-description">${escapeHtml(entry.description)}</td>
-      <td>${entry.confidence ? `<span class="confidence-label">${escapeHtml(entry.confidence)}</span>` : '<span class="muted">—</span>'}</td>
+      <td data-label="Date"><span class="expense-cell-label">Date</span><time datetime="${escapeHtml(entry.date)}">${escapeHtml(entry.date)}</time></td>
+      <td data-label="Project"><span class="expense-cell-label">Project</span><strong>${escapeHtml(entry.projectName)}</strong></td>
+      <td data-label="Category"><span class="expense-cell-label">Category</span><span class="category-chip">${escapeHtml(entry.category)}</span></td>
+      <td class="numeric amount${entry.amount.startsWith("-") ? " credit" : ""}" data-label="Amount"><span class="expense-cell-label">Amount</span>${escapeHtml(entry.amount)}</td>
+      <td data-label="Currency"><span class="expense-cell-label">Currency</span>${escapeHtml(entry.currency)}</td>
+      <td class="expense-description" data-label="Description / note"><span class="expense-cell-label">Description / note</span>${escapeHtml(entry.description)}</td>
+      <td data-label="Confidence / basis"><span class="expense-cell-label">Confidence / basis</span>${entry.confidence ? `<span class="confidence-label">${escapeHtml(entry.confidence)}</span>` : '<span class="muted">—</span>'}</td>
     </tr>`).join("") : '<tr><td colspan="7" class="empty compact">No expenses recorded. Add entries to your selected private expense ledger.</td></tr>';
 }
 
@@ -1314,6 +1358,14 @@ function formatQuotaReserve(value) {
 let lastRenderedQuotaJson = "";
 let quotaReading = null;
 let quotaAgeTimer = null;
+let quotaRefreshDueAt = 0;
+// Sidebar and phone quota remain in view on every route. Reuse the existing
+// age ticker and endpoint guard; hidden tabs catch up when visible again.
+function tickQuota() {
+  if (document.visibilityState === "hidden") return;
+  if (quotaReading) renderQuota(quotaReading);
+  if (Date.now() >= quotaRefreshDueAt) void refreshEndpoint("quota");
+}
 let quotaHideInactive = false;
 let quotaAllDetails = false;
 let sidebarQuotaSort = "highest";
@@ -1479,7 +1531,7 @@ function quotaFamilyBox(family, readAt, { compact = false, variant = "compact" }
   const labels = quotaWindowLabels(family);
   const mark = providerLogoHtml(family.provider, { mono: compact, size: compact ? 16 : 20 });
   return `<div data-quota-key="${escapeHtml(JSON.stringify([family.provider, family.scope]))}" class="quota-family${compact ? " quota-family-side" : ""}${windows.some(w => w.isLimiting) ? " quota-summary-window-limiting" : ""}" aria-label="${heading} quota windows">
-    <div class="quota-family-title"><span class="quota-family-identity">${mark}</span><b class="provider-name">${heading}</b>${family.stale ? `<span data-quota-key="freshness" class="quota-staleness" title="${escapeHtml(family.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(family.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((family.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : family.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(family.reusedLabel)}" aria-label="${escapeHtml(family.reusedLabel)}"><span class="quota-age">${escapeHtml(family.reusedLabel)}</span></span>` : family.status && family.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(family.status)}">${escapeHtml(quotaName(family.status))}</span>` : ""}</div>
+    <div class="quota-family-title"><span class="quota-family-identity">${mark}</span><b class="provider-name">${heading}</b>${family.stale ? `<span data-quota-key="freshness" class="quota-staleness${family.overdue ? " quota-overdue" : ""}" title="${escapeHtml(family.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(family.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((family.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : family.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(family.reusedLabel)}" aria-label="${escapeHtml(family.reusedLabel)}"><span class="quota-age">${escapeHtml(family.reusedLabel)}</span></span>` : family.status && family.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(family.status)}">${escapeHtml(quotaName(family.status))}</span>` : ""}</div>
     ${windows.map((w, index) => {
       const name = escapeHtml(labels[index]);
       const known = validQuotaPercent(w.percentRemaining);
@@ -1561,7 +1613,7 @@ function getCriticalConstraint(provider) {
 }
 
 function quotaFreshnessHtml(provider) {
-  return provider.stale ? `<span data-quota-key="freshness" class="quota-staleness" title="${escapeHtml(provider.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(provider.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((provider.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : provider.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(provider.reusedLabel)}" aria-label="${escapeHtml(provider.reusedLabel)}"><span class="quota-age">${escapeHtml(provider.reusedLabel)}</span></span>` : provider.status && provider.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(provider.status)}">${escapeHtml(quotaName(provider.status))}</span>` : "";
+  return provider.stale ? `<span data-quota-key="freshness" class="quota-staleness${provider.overdue ? " quota-overdue" : ""}" title="${escapeHtml(provider.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(provider.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((provider.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : provider.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(provider.reusedLabel)}" aria-label="${escapeHtml(provider.reusedLabel)}"><span class="quota-age">${escapeHtml(provider.reusedLabel)}</span></span>` : provider.status && provider.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(provider.status)}">${escapeHtml(quotaName(provider.status))}</span>` : "";
 }
 function quotaPageScopeName(scope) {
   return scope === "claude_gpt" ? "Claude/GPT" : quotaName(scope);
@@ -1610,7 +1662,7 @@ function renderQuota(data) {
   renderQuotaHtml(state, escapeHtml(`${data.stale ? "Stale last successful reading. " : ""}${reading} ${counts}${data.error ? `. ${data.error}.` : ""}${data.stale ? " Availability, pace and runway are unknown until a fresh reading." : ""}`));
   quotaReading = data;
   if (!quotaAgeTimer && typeof window !== "undefined" && window.setInterval) {
-    quotaAgeTimer = window.setInterval(() => { if (quotaReading) renderQuota(quotaReading); }, 15000);
+    quotaAgeTimer = window.setInterval(tickQuota, 15000);
   }
   const providers = data.providers || [];
   const projection = { ...allProjection, inactive: quotaHideInactive ? [] : allProjection.inactive };
@@ -1818,7 +1870,7 @@ function renderCallLifecycle() {
       banner.hidden = !showReply;
       if (showReply && api.replyBanner) {
         const text = api.replyBanner(posture.reply);
-        if (banner.textContent !== text) banner.textContent = text;
+        if (banner.textContent !== text) window.bearingsView.messageText(banner, text);
       }
     }
     callProcrastinate?.render(node);
@@ -1867,9 +1919,9 @@ const callPatcher = window.bearingsPatch?.createCallPatcher({
   onRender(node, card) { callAnswers?.render(node, card); callOverflow?.render(node, card); callDismiss?.render(node); callThreads?.render(node); callText?.render(node); callProcrastinate?.render(node); },
   onApply(model) { const keys = model.cards.map((card) => card.key); callAnswers?.prune(keys); callOverflow?.prune(keys); callDismiss?.prune(keys); callThreads?.prune(keys); callText?.prune(keys); renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); },
 });
-// Queued answers join the review panel's queue; its Send batch sends them with the notes.
-callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, noteId) => { callThreads?.noteSent(key, noteId); renderCallLifecycle(); } });
-if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: () => callAnswers.sendQueued(), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
+// Queued answers join the review panel's queue; its Send sends them with the notes.
+callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, noteId) => { callThreads?.noteSent(key, noteId); renderCallLifecycle(); } });
+if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: (options) => callAnswers.sendQueued(options), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
 callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
 callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });
 callProcrastinate = callPatcher && window.bearingsProcrastinate?.createController?.({ list: $("#call-cards"), onChange: () => renderCallLifecycle() });
@@ -1881,18 +1933,20 @@ callDismiss = callPatcher && window.bearingsDismiss?.createDismissController({
   onDismiss(key) { if (callPatcher.tracker.state().selected === key) callPatcher.tracker.deselect(); },
 });
 const landedBoard = window.bearingsLanded?.createController?.({ list: $("#landed-cards"), toggle: $("#landed-ack-toggle"), badge: $("#landed-new-count"), onChange: () => overviewTabs?.paint() });
+const workBoard = window.bearingsWork?.createController?.({ sections: { underway: $("#underway"), charted: $("#charted-next") } });
 const overviewTabs = window.overviewTabs?.createController?.({
   root: $("#overview-view"),
   tabs: $("#overview-section-tabs"),
-  panels: { calls: $("#overview-primary"), landed: $("#overview-secondary") },
-  counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0 },
+  panels: { calls: $("#overview-primary"), landed: $("#just-landed"), underway: $("#underway"), charted: $("#charted-next") },
+  secondary: $("#overview-secondary"),
+  counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0, underway: () => workBoard?.count("underway") || 0, charted: () => workBoard?.count("charted") || 0 },
   freshness: () => freshness.bearings,
   storage: localStorage,
   media: window.matchMedia?.("(max-width: 720.005px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
-  onModel(model) { callPatcher.update(model); landedBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { callPatcher.observe(data); landedBoard?.observe?.(data); observeBearings(data); },
+  onModel(model) { callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
+  onObserved(data) { callPatcher.observe(data); landedBoard?.observe?.(data); workBoard?.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
@@ -1907,8 +1961,9 @@ function renderFreshness() {
   const key = activeFreshnessKey();
   const item = freshness[key];
   const expired = key !== "bearings" && item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
+  const revisionStopped = key === "bearings" && item.connection === "revision";
   const disconnected = key === "bearings" && ["disconnected", "reconnecting"].includes(item.connection);
-  const condition = key === "bearings" && item.state === "unavailable" ? "unavailable" : key === "bearings" && item.stale ? "stale" : disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
+  const condition = revisionStopped ? "updating" : key === "bearings" && item.state === "unavailable" ? "unavailable" : key === "bearings" && item.stale ? "stale" : disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
   const last = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : "No successful reading yet";
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");
@@ -1919,7 +1974,7 @@ function renderFreshness() {
   el.title = full;
   el.setAttribute("aria-label", full);
   const pill = $("#fleet-state");
-  pill.classList.toggle("offline", ["unavailable", "disconnected", "stale"].includes(condition));
+  pill.classList.toggle("offline", ["unavailable", "disconnected", "stale", "updating"].includes(condition));
   $("#fleet-state b").textContent = condition;
   pill.title = full;
   pill.setAttribute("aria-label", full);
@@ -1986,6 +2041,7 @@ async function refreshEndpoint(key) {
   if (item.refreshing) return;
   item.refreshing = true;
   item.started = Date.now();
+  if (key === "quota") quotaRefreshDueAt = item.started + 300000;
   if (key === "lanes" && !hasLoadedLanes) {
     lanesLoadError = "";
     renderLanesLoading();
@@ -2031,7 +2087,10 @@ async function refreshEndpoint(key) {
       }
       $("#overview-state").textContent = `Could not load fleet: ${error.message}`;
       $("#overview-state").classList.remove("hidden");
-    } else if (key === "quota" && !item.lastSuccess) renderQuota({ providers: [], readAt: null, stale: false, error: "Quota unavailable" });
+    } else if (key === "quota") {
+      renderQuota(quotaReading ? { ...quotaReading, stale: true, error: "Quota refresh unavailable" }
+        : { providers: [], readAt: null, stale: false, error: "Quota unavailable" });
+    }
     else if (key === "lanes" && !item.lastSuccess) renderLanesError(error.message);
   } finally {
     item.duration = Date.now() - item.started;
@@ -2095,9 +2154,20 @@ function loadDashboard() {
   if (active === "lanes") void refreshEndpoint("lanes");
   if ($(".workspace").dataset.view === "preferences") void refreshPreferences();
 }
+// A confirmed Quarterdeck send (review batch, Captain's Call answer or thread note) is a
+// verified Captain message in the fleet log, so the loaded log must not stay behind it.
+let lanesBehindSend = false;
+window.addEventListener("quarterdeck-sent", () => {
+  if (!freshness.lanes.lastSuccess) return;
+  if (activeFreshnessKey() === "lanes") requestLanes();
+  else lanesBehindSend = true;
+});
 function ensureViewData(view) {
   renderFreshness();
-  if ((view === "conversations" || view === "closed") && !freshness.lanes.lastSuccess) void refreshEndpoint("lanes");
+  if ((view === "conversations" || view === "closed") && (!freshness.lanes.lastSuccess || lanesBehindSend)) {
+    lanesBehindSend = false;
+    void refreshEndpoint("lanes");
+  }
   if (view === "preferences" && !preferenceEntries.length) void refreshPreferences();
   if (view === "expenses") void refreshCosts();
 }
@@ -2208,13 +2278,24 @@ function setMobileFilterTab(tab, focus = false) {
     }
   }
 }
+$(".skip-link").addEventListener("click", (event) => {
+  // The hash router reads every fragment as a view. Following #main-stage would leave the current page.
+  event.preventDefault();
+  $("#main-stage").focus();
+});
 for (const [name, id] of [["lanes", "#mobile-lanes-tab"], ["kinds", "#mobile-kinds-tab"]]) {
   $(id).addEventListener("click", () => setMobileFilterTab(name));
   $(id).addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const order = ["lanes", "kinds"];
+    if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      setMobileFilterTab(name === "lanes" ? "kinds" : "lanes", true);
+      setMobileFilterTab(event.key === "Home" ? order[0] : order.at(-1), true);
+      return;
     }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const index = order.indexOf(name);
+    setMobileFilterTab(order[(index + (event.key === "ArrowRight" ? 1 : -1) + order.length) % order.length], true);
   });
 }
 const desktopPanels = { lane: true, kind: true };
@@ -2489,6 +2570,16 @@ $("#message-type-filters").addEventListener("change", (event) => {
   renderMessageTypeFilters();
   renderFeed();
 });
+$("#show-primary-input").addEventListener("click", () => {
+  selectedMessageTypes.add("primary-input");
+  savePreference(MESSAGE_TYPES_KEY, [...selectedMessageTypes]);
+  renderMessageTypeFilters();
+  renderFeed();
+});
+$("#secondmate-filter").addEventListener("change", (event) => {
+  selectedSecondmate = event.target.value;
+  renderFeed();
+});
 $("#transcript-session").addEventListener("change", (event) => {
   selectedTranscriptSession = event.target.value;
   if (selectedTranscriptSession && !transcriptCoverage.sessions.some((session) => session.id === selectedTranscriptSession && session.loaded)) requestLanes();
@@ -2526,7 +2617,9 @@ document.addEventListener("click", (event) => {
 }, true);
 $("#messages").addEventListener("toggle", (event) => {
   const article = event.target?.closest?.("article.message");
-  if (article && event.target.tagName === "DETAILS" && !event.target.dataset.reviewChip) fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
+  if (article && event.target.tagName === "DETAILS" && event.target.dataset.chatCallDetail) {
+    chatCallDetailChoices.set(event.target.dataset.chatCallDetail, event.target.open);
+  } else if (article && event.target.tagName === "DETAILS" && !event.target.dataset.reviewChip) fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
 }, true);
 $("#messages").addEventListener("keydown", (event) => {
   const chip = event.target?.closest?.("details.review-meta");
@@ -2551,12 +2644,7 @@ $("#messages").addEventListener("click", (event) => {
   }
 });
 $("#messages").addEventListener("scroll", () => {
-  const messagesEl = $("#messages");
-  const clientHeight = Number(messagesEl.clientHeight || 0);
-  const scrollHeight = Number(messagesEl.scrollHeight || 0);
-  const scrollTop = Number(messagesEl.scrollTop || 0);
-  const isAtBottom = clientHeight > 0 ? (scrollHeight - scrollTop - clientHeight < 60) : true;
-  updateLatestControl(isAtBottom);
+  updateLatestControl();
   updateLastViewedControl();
   updateKindNavigation();
 });
@@ -2568,22 +2656,26 @@ window.addEventListener("blur", () => { captureLastViewed(); });
 window.addEventListener("pagehide", () => { captureLastViewed(); });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") captureLastViewed();
+  else tickQuota();
 });
 $("#jump-to-last-viewed")?.addEventListener("click", () => {
   if (lastViewedIndex < 0) return;
   pendingKindJump = null;
   navigateToRecord(lastViewedIndex);
 });
-$("#jump-to-latest")?.addEventListener("click", () => {
+function jumpToLatest() {
   pendingKindJump = null;
   const messagesEl = $("#messages");
   transcriptPage = null;
   preservePageAnchor = false;
   renderFeed();
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  updateLatestControl(true);
+  updateLatestControl();
   updateLastViewedControl();
-});
+  messagesEl.focus({ preventScroll: true });
+}
+$("#jump-to-latest")?.addEventListener("click", jumpToLatest);
+$("#jump-to-latest-floating")?.addEventListener("click", jumpToLatest);
 $("#sessions-load-older").addEventListener("click", () => {
   taskOlderPages = Math.min(20, taskOlderPages + 1);
   requestLanes();

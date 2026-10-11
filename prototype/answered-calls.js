@@ -42,8 +42,11 @@ export function classifyAnsweredCalls(cards, receipts) {
   for (const item of [...handled.map((note) => ({ note, where: "handled" })), ...pending.map((note) => ({ note, where: "pending" }))]) {
     const id = item.note?.id;
     if (typeof id === "string" && id) {
-      if (seen.has(id)) continue;
-      seen.add(id);
+      // Expanded batch items share the inbox note id, but retain their own
+      // request identity. Only duplicate receipts for the same item collapse.
+      const identity = JSON.stringify([id, item.note.request_id || ""]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
     }
     unique.push(item);
   }

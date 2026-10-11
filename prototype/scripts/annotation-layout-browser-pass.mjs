@@ -164,19 +164,16 @@ try {
     await evaluate(`document.querySelector('#review-panel-toggle').click()`);
     const actions = await evaluate(`(() => {
       const box = (id) => { const e = document.querySelector(id), r = e.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, name: e.textContent, type: e.type, disabled: e.disabled }; };
-      return { row: box('.review-actions'), queue: box('#review-queue'), send: box('#review-send'), end: box('#review-end'), panel: box('#review-panel'), bodyWidth: document.documentElement.scrollWidth };
+      return { row: box('.review-actions'), queue: box('#review-queue'), send: box('#review-send'), panel: box('#review-panel'), bodyWidth: document.documentElement.scrollWidth };
     })()`);
-    assert.ok(actions.queue.top === actions.send.top && actions.send.top === actions.end.top, `one action row at ${width}: ${JSON.stringify(actions)}`);
-    assert.ok(actions.queue.right <= actions.send.left && actions.send.right <= actions.end.left && actions.end.right <= actions.row.right, `three non-overlapping columns at ${width}`);
+    assert.ok(actions.queue.top === actions.send.top, `one action row at ${width}: ${JSON.stringify(actions)}`);
+    assert.ok(actions.queue.right <= actions.send.left && actions.send.right <= actions.row.right, `two non-overlapping columns at ${width}`);
     assert.equal(actions.queue.type, "submit");
     assert.equal(actions.send.type, "button");
-    assert.equal(actions.end.type, "button");
     assert.equal(actions.send.disabled, true, JSON.stringify(actions));
-    assert.equal(actions.end.disabled, true);
-    assert.match(actions.queue.name, /Queue message/);
-    assert.match(actions.send.name, /Send batch/);
-    assert.match(actions.end.name, /Send & end/);
-    assert.ok(actions.queue.left >= (width < 721 ? actions.panel.left : 0) && actions.end.right <= (width < 721 ? actions.panel.right : width) && actions.bodyWidth <= width, `actions fit ${width < 721 ? 'panel' : 'footer'} at ${width}`);
+    assert.match(actions.queue.name, /^Queue$/);
+    assert.match(actions.send.name, /Send/);
+    assert.ok(actions.queue.left >= (width < 721 ? actions.panel.left : 0) && actions.send.right <= (width < 721 ? actions.panel.right : width) && actions.bodyWidth <= width, `actions fit ${width < 721 ? 'panel' : 'footer'} at ${width}`);
     // Independent panel sizing on desktop; phone keeps its viewport-bounded pane and dock.
     if (width === 1280) {
       await wait(300); // Ensure the independent resize module has registered after navigation.
@@ -205,9 +202,9 @@ try {
       assert.equal(await evaluate(`getComputedStyle(document.querySelector('#review-resize')).display`), 'none');
       assert.equal(await evaluate(`getComputedStyle(document.querySelector('#quota-resize')).display`), 'none');
     }
-    // Queue remains the form submit action; draft enables both send choices without changing identity.
+    // Queue remains the form submit action; draft enables Send without changing identity.
     await evaluate(`(() => { const textarea = document.querySelector('#review-message'); textarea.value = 'Synthetic layout check'; textarea.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-    assert.equal(await evaluate('document.querySelector("#review-send").disabled || document.querySelector("#review-end").disabled'), false);
+    assert.equal(await evaluate('document.querySelector("#review-send").disabled || document.querySelector("#review-send").disabled'), false);
     await evaluate('document.querySelector("#review-queue").click()');
     assert.match(await evaluate('document.querySelector("#review-thread").textContent'), /Queued batch/);
     console.log(`${width}x${height} ${revision}: banner ${shell.banner.bottom.toFixed(0)} → feed ${shell.stage.top.toFixed(0)}; three review actions in one row`);
@@ -345,7 +342,7 @@ try {
         const history = await evaluate(`(() => { document.querySelector('#review-history-tab').click(); const t = document.querySelector('#review-thread');
           for (let i = 0; i < 40; i++) { const item = document.createElement('article'); item.textContent = 'Synthetic history entry ' + i; t.append(item); }
           t.scrollTop = t.scrollHeight; return { client: t.clientHeight, content: t.scrollHeight, scrolled: t.scrollTop,
-            actionBottom: document.querySelector('#review-end').getBoundingClientRect().bottom }; })()`);
+            actionBottom: document.querySelector('#review-send').getBoundingClientRect().bottom }; })()`);
         assert.ok(history.content > history.client && history.scrolled > 0 && history.actionBottom <= review.panel.bottom + 1, `history scroll does not displace actions at ${width}: ${JSON.stringify(history)}`);
         await evaluate('document.querySelector("#review-conversation-tab").click()');
         const anchored = await evaluate(`(() => { const form = document.querySelector('#review-form'); form.classList.add('review-form-anchored');
@@ -358,8 +355,8 @@ try {
           const r = document.querySelector('#review-panel').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; })()`);
         assert.ok(keyboard.top >= 19 && keyboard.bottom <= 441, `keyboard-sized review remains in visual viewport at ${width}: ${JSON.stringify(keyboard)}`);
         const composerReach = await evaluate(`(() => { const form = document.querySelector('#review-form'); form.scrollTop = form.scrollHeight;
-          return document.querySelector('#review-end').getBoundingClientRect().bottom; })()`);
-        assert.ok(composerReach <= keyboard.bottom + 1, `Send and end reachable with keyboard at ${width}: ${composerReach}`);
+          return document.querySelector('#review-send').getBoundingClientRect().bottom; })()`);
+        assert.ok(composerReach <= keyboard.bottom + 1, `Send reachable with keyboard at ${width}: ${composerReach}`);
         await evaluate(`window.dispatchEvent(new Event('resize'))`);
         await evaluate(`(() => { const t = document.querySelector('#review-message'); t.value = 'Draft held on close'; t.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#review-close').click(); })()`);
         await wait(60); // Native dialog restores focus after its close mutation is processed.

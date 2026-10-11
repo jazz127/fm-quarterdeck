@@ -32,3 +32,5 @@ Quarterdeck is the Firstmate operational cockpit: conversations are the shell; l
 - `prototype/TRANSCRIPTS.md`, `SESSION-WINDOW.md`, `WORK-TAXONOMY.md`, `LAYOUT-CORRECTION.md`, `VISUAL-DESIGN.md`: detailed ingestion, work and presentation contracts.
 
 Normal record readers are read-only. Narrow guarded review/intake, taxonomy and preview-selection operations are explicit exceptions, not arbitrary operational control. A local candidate, receipt, running process, remote checkpoint and deployed release are different evidence states.
+
+[Mobile notifications](MOBILE-NOTIFICATIONS.md) documents disabled-by-default direct Web Push, private ownership and the remaining device acceptance boundary.

@@ -2,6 +2,7 @@ import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHistoryReader } from "./history-reader.js";
 import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
+import { sessionInput } from "./authorship.js";
 
 const MIRROR_MATCH_WINDOW_MS = 60_000;
 const NATIVE_MAIN = new Set(["main Pi", "main Claude"]);
@@ -135,6 +136,16 @@ export async function discoverTranscriptInventory(home, { reader = createHistory
   return { inventory, active, warnings, claudePrimary, mainPiSessions };
 }
 
+// A complete lane envelope anywhere in the text. Names match case-insensitively,
+// the same way explicit lane routing does. Malformed closers do not count.
+function containsCompleteLaneBlock(text) {
+  const marker = /\[fm-lane ([^\]\r\n]+)\]\r?\n[\s\S]+?\r?\n\[end ([^\]\r\n]+)\]/g;
+  for (const match of text.matchAll(marker)) {
+    if (match[1].toLowerCase() === match[2].toLowerCase()) return true;
+  }
+  return false;
+}
+
 export async function readConversationTranscript(home, publicMessage, { selectedIds = [], older = 0, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
   const { inventory, active, warnings, claudePrimary, mainPiSessions } = await discoverTranscriptInventory(home, { reader, claudeConfigDir });
   const requested = new Set(selectedIds.slice(0, 60));
@@ -182,8 +193,11 @@ export async function readConversationTranscript(home, publicMessage, { selected
         turns = [{ role: "assistant", content: record.content, recordKind: record.customType === "fm-branch-merge" ? "supervision" : "harness" }];
       } else if (record.type === "message" && ["user", "assistant", "toolResult", "bashExecution"].includes(record.message?.role)) {
         const role = record.message.role;
-        turns = [{ role, content: role === "bashExecution" ? `${record.message.command || ""}\n${record.message.output || ""}` : record.message.content,
-          recordKind: ["toolResult", "bashExecution"].includes(role) ? "tools" : null, author: role === "toolResult" ? record.message.toolName : null }];
+        const content = record.message.content;
+        const toolCallPart = role === "assistant" && Array.isArray(content) && content.some((part) => part?.type === "toolCall");
+        turns = [{ role, content: role === "bashExecution" ? `${record.message.command || ""}\n${record.message.output || ""}` : content,
+          recordKind: ["toolResult", "bashExecution"].includes(role) ? "tools" : null, author: role === "toolResult" ? record.message.toolName : null,
+          narration: role === "assistant" && (record.message.stopReason === "toolUse" || toolCallPart) }];
       } else continue;
       if (!turns.length) continue;
       const timestamp = new Date(record.timestamp ?? record.message?.timestamp);
@@ -203,11 +217,24 @@ export async function readConversationTranscript(home, publicMessage, { selected
           // Remove only machine envelopes, not arbitrary ordinary user turns.
           if (role === "user" && (/^\W*FIRSTMATE_OP:/.test(text) || /^FIRSTMATE SUPERVISION WAKE:/.test(text) || /^\s*<skill\b[^>]*>[\s\S]*<\/skill>\s*$/.test(text))) continue;
           reader.takeMessage();
-          messages.push({ ...publicMessage({
-            author: recordKind === "supervision" ? "Fleet" : role === "user" ? "Captain" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: role === "user" ? "captain" : "firstmate",
-            source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex,
-            state: role === "user" ? "captain" : thinking ? "thinking" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : recordKind || "conversation",
-          }), transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });
+          // Pre-tool narration would otherwise be a Firstmate reply. Branch, supervision
+          // and harness turns keep their record kind. A complete lane block stays a reply.
+          const preToolNarration = Boolean(turn.narration) && !recordKind && part.type === "text" && !containsCompleteLaneBlock(text);
+          // A transcript role=user entry (or [captain] mirror) is unverified input, never
+          // the Captain's: the LLM role says nothing about who wrote it (authorship.js).
+          const identity = role === "user" ? sessionInput(origin) : {
+            author: recordKind === "supervision" ? "Fleet" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: "firstmate",
+            state: thinking ? "thinking" : preToolNarration ? "working" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : preToolNarration ? "narration" : recordKind || "conversation",
+          };
+          // Display provenance only: human-marked injections share this metadata.
+          // Keep the input identity; inferred primaries and other sources stay opt-in.
+          const nonconversationInput = /^\s*(?:MAIN DIALOG MIRROR\b|<task-notification>|<local-command-(?:stdout|stderr)>)/.test(text);
+          const primaryHumanInput = role === "user" && !nonconversationInput && claudePrimary?.file === file && !claudePrimary.inferred &&
+            (record.type === "user" ? record.origin?.kind === "human" :
+              record.type === "attachment" && record.attachment?.type === "queued_command" && record.attachment.origin?.kind === "human");
+          messages.push({ ...publicMessage({ ...identity, source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex }),
+            ...(primaryHumanInput ? { primaryHumanInput: true } : {}),
+            transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });
           session.messageCount += 1;
           const iso = timestamp.toISOString();
           if (!session.startedAt || iso < session.startedAt) session.startedAt = iso;

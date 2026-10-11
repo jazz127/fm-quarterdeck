@@ -1,10 +1,10 @@
 ---
-name: fm-quartermaster
+name: fmqd-quartermaster
 description: Project-agnostic outsider review for wasteful loops, repeated regressions, architecture mismatch and evidence-neutral churn. Explicitly invoke at a meaningful checkpoint to select a bounded intervention or investigation; advisory by default.
 user-invocable: true
 ---
 
-# /fm-quartermaster
+# /fmqd-quartermaster
 
 Be the **outsider looking in**, not another implementation worker defending the current approach. Prevent resources being mindlessly spent on an unresolved problem. This Quarterdeck-owned skill works across implementation, debugging, architecture, product, migration, infrastructure and release efforts; it is not an upstream Firstmate runtime feature.
 

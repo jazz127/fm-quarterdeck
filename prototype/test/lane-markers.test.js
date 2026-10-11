@@ -18,8 +18,8 @@ const turn = (text, seconds) => JSON.stringify({
   message: { role: "assistant", content: [{ type: "text", text }] },
 });
 
-test("canonical fm-lanes examples survive transcript ingestion and safe render preparation", async (t) => {
-  const skill = await readFile(new URL("../../skills/fm-lanes/SKILL.md", import.meta.url), "utf8");
+test("canonical fmqd-lanes examples survive transcript ingestion and safe render preparation", async (t) => {
+  const skill = await readFile(new URL("../../skills/fmqd-lanes/SKILL.md", import.meta.url), "utf8");
   // Use the skill's actual multi-lane example, not a separately maintained tag template.
   const example = skill.slice(skill.indexOf("[fm-lane General]\nAll crewmates"), skill.indexOf("**Incorrect (trailing cross-project line):**"));
   assert.match(example, /^\[fm-lane General\]\n/);
@@ -47,10 +47,12 @@ test("canonical fm-lanes examples survive transcript ingestion and safe render p
   const script = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const fontPrefs = await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8");
   const messageKinds = await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8");
-  const renderCode = script.slice(0, script.indexOf("function orderedProjectLanes()"));
+  const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
+  const renderCode = script.slice(0, script.indexOf("function orderedProjectLanes()")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "");
   const context = vm.createContext({ window: {}, localStorage: { getItem: () => null, setItem() {} } });
   vm.runInContext(fontPrefs, context);
   vm.runInContext(messageKinds, context);
+  vm.runInContext(extraction, context);
   vm.runInContext(renderCode, context);
   for (const block of [generalBlock, databaseBlock, hostile]) {
     context.block = block;
@@ -188,7 +190,7 @@ test("explicit transcript lane wins over text, file name and General; lane filte
     window: {}, lanes, feedLaneOverrideId: null, allLanesSelected: false, laneStatusFilter: "all",
     selectedLaneIds: new Set(["alpha", "general"]),
     selectedMessageTypes: new Set(["captain", "conversation", "supervision"]),
-    selectedSessionId: null, selectedTranscriptSession: "", transcriptQuery: "",
+    selectedSessionId: null, selectedTranscriptSession: "", selectedSecondmate: "", transcriptQuery: "",
   });
   vm.runInContext(bulkControls, context);
   vm.runInContext(messageKinds, context);

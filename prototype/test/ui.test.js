@@ -7,7 +7,8 @@ import { callDom } from "./helpers/call-dom.js";
 import { createHash } from "node:crypto";
 import { parseCss, computed, element } from './helpers/css-model.mjs';
 
-const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
+const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
+const script = `${extraction}\n${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${(await readFile(new URL("../public/app.js", import.meta.url), "utf8")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
 test("opt-in compact headers preserve Quota markup and expose full descriptions", async () => {
@@ -60,6 +61,13 @@ test("live model and observation feed the patcher, badge and independent Overvie
   assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
   app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()})");
   assert.equal(app.node('#call-badge').hidden, true);
+    app.run("freshness.bearings.lastSuccess = Date.now() - 3600000; freshness.bearings.error = null; freshness.bearings.stale = false; freshness.bearings.refreshing = false; window.callHooks.onConnection({state:'revision'})");
+  const stopped = app.node('#view-freshness');
+  assert.equal(app.node('#fleet-state b').textContent, 'updating');
+  assert.notEqual(app.node('#fleet-state b').textContent, 'fresh');
+  assert.equal(stopped.dataset.state, 'updating');
+  assert.match(stopped.title, /^Captain's Call · updating · Last success/);
+  assert.equal(app.node('#fleet-state').classList.contains('offline'), true);
 });
 
 test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
@@ -106,6 +114,28 @@ test("request failures use readable HTTP or network messages", async () => {
     const app = ui({fetchImpl: (url, options) => url === '/synthetic-error' ? fetchImpl() : new Promise(() => {})});
     await assert.rejects(app.run("fetchJson('/synthetic-error')"), {message: expected});
   }
+});
+
+test("Overview retains KPIs, replaces only the project tree with accessible live calls", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const overview = html.slice(html.indexOf('<section id="overview-view"'), html.indexOf('<section id="work-view"'));
+  assert.match(overview, /id="summary"/);
+  assert.ok(overview.indexOf('id="summary"') < overview.indexOf('id="overview-section-tabs"') && overview.indexOf('id="overview-section-tabs"') < overview.indexOf('id="overview-columns"'));
+  assert.match(overview, /id="overview-section-tabs"[\s\S]*role="tablist"[\s\S]*id="overview-tab-calls"[\s\S]*Captain's Call \(0\)[\s\S]*id="overview-tab-landed"[\s\S]*Just landed \(0\)/);
+  assert.match(html, /<script src="\/bearings-landed\.js"><\/script>\s*<script src="\/bearings-work\.js"><\/script>\s*<script src="\/overview-tabs\.js"><\/script>/);
+  assert.match(overview, /id="overview-columns"/);
+  assert.match(overview, /id="overview-primary"[\s\S]*id="captain-call" aria-labelledby="call-heading"/);
+  assert.match(overview, /id="overview-secondary"[\s\S]*id="just-landed"/);
+  assert.match(overview, /id="just-landed-heading"[\s\S]*Just landed <b id="landed-new-count" class="call-badge" hidden>0<\/b>/);
+  assert.match(overview, /id="landed-ack-toggle"/);
+  assert.match(overview, /Checking for landings/);
+  assert.doesNotMatch(overview.slice(overview.indexOf('id="overview-secondary"')), /placeholder|coming soon|Procrastinate/i);
+  const landedJs = await readFile(new URL("../public/bearings-landed.js", import.meta.url), "utf8");
+  assert.match(landedJs, /No recent completions are in the current baseline\./);
+  assert.match(landedJs, /data-landed-key/);
+  assert.doesNotMatch(landedJs, /data-call-key|data-call-procrastinate/);
+  assert.match(overview, /id="call-status"[^>]*role="status"/);
+  assert.doesNotMatch(overview, /id="projects"|overview-status|Repositories →/);
 });
 
 test("Overview call counts announce increases and hide the empty badge", () => {
@@ -242,7 +272,7 @@ test("desktop control and persistent review footer keep gesture and action order
   assert.match(html, /<footer id="desktop-review-footer"[\s\S]*id="review-panel-toggle"[\s\S]*<\/footer>/);
   assert.match(review, /destination\.insertBefore\(form, el\("review-panel-toggle"\)\)/);
   assert.match(review, /destination\.insertBefore\(form, el\("review-state"\)\)/);
-  assert.match(html, /id="review-message"[\s\S]*id="review-queue"[\s\S]*id="review-send"[\s\S]*id="review-end"[\s\S]*id="review-panel-toggle"/);
+  assert.match(html, /id="review-message"[\s\S]*id="review-queue"[\s\S]*id="review-send"[\s\S]*id="review-panel-toggle"/);
   assert.match(css, /\.lane-list \{ grid-column: 1; grid-row: 1 \/ 3; \}/);
   assert.match(css, /#desktop-review-footer \{ grid-column: 2 \/ -1; grid-row: 2;/);
   assert.match(html, /id="review-message"[^>]*placeholder="Message firstmate"/);
@@ -252,11 +282,13 @@ test("desktop control and persistent review footer keep gesture and action order
   assert.match(css, /#desktop-review-footer \{ display: contents; \}/);
 });
 
-test("annotation composer has one three-column action row with unchanged button identities", async () => {
+test("composer uses one Send and places the existing Annotate action beside desktop controls", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send batch<\/button><button id="review-end" type="button" data-hint="Then end chat">Send &amp; End<\/button><\/div><\/form>/);
-  assert.match(css, /\.review-actions \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(html, /<form id="review-form">[\s\S]*<div class="review-actions"><button id="review-queue" type="submit" form="review-form" aria-label="Queue message \(Enter\)" data-hint="Enter">Queue<\/button><button id="review-send" type="button" data-hint="Ctrl\/Cmd\+Enter">Send<\/button><\/div><\/form>/);
+  assert.match(css, /\.review-actions \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.review-actions button \{ min-width: 0;/);
+  const review = await readFile(new URL("../public/review-client.js", import.meta.url), "utf8");
+  assert.match(review, /phoneReview\?\.matches \? document\.querySelector\("\.review-header-actions"\) : document\.querySelector\("#review-form \.review-actions"\)/);
 });
 
 test("mobile icons preserve desktop text and accessible names", async () => {
@@ -1150,7 +1182,7 @@ test("redesigned feed retains default visibility, live-lane safety and causal or
     record({ kind: "thinking", text: "Thinking record" }),
     record({ role: "captain", author: "Captain", text: "Driving prompt" }),
   ]), lane("archive", [record({ text: "Closed record" })], true)]);
-  assert.equal(app.run("Array.from(selectedMessageTypes).join(',')"), "captain,conversation,supervision");
+  assert.equal(app.run("Array.from(selectedMessageTypes).join(',')"), "captain,conversation,primary-input,supervision");
   assert.equal(app.run("messagesForSelection().map(m => m.text).join('|')"), "Driving prompt|Readable response");
   app.run('selectedMessageTypes = new Set(MESSAGE_TYPES.map(type => type.id)); renderFeed();');
   assert.equal(app.run("messagesForSelection().map(m => m.text).join('|')"), "Driving prompt|Thinking record|Readable response|Crew status");
@@ -1197,12 +1229,15 @@ test("message filters use stock labels in signal order and expose Select all/Cle
   const app = ui();
   app.run("renderMessageTypeFilters();");
   const html = app.node("#message-type-filters").innerHTML;
-  for (const label of ["captain", "Firstmate replies", "supervision outcomes", "thinking", "steers", "crew status", "crew replies", "tools", "harness"]) {
+  for (const label of ["captain", "Firstmate replies", "supervision outcomes", "thinking", "Firstmate progress", "steers", "crew status", "crew replies", "tools", "harness", "unverified input"]) {
     assert.match(html, new RegExp(label));
   }
   assert.ok(html.indexOf("captain") < html.indexOf("Firstmate replies"));
   assert.ok(html.indexOf("Firstmate replies") < html.indexOf("supervision outcomes"));
   assert.ok(html.indexOf("supervision outcomes") < html.indexOf("thinking"));
+  assert.ok(html.indexOf("thinking") < html.indexOf("Firstmate progress"));
+  assert.ok(html.indexOf("Firstmate progress") < html.indexOf("steers"));
+  assert.equal(app.run('selectedMessageTypes.has("narration")'), false, "progress lines stay off until the captain turns them on");
   // Default preference is partial (crew hidden) → Select all mode.
   assert.equal(app.node("#kinds-bulk-toggle").dataset.mode, "select");
   assert.equal(app.node("#kinds-bulk-toggle").textContent, "Select all");
@@ -1253,6 +1288,129 @@ test("fleet notes are default-on, captain has its own toggle, and steers stay in
   app.run('selectedMessageTypes.delete("captain"); selectedMessageTypes.add("steer"); renderFeed()');
   assert.doesNotMatch(app.node("#messages").innerHTML, /Captain chat/);
   assert.match(app.node("#messages").innerHTML, /origin-steer/);
+});
+
+test("primary input display retains unverified labels, filters and explicit opt-outs", () => {
+  const app = ui();
+  app.run(`renderLanes({lanes:[${JSON.stringify(lane("general", [
+    record({ role: "input", kind: "input", state: "input", author: "Claude session input", text: "Synthetic primary question", primaryHumanInput: true, recordId: "primary", transcriptSessionId: "selected" }),
+    record({ role: "input", kind: "input", author: "Inbox note", text: "Synthetic unproven note", recordId: "note" }),
+  ]))}],transcript:{sessions:[],warnings:[]}})`);
+  const feed = () => app.node("#messages").innerHTML;
+  assert.match(feed(), /Synthetic primary question/);
+  assert.match(feed(), /<strong>Claude session input<\/strong><span class="message-origin origin-primary-input">primary session input \(unverified\)<\/span>/);
+  assert.doesNotMatch(feed(), /Synthetic unproven note|origin-captain/);
+  app.run('selectedMessageTypes.delete("primary-input"); renderFeed()');
+  assert.doesNotMatch(feed(), /Synthetic primary question/);
+  assert.equal(app.node("#primary-input-filter-status").hidden, false);
+  app.node("#show-primary-input").dispatchEvent({ type: "click" });
+  assert.match(feed(), /Synthetic primary question/);
+  assert.equal(app.node("#primary-input-filter-status").hidden, true);
+  app.run('selectedTranscriptSession="other"; renderFeed()');
+  assert.doesNotMatch(feed(), /Synthetic primary question/);
+  app.run('selectedTranscriptSession=""; transcriptQuery="unmatched"; renderFeed()');
+  assert.doesNotMatch(feed(), /Synthetic primary question/);
+});
+
+test("unverified input is its own default-hidden kind, and a confirmed send refreshes the loaded fleet log", async () => {
+  const calls = [];
+  const app = ui({ fetchImpl(url) {
+    if (!url.startsWith("/api/lanes")) return new Promise(() => {});
+    return new Promise((resolve) => calls.push((data) => resolve({ ok: true, json: async () => data })));
+  } });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const data = { lanes: [lane("general", [
+    record({ role: "captain", author: "Captain", text: "Verified Quarterdeck send", recordId: "a" }),
+    record({ role: "input", author: "Pi session input", kind: "input", state: "input", text: "models", recordId: "b", transcriptOrigin: "main Pi" }),
+  ])], source: "Firstmate home", transcript: { sessions: [], warnings: [] } };
+  assert.equal(calls.length, 1);
+  calls[0](data);
+  await flush();
+  const feed = () => app.node("#messages").innerHTML;
+  assert.match(feed(), /Verified Quarterdeck send/);
+  assert.doesNotMatch(feed(), /models/, "unverified input is outside the default feed");
+  app.run('selectedMessageTypes.add("input"); renderFeed()');
+  assert.match(feed(), /<strong>Pi session input<\/strong><span class="message-origin origin-input">unverified input<\/span>/);
+  assert.doesNotMatch(feed(), /class="message input[^"]*"[^>]*>[\s\S]*?origin-captain/);
+  app.run('selectedMessageTypes.delete("captain"); renderFeed()');
+  assert.match(feed(), /models/, "the captain toggle does not govern unverified input");
+  assert.doesNotMatch(feed(), /Verified Quarterdeck send/);
+
+  app.windowEvent("quarterdeck-sent");
+  assert.equal(calls.length, 2, "a send while Fleet Chats is open reloads the log");
+  calls[1](data);
+  await flush();
+  app.run('window.location.hash = "#overview"');
+  app.hashchange("#overview");
+  app.windowEvent("quarterdeck-sent");
+  assert.equal(calls.length, 2, "elsewhere, the send only marks the log behind");
+  app.run('window.location.hash = "#lanes"');
+  app.hashchange("#lanes");
+  assert.equal(calls.length, 3, "returning to Fleet Chats catches up once");
+});
+
+test("Captain's Call keeps the original decision and replies above one collapsed context fold", () => {
+  const app = ui();
+  const text = 'Background for example-app.\n\n**DECISION NEEDED:** [task:acme-choice] Choose a release window.\n- "staged": validate a small sample\n- "wait": keep the current version\nReply "staged" or "wait".\n\n```text\nTechnical evidence <script>unsafe</script>\n```\nFinal supporting detail.';
+  seed(app, [lane("alpha", [record({ recordId: "sample-call", text })])]);
+  app.run("renderFeed()");
+  const html = app.node("#messages").innerHTML;
+  assert.match(html, /Captain&#039;s Call/);
+  assert.match(html, /<details class="decision-context-fold"[^>]*><summary>/);
+  const [top, detail] = html.split('<details class="decision-context-fold"');
+  assert.match(top, /Choose a release window/);
+  assert.match(top, /staged.*validate a small sample/);
+  assert.match(top, /wait.*keep the current version/);
+  assert.doesNotMatch(top, /Background for example-app|Technical evidence|Final supporting/);
+  assert.match(detail, /Background for example-app/);
+  assert.match(detail, /Technical evidence &lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.match(detail, /Final supporting detail/);
+  assert.doesNotMatch(html, /data-call-key|data-call-answer|call-card|href="#overview|<input|<script>/);
+  assert.equal(app.run('window.quarterdeckMessageTargets[0].recordId'), "sample-call");
+  assert.equal(app.run('messagesForSelection()[0].text'), text);
+  app.run('messageFormat = "raw"; renderFeed()');
+  assert.doesNotMatch(app.node("#messages").innerHTML, /decision-context-fold|decision-banner/);
+  assert.match(app.node("#messages").innerHTML, /Background for example-app\.[\s\S]*\*\*DECISION NEEDED:\*\*[\s\S]*Final supporting detail\./);
+});
+
+test("historical and unmatched Captain's Calls remain text; ordinary and fenced markers keep their rendering", () => {
+  const app = ui();
+  for (const text of [
+    'Historical answer was staged.\n\nDECISION NEEDED: [task:acme-historical] Pick a sample. Reply "staged" or "wait".\n\nThis was already answered.',
+    'Unmatched example.\n\nAPPROVAL NEEDED: Allow the sample. Reply "allow" or "hold".',
+  ]) {
+    seed(app, [lane("alpha", [record({ text })])]);
+    app.run('renderFeed()');
+    const html = app.node("#messages").innerHTML;
+    assert.match(html, /decision-context-fold/);
+    assert.doesNotMatch(html, /data-call-|call-card|Your answer|Firstmate is on it/);
+    assert.equal(app.run('messagesForSelection().length'), 1);
+    assert.equal(app.run('messagesForSelection()[0].text'), text);
+  }
+  for (const text of ['Ordinary **reply** about example-app.', 'A mention of DECISION NEEDED is prose.', '```text\nDECISION NEEDED: sample code. Reply "yes" or "no".\n```']) {
+    seed(app, [lane("alpha", [record({ text })])]);
+    app.run('renderFeed()');
+    assert.doesNotMatch(app.node("#messages").innerHTML, /decision-context-fold|decision-banner/);
+  }
+});
+
+test("call detail disclosure choices are scoped and review annotation controls retain their existing renderer", () => {
+  const app = ui();
+  const text = 'Sample background.\n\nDECISION NEEDED: Pick sample a. Reply "a" or "b".\n\nEnd detail.\n\nACTION NEEDED: Confirm sample. Reply "yes" or "no".';
+  app.run(`window.__callText = ${JSON.stringify(text)}; chatCallDetailChoices.set('scope-a', true)`);
+  assert.match(app.run("renderChatCallContent(window.__callText, 'scope-a')"), /data-chat-call-detail="scope-a" open/);
+  const closed = app.run("renderChatCallContent(window.__callText, 'scope-b')");
+  assert.equal((closed.match(/class="decision-context-fold"/g) || []).length, 1);
+  assert.equal((closed.match(/class="chat-call-primary"/g) || []).length, 2);
+  assert.doesNotMatch(closed, /data-chat-call-detail="scope-b" open/);
+  const review = { batch: '123e4567-e89b-12d3-a456-426614174000', prompts: [{ prompt: 'DECISION NEEDED: annotation text', tag: 'p', selector: '#sample', text: 'Original target' }] };
+  seed(app, [lane('alpha', [record({ review, text })])]);
+  app.run('renderFeed()');
+  const html = app.node('#messages').innerHTML;
+  assert.match(html, /data-review-chip="batch"/);
+  assert.match(html, /data-review-chip="note-0"/);
+  assert.match(html, /Copy target/);
+  assert.doesNotMatch(html, /decision-context-fold/);
 });
 
 test("message metadata and safe Markdown/raw views preserve readable source text", () => {
@@ -1337,7 +1495,7 @@ test("Phase 2.6 compact rows, bounded tools, and two-row mobile controls", async
   assert.match(mobile, /\.feed-pagination \{ width: 100%;/);
   assert.match(mobile, /\.kind-filter-popover \{ right: 0; left: auto;/);
   assert.doesNotMatch(mobile, /right: -48px/);
-  assert.match(mobile, /\.task-filter-chip button \{ width: 40px; height: 40px;/);
+  assert.match(mobile, /\.task-filter-chip button \{ width: 44px; height: 44px;/);
   assert.match(mobile, /\.lane-chats-row \{[^}]+grid-template-columns: minmax\(0, 1fr\) 48px 104px/s);
   assert.match(mobile, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
   assert.match(mobile, /\.primary-nav > \.primary-tab\[data-view="work"\] \{ grid-column: 2; grid-row: 2; \}/);
@@ -1406,7 +1564,7 @@ test("reading scale and offline font stack are explicit design constraints", () 
 
 test("desktop filtering belongs to Lane Chat columns, not the app shell", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const shell = html.slice(0, html.indexOf('<div class="main-stage">'));
+  const shell = html.slice(0, html.indexOf('<div class="main-stage"'));
   const chat = html.slice(html.indexOf('<section id="conversations-view"'), html.indexOf('<section id="overview-view"'));
   assert.doesNotMatch(shell, /id="lane-options"|id="lane-status"|id="message-type-filters"/);
   assert.match(chat, /class="conversation-body"[\s\S]*id="lane-options"[\s\S]*class="conversation-feed"[\s\S]*id="conversation-kind-panel"/);
@@ -1669,7 +1827,7 @@ test("screen reader live regions prevent flood and announce status concisely", a
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 
   // Verify aria-live is removed from #messages
-  assert.match(html, /<div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true">/);
+  assert.match(html, /<div id="messages" class="messages" tabindex="-1" aria-label="Conversation feed, oldest to newest" aria-busy="true">/);
   assert.doesNotMatch(html, /id="messages"[^>]*aria-live/);
 
   // Verify dedicated announcer exists
@@ -2963,4 +3121,133 @@ test("bearings badge uses the held card's rendered lifecycle without counting re
   assert.equal(app.node('#call-badge').textContent, '1');
   app.run(`renderCallBadge({state:'stale',stale:true,cards:[{key:'decision:held'},{key:'decision:fresh'}]})`);
   assert.equal(app.node('#call-badge').textContent, '1 · stale');
+});
+
+test("skip link focuses the main stage without changing the route", () => {
+  const app = ui();
+  let prevented = false;
+  app.node(".skip-link").dispatchEvent({ type: "click", preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(app.run("document.activeElement"), app.node("#main-stage"));
+  assert.equal(app.run("window.location.hash"), "#lanes");
+});
+
+test("phone fleet and kind tabs follow arrow, Home and End keys", () => {
+  const app = ui();
+  const lanes = app.node("#mobile-lanes-tab");
+  const kinds = app.node("#mobile-kinds-tab");
+  const press = (node, key) => node.dispatchEvent({ type: "keydown", key, preventDefault() {} });
+  press(lanes, "End");
+  assert.equal(kinds.getAttribute("aria-selected"), "true");
+  assert.equal(lanes.getAttribute("aria-selected"), "false");
+  assert.equal(kinds.tabIndex, 0);
+  assert.equal(lanes.tabIndex, -1);
+  assert.equal(app.run("document.activeElement"), kinds);
+  press(kinds, "ArrowLeft");
+  assert.equal(lanes.getAttribute("aria-selected"), "true");
+  press(lanes, "ArrowRight");
+  assert.equal(kinds.getAttribute("aria-selected"), "true");
+  press(kinds, "Home");
+  assert.equal(lanes.getAttribute("aria-selected"), "true");
+  assert.equal(app.run("document.activeElement"), lanes);
+});
+
+test("second-mate selector belongs to Message kinds and follows its desktop disclosure", async () => {
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const kinds = html.match(/<details[^>]*id="kind-filter-menu"[\s\S]*?<\/details>/)[0];
+  const fleets = html.slice(html.indexOf('<div id="lane-filter-controls"'), html.indexOf('<div id="lane-filter-rows"'));
+  assert.match(kinds, /class="lane-status-control message-origin-control"[\s\S]*id="secondmate-filter"/);
+  assert.doesNotMatch(fleets, /secondmate-filter/);
+  assert.equal((html.match(/id="secondmate-filter"/g) || []).length, 1);
+  const panel = element('aside', [], { 'data-collapsed': 'true' }, null, 'conversation-kind-panel');
+  const control = element('label', ['lane-status-control', 'message-origin-control'], {}, panel);
+  const rules = parseCss(css);
+  assert.equal(computed(rules, control, 1600).display, 'none');
+  panel.states = ['hover'];
+  assert.equal(computed(rules, control, 1600).display, 'grid');
+  panel.states = ['focus-within'];
+  assert.equal(computed(rules, control, 1600).display, 'grid');
+  panel.states = [];
+  panel.attrs['data-collapsed'] = 'false';
+  assert.equal(computed(rules, control, 1600).display, 'grid');
+  assert.equal(computed(rules, control, 390).display, 'grid');
+});
+
+test("second-mate selector composes with existing filters and preserves All order and routing", () => {
+  const app = ui();
+  const messages = [
+    record({ recordId: 'primary', text: 'Firstmate mentions mate-alpha', occurredAt: '2030-01-01T00:00:00Z' }),
+    record({ recordId: 'alpha-1', secondmateId: 'mate-alpha', kind: 'supervision', text: 'Example first', occurredAt: '2030-01-01T00:00:01Z' }),
+    record({ recordId: 'beta-1', secondmateId: 'mate-beta', kind: 'supervision', text: 'Example mentions mate-alpha', occurredAt: '2030-01-01T00:00:02Z' }),
+    record({ recordId: 'alpha-2', secondmateId: 'mate-alpha', kind: 'supervision', taskId: 'example-task', transcriptSessionId: 'example-source', text: 'Example last', occurredAt: '2030-01-01T00:00:03Z' }),
+  ];
+  seed(app, [lane('example-app', messages), lane('acme', [messages[2]])]);
+  const ids = () => app.run("messagesForSelection().map(message => message.recordId).join(',')");
+  assert.equal(ids(), 'primary,alpha-1,beta-1,alpha-2');
+  const choose = value => app.node('#secondmate-filter').dispatchEvent({ type: 'change', target: { value } });
+  choose('mate-alpha');
+  assert.equal(ids(), 'alpha-1,alpha-2');
+  assert.match(app.node('#messages').innerHTML, /Example first/);
+  assert.doesNotMatch(app.node('#messages').innerHTML, /Firstmate mentions|Example mentions/);
+  app.run("transcriptQuery = 'last'");
+  assert.equal(ids(), 'alpha-2');
+  app.run("transcriptQuery = ''; selectedMessageTypes.delete('supervision')");
+  assert.equal(ids(), '');
+  app.run("selectedMessageTypes.add('supervision'); selectedSessionId = 'example-task'");
+  assert.equal(ids(), 'alpha-2');
+  choose('mate-beta');
+  assert.equal(ids(), '', 'mate selection retains task filter');
+  app.run("selectedSessionId = ''; selectedTranscriptSession = 'missing-source'");
+  assert.equal(ids(), '');
+  choose('mate-alpha');
+  app.run("selectedTranscriptSession = 'example-source'");
+  assert.equal(ids(), 'alpha-2');
+  choose('');
+  assert.equal(ids(), 'alpha-2', 'All mates preserves the disk source intersection');
+  app.run("selectedTranscriptSession = ''");
+  const solo = id => app.node('#lane-filter-rows').dispatchEvent({ type: 'click', preventDefault() {},
+    target: { closest: selector => selector === '.lane-option' ? { dataset: { laneId: id } } : null } });
+  solo('acme');
+  assert.equal(ids(), 'beta-1', 'ordinary fleet selection works with All mates');
+  choose('mate-beta');
+  assert.equal(ids(), 'beta-1');
+  choose('mate-alpha');
+  assert.equal(ids(), '', 'mate selection retains lane filter');
+  choose('');
+  assert.equal(ids(), 'beta-1', 'All mates restores only the selected fleet');
+  choose('mate-alpha');
+  solo('example-app');
+  assert.equal(ids(), 'alpha-1,alpha-2', 'fleet selection retains the mate intersection');
+  app.node('#lane-bulk-toggle').dispatchEvent({ type: 'click' });
+  assert.equal(app.run('allLanesSelected'), true);
+  assert.equal(ids(), 'alpha-1,alpha-2');
+  const route = app.run('window.location.hash');
+  choose('');
+  assert.equal(ids(), 'primary,alpha-1,beta-1,alpha-2');
+  assert.equal(app.run("selectedSessionId"), null);
+  assert.equal(app.run('window.location.hash'), route, 'mate selection never chooses a routing destination');
+});
+
+test("older-history disclosure persists at the maximum window without offering an impossible expansion", () => {
+  const app = ui();
+  const render = (sessions, secondmateSources, windowMiB, expandable) => app.run(`
+    transcriptWindowBytes = ${windowMiB} * 1024 * 1024;
+    renderLanes(${JSON.stringify({ lanes: [lane("acme", [record({ text: "acme newest reply" })])], transcript: {
+      sessions, secondmateSources, warnings: [], note: "Synthetic coverage", expandable,
+    } })});
+  `);
+  const source = { id: "synthetic-main", source: "synthetic-main", loaded: true, omittedBytes: 1000 };
+  render([source], [], 1, true);
+  assert.equal(app.node("#transcript-window-status").hidden, false);
+  assert.match(app.node("#transcript-window-hint").textContent, /Older history truncated.*Search covers loaded records/);
+  assert.equal(app.node("#transcript-load-more").hidden, false);
+  render([source], [], 8, false);
+  assert.equal(app.node("#transcript-window-status").hidden, false);
+  assert.match(app.node("#transcript-window-hint").textContent, /8 MiB\/source limit reached/);
+  assert.equal(app.node("#transcript-load-more").hidden, true);
+  assert.match(app.node("#messages").innerHTML, /acme newest reply/);
+  render([], [source], 8, false);
+  assert.equal(app.node("#transcript-window-status").hidden, false, "delivered mate sources disclose truncation too");
+  render([{ ...source, omittedBytes: 0 }], [], 8, false);
+  assert.equal(app.node("#transcript-window-status").hidden, true, "complete history has no truncation warning");
 });

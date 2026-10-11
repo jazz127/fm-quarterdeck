@@ -15,14 +15,14 @@ test("cards carry the board's intake key; options, recommendation and close only
   const raw = await fixture("two-calls");
   const { cards } = normalizeSnapshot(raw);
   const byKey = Object.fromEntries(cards.map((card) => [card.key, card]));
-  assert.deepEqual(byKey["decision:alpha-call"].answer, { question: "alpha-call", options: [], recommend: null, close: null, freeform: true });
+  assert.deepEqual(byKey["decision:alpha-call"].answer, { question: "alpha-call", options: [], recommend: null, close: null, freeform: true, allow_freeform: false, freeform_hint: null });
   assert.deepEqual(byKey["merge:beta-merge"].answer.question, "merge.beta-merge");
   assert.deepEqual(byKey["merge:beta-merge"].answer.options.map((option) => option.value), ["merge"]);
   assert.equal(byKey["merge:beta-merge"].answer.recommend, null, "Quarterdeck never recommends a merge");
 
   raw.decisions_open[0] = { ...raw.decisions_open[0], options: [{ value: "staged", label: "Staged rollout", hint: "Fewer users at once" }, { value: "now", label: "Ship now" }], recommend_value: "staged", close: "release" };
   const structured = normalizeSnapshot(raw).cards.find((card) => card.key === "decision:alpha-call").answer;
-  assert.deepEqual(structured, { question: "alpha-call", options: [{ value: "staged", label: "Staged rollout", hint: "Fewer users at once" }, { value: "now", label: "Ship now", hint: null }], recommend: "staged", close: "release", freeform: true });
+  assert.deepEqual(structured, { question: "alpha-call", options: [{ value: "staged", label: "Staged rollout", hint: "Fewer users at once" }, { value: "now", label: "Ship now", hint: null }], recommend: "staged", close: "release", freeform: true, allow_freeform: false, freeform_hint: null });
 
   for (const options of [[{ value: "reconcile", label: "Re-check" }], [{ value: "a b", label: "Bad slug" }], [{ value: "x", label: "One" }, { value: "x", label: "Duplicate" }], [{ value: "x" }], Array.from({ length: 9 }, (_, i) => ({ value: `v${i}`, label: `L${i}` }))]) {
     raw.decisions_open[0] = { ...raw.decisions_open[0], options, recommend_value: "x", close: "sometimes" };

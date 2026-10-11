@@ -150,8 +150,9 @@ try {
     for (let i=0; i<50 && !q('#review-state').textContent.includes('chromium-receipt'); i++) await new Promise(r=>setTimeout(r,50));
     const sent = q('#review-state').textContent;
     q('#review-message').value = 'Finish review'; click('#review-queue');
-    click('#review-end');
-    for (let i=0; i<50 && !q('#review-panel').hidden; i++) await new Promise(r=>setTimeout(r,50));
+    click('#review-send');
+    for (let i=0; i<50 && JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent.length < 2; i++) await new Promise(r=>setTimeout(r,50));
+    click('#review-clear-messages');
     pointerClick('.project-card .lane-intent');
     const stillAvailable = q('#review-target').textContent.includes('Annotating') && (!q('#review-panel').hidden || !q('#review-annotation').hidden);
     return { initial, normalControlOn, normalOff, altInteractsOn, altAnnotatesOff, hiddenWhenOff, annotationIntercepted, keyboardActivated, normalWithAlt, beforeScroll, afterScroll, target, count, sent, ended: q('#review-toggle').checked, stillAvailable, hash: location.hash };
@@ -174,13 +175,13 @@ try {
   assert.equal(outcome.stillAvailable, true);
   assert.equal(outcome.hash, "#overview");
   for (let i = 0; i < 100 && batches.length < 2; i++) await wait(50);
-  assert.equal(batches.length, 2, 'Send & end delivers the second batch before closing');
+  assert.equal(batches.length, 2, 'Send delivers a second independent batch');
   assert.equal(batches[0].schema, "fm-agentos-review.v2");
   assert.notEqual(batches[0].entries[0].tag, "message");
   assert.equal(batches[0].entries[1].tag, "message");
   assert.match(batches[0].entries[0].region.id, /^project:/);
   assert.equal(batches[0].end, false);
-  assert.equal(batches[1].end, true);
+  assert.equal(batches[1].end, false);
   // A page retained across a server revision change must not ask for an
   // impossible same-ID retry. Intercept only its first config GET; the POST
   // reaches the real current-version server and is rejected before delivery.

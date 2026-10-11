@@ -5,17 +5,22 @@ import os from "node:os";
 import path from "node:path";
 import { createServer, loadFirstmateHome } from "../server.js";
 import { openBrowser, openReadingControls, closeReadingControls } from "./browser-harness.mjs";
+import { writeVerifiedReviewNote } from "./verified-send-fixture.mjs";
 const scratch = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-compact-"));
 await mkdir(path.join(scratch, "data"));
 await mkdir(path.join(scratch, "state/main-session"), { recursive: true });
 await writeFile(path.join(scratch, "data/projects.md"), "- Alpha - Synthetic selected fleet\n- Beta - Synthetic context fleet\n");
+// Captain slots are verified Quarterdeck sends; transcript role=user input is never the Captain's.
+const captainSlot = i => !(i >= 201 && i <= 350 || i === 450) && i % 20 === 0;
+for (let i = 0; i < 451; i++) if (captainSlot(i)) await writeVerifiedReviewNote(scratch, { at: new Date(Date.UTC(2030,0,1,12,i)).toISOString(), prompt: `Alpha update ${i}: Synthetic compact message.` });
 const rows = Array.from({length:451}, (_, i) => {
+  if (captainSlot(i)) return null;
   const mixed = i >= 201 && i <= 350 || i === 450;
   const text = (mixed ? ["General", "Alpha", "Beta"] : ["Alpha"]).map(name => `[fm-lane ${name}]\n${name} update ${i}: **Synthetic compact message**.\nSecond line of context.\n[end ${name}]`).join("\n\n");
   return JSON.stringify({type:"message", timestamp:new Date(Date.UTC(2030,0,1,12,i)).toISOString(), message:{
-    role:i === 370 ? "toolResult" : !mixed && i % 20 === 0 ? "user" : "assistant", toolName:i === 370 ? "Synthetic tool" : undefined, content:[{type:"text",text}]
+    role:i === 370 ? "toolResult" : "assistant", toolName:i === 370 ? "Synthetic tool" : undefined, content:[{type:"text",text}]
   }});
-});
+}).filter(Boolean);
 await writeFile(path.join(scratch, "state/main-session/session.jsonl"), rows.join("\n") + "\n");
 const server = createServer({}, {
   lanesReader: async (_, options) => loadFirstmateHome(scratch, options),

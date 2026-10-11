@@ -27,9 +27,9 @@ export async function inboxReady(home) {
   const ready = JSON.parse(result.stdout);
   return ready.schema === "fm-primary-ready.v1" && ready.can_receive === true;
 }
-export async function announceReview(home, payload) {
+export async function announceReview(home, payload, note = noteWithRequestId, options = {}) {
   const body = payload.schema === "fm-agentos-review.v2" ? formatReviewNote(payload) : `Quarterdeck review annotation batch ${payload.batchId}\nVersion: ${payload.version}\nRoute: ${payload.route}\nEnd: ${payload.end}\nPreview: ${payload.provenance ? `${payload.provenance.preview} · ${payload.provenance.branch} · ${payload.provenance.commit} · ${payload.provenance.remoteCheckpoint || "no remote checkpoint"}` : "standalone"}\nEntries:\n${payload.entries.map((entry, i) => `${i + 1}. ${entry.kind} · ${entry.route} · ${entry.target?.type === "record" ? `Lane Chat record ${entry.target.recordId}` : entry.target?.type === "quote" ? `Lane Chat message quote ${JSON.stringify({ time: entry.target.time, text: entry.target.text, lanes: entry.target.lanes })}` : entry.region ? `${entry.region.label} (${entry.region.id})` : "message"}\n${entry.text}`).join("\n\n")}`;
-  return noteWithRequestId(home, requestId(payload.batchId), body);
+  return note(home, requestId(payload.batchId), body, { ...options, display: payload.entries.map((entry, i) => `${i + 1}. ${entry.prompt || entry.text}${entry.record?.recordId ? ` · ${entry.record.recordId}` : ""}`).join("\n\n") });
 }
 // Idempotent per request id: a retry returns the original note and repairs a missing wake.
 export async function noteWithRequestId(home, id, body) {
@@ -61,10 +61,13 @@ export function inboxNoteState(receipts, id) {
 }
 export const inboxReviewState = (receipts, batchId) => inboxNoteState(receipts, requestId(batchId));
 
+// Note ids written by `fm-inbox.sh` (`<epoch>-<token>`). Reply files use the same shape.
+export const SAFE_NOTE_ID = /^[0-9]{1,12}(?:[-_.][A-Za-z0-9_.-]{1,100})?$/;
+
 // Explicit operator action, never called by HTTP intake or health checks.
 // Retry repairs closure only: it must not repeat the underlying captain order.
 export async function replyAndAckNote(home, id, text, { invoke = call } = {}) {
-  if (!path.isAbsolute(home) || !/^[0-9]{1,12}(?:[-_.][A-Za-z0-9_.-]{1,100})?$/.test(id) ||
+  if (!path.isAbsolute(home) || !SAFE_NOTE_ID.test(id) ||
       typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 32 * 1024 || text.includes("\0")) {
     throw new Error("Explicit home, safe note id and bounded nonempty reply required");
   }

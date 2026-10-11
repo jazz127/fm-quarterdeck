@@ -1,3 +1,7 @@
+import { parseBacklogTask } from "./firstmate-records.js";
+import { enumeratedLetterOptions, publishOptions } from "./enumerated-options.js";
+import { projectUnderwayRecords } from "./underway-records.js";
+import { readUnreadableChildren } from "./unreadable-child-records.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, watch as fsWatch } from "node:fs";
@@ -5,7 +9,7 @@ import { access, lstat, open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-// Live Captain's Call and Just landed. Contract: BEARINGS.md. Quarterdeck runs only
+// Live Overview bearings sections. Contract: BEARINGS.md. Quarterdeck runs only
 // Firstmate's own bounded bearings projection. A bounded read of the selected home's
 // backlog adds durable clocks plus existing main-home titles, hold reasons and, when the
 // snapshot has no repository, the backlog repo name. The same read supplements `(main)`
@@ -21,12 +25,6 @@ export class BearingsUnavailable extends Error {}
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
-// Cached remote decisions use <home>/<task>; retain the scope as card identity.
-const decisionId = (value) => {
-  if (typeof value !== "string") return null;
-  const parts = value.split("/");
-  return parts.length <= 2 && parts.every(part => TASK_ID.test(part)) ? value : null;
-};
 const TOKEN = /^[A-Za-z0-9()][A-Za-z0-9 ()._:-]{0,79}$/;
 const token = (value) => typeof value === "string" && TOKEN.test(value) ? value : null;
 const isoDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT/.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
@@ -211,9 +209,11 @@ export function backlogHoldRecords(text) {
       if (!TASK_ID.test(id)) continue;
       if (seen.has(id)) { records.delete(id); continue; }
       seen.add(id);
+      const parsed = parseBacklogTask(fields, checked !== " ");
+      const captain = parsed.holdKind === "captain";
       current = { task: id, type: "decision", title: titles.get(id), reason: reasons.get(id),
-        open: checked === " " && fields.includes("(hold-kind: captain)"),
-        closed: checked !== " ", captain: fields.includes("(hold-kind: captain)"), source: "data/backlog.md", resolution: checked !== " " ? "closed" : null };
+        open: captain && parsed.holdActive,
+        closed: checked !== " ", captain, source: "data/backlog.md", resolution: checked !== " " ? "closed" : null };
       records.set(id, current);
     } else if (/^##\s/.test(line) || (line.trim() && !/^\s{2,}/.test(line))) current = null;
     else if (current && /^  Resolution recorded by fm-captain-hold\.$/.test(line)) current.recorded = true;
@@ -238,6 +238,23 @@ export async function readBacklogHoldRecords(home) {
   } finally { await file.close(); }
 }
 
+// Supplements only projected main-home gates, using the shared trailing-field parser.
+export function backlogWorkRepos(text) {
+  const repos = new Map(), seen = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    const item = /^\s*-\s+\[([ xX])\]\s+(\S+)\s+-\s+(.+)$/.exec(line);
+    if (!item || !TASK_ID.test(item[2])) continue;
+    const [, checked, id, prose] = item;
+    if (seen.has(id)) { repos.delete(id); continue; }
+    seen.add(id);
+    if (checked === " ") {
+      const repo = repoName(parseBacklogTask(prose, false).repositoryPath);
+      if (repo) repos.set(id, repo);
+    }
+  }
+  return repos;
+}
+
 async function addBacklogEvidence(output, home) {
   let file;
   try {
@@ -251,6 +268,10 @@ async function addBacklogEvidence(output, home) {
     const text = buffer.subarray(0, bytesRead).toString("utf8");
     const clocks = backlogClocks(text), reasons = backlogHoldReasons(text), titles = backlogTitles(text), repos = backlogRepos(text);
     raw.quarterdeck_holds = backlogHoldRecords(text);
+    const workRepos = backlogWorkRepos(text);
+    if (Array.isArray(raw.gates)) raw.gates = raw.gates.map(row =>
+      object(row) && row.owner === "(main)" && !repoName(row.repo) && workRepos.has(row.id)
+        ? { ...row, repo: workRepos.get(row.id) } : row);
     if (Array.isArray(raw.decisions_open)) raw.decisions_open = raw.decisions_open.map((row) =>
       object(row) && row.owner === "(main)" ? {
         ...clocks.get(row.id), ...row,
@@ -283,6 +304,7 @@ async function addBacklogEvidence(output, home) {
 export function validateSnapshot(raw) {
   if (!object(raw)) throw new BearingsUnavailable("Bearings output is not an object");
   if (raw.schema !== SOURCE_SCHEMA) throw new BearingsUnavailable("Unsupported bearings schema");
+  for (const name of ["in_flight", "gates"]) if (Object.hasOwn(raw, name) && !Array.isArray(raw[name])) throw new BearingsUnavailable(`Bearings ${name} invalid`);
   if (!Array.isArray(raw.decisions_open)) throw new BearingsUnavailable("Bearings decisions missing");
   if (!Array.isArray(raw.omitted)) throw new BearingsUnavailable("Bearings disclosure missing");
   const c = raw.contributions;
@@ -294,9 +316,10 @@ export function validateSnapshot(raw) {
 
 // How a card may be answered from Quarterdeck (BEARINGS.md "Answers"). The question is
 // the same key the /bearings board sends to Firstmate's keyed-answer intake: the task id
-// for a decision, merge.<task> for a merge ask. Options, a recommendation and a close
-// mode appear only when Firstmate's row supplies them; otherwise the answer is freeform.
-// No option is ever composed here except the board's own "Merge now" for a merge ask.
+// for a decision, merge.<task> for a merge ask. Structured options, a recommendation and
+// a close mode appear only when Firstmate's row supplies them. A decision with no options
+// array can still offer explicit lettered lines from its recorded text. Otherwise the
+// answer is freeform. No other option is composed here except the board's own "Merge now".
 export const ANSWER_SLUG = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_OPTIONS = 8;
 function sourceOptions(row) {
@@ -311,12 +334,30 @@ function sourceOptions(row) {
   }
   return options;
 }
+// Recorded text only. A present options array, even an invalid one, does not fall through.
+function proseLetterOptions(row) {
+  if (Array.isArray(row.options) && row.options.length) return [];
+  const fields = ["backlogReason", "reason", "summary", "title", "backlogTitle"];
+  let best = [];
+  let bestRank = fields.length;
+  for (const [rank, field] of fields.entries()) {
+    if (typeof row[field] !== "string") continue;
+    const options = publishOptions(enumeratedLetterOptions(row[field]), publicText);
+    if (!options.length) continue;
+    if (options.length > best.length || (options.length === best.length && rank < bestRank)) {
+      best = options;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
 function decisionAnswer(row, task) {
   if (!ANSWER_SLUG.test(task)) return null;
-  const options = sourceOptions(row);
+  const structured = sourceOptions(row);
+  const options = structured.length ? structured : proseLetterOptions(row);
   const recommend = options.some((option) => option.value === row.recommend_value) ? row.recommend_value : null;
   const close = row.close === "done" || row.close === "release" ? row.close : null;
-  return { question: task, options, recommend, close, freeform: true };
+  return { question: task, options, recommend, close, freeform: true, allow_freeform: row.board_allow_freeform === true, freeform_hint: publicText(row.board_freeform_hint, 240) };
 }
 function mergeAnswer(task) {
   const question = `merge.${task}`;
@@ -389,10 +430,22 @@ export function applyBoardDecisionOptions(raw, board) {
     if (!object(row) || typeof row.id !== "string") continue;
     const item = boardCardForDecision(payload, row.id);
     if (!item || boardBeforeHold(payload.generated, row)) continue;
+
+    // Always transfer board fields
+    row.board_title = item.title;
+    row.board_about = item.about;
+    row.board_decide = item.decide;
+    row.board_detail = item.detail;
+    row.board_pr_url = item.pr_url;
+    row.board_freeform_hint = item.freeform_hint;
+    row.board_allow_freeform = item.allow_freeform;
+    row.board_close = item.close;
+
     const picked = optionsFromBoardCard(item);
-    if (!picked) continue;
-    row.options = picked.options;
-    row.recommend_value = picked.recommend;
+    if (picked) {
+      row.options = picked.options;
+      row.recommend_value = picked.recommend;
+    }
   }
   return raw;
 }
@@ -421,8 +474,17 @@ async function addBoardEvidence(output, home) {
   } catch { return output; }
 }
 
-// Sections are pluggable so Underway and Charted Next can join later without
-// changing the transport. The served model enables call and landed.
+// Every section uses the same authoritative snapshot and live transport.
+// Stock child holds use home/task ids, with the owning home and local key recorded
+// separately. Preserve only that exact agreement; these are not local answer slugs.
+function decisionId(row) {
+  if (!object(row) || typeof row.id !== "string") return null;
+  if (TASK_ID.test(row.id)) return row.id;
+  return typeof row.owner === "string" && TASK_ID.test(row.owner)
+    && typeof row.key === "string" && TASK_ID.test(row.key)
+    && row.id === `${row.owner}/${row.key}` ? row.id : null;
+}
+
 function callSection(raw) {
   const repos = new Map();
   for (const row of Array.isArray(raw.in_flight) ? raw.in_flight : []) {
@@ -432,7 +494,7 @@ function callSection(raw) {
   const cards = [];
   const decided = new Set();
   for (const row of raw.decisions_open) {
-    const id = object(row) ? decisionId(row.id) : null;
+    const id = decisionId(row);
     // Keep the complete ask: choices and recommendations may exist only in this text.
     const summary = id && publicText(row.summary, Infinity);
     if (!id || !summary || decided.has(id)) { invalid += 1; continue; }
@@ -445,14 +507,31 @@ function callSection(raw) {
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), answer: readOnly ? null : decisionAnswer(row, task) }));
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), answer: readOnly ? null : decisionAnswer(row, task),
+      boardTitle: row.board_title || null,
+      boardAbout: row.board_about || null,
+      boardDecide: row.board_decide || null,
+      boardDetail: row.board_detail || null,
+      boardPrUrl: row.board_pr_url || null,
+      boardFreeformHint: row.board_freeform_hint || null,
+      boardAllowFreeform: row.board_allow_freeform === true,
+      boardClose: row.board_close || null
+    }));
   }
   const merges = new Set();
+  const mainHolds = new Set((Array.isArray(raw.quarterdeck_holds) ? raw.quarterdeck_holds : [])
+    .filter(row => object(row) && row.source === "data/backlog.md" && row.open === true && TASK_ID.test(row.task))
+    .map(row => row.task));
   for (const row of raw.contributions.captain) {
     const task = object(row) && typeof row.task === "string" && TASK_ID.test(row.task) ? row.task : null;
     if (!task) { invalid += 1; continue; }
     // A live decision for the same task already asks the captain; one card per call.
     if (decided.has(task) || merges.has(task)) continue;
+    // Captain actor includes arbitration holds, even for a draft PR. Those are
+    // decisions, never Merge asks when a decision falls outside the snapshot bound.
+    // The selected-home ledger also covers deferred holds absent from captain.hold;
+    // its task ids apply only to that home's contribution owner.
+    if ((typeof row.hold === "string" && row.hold.trim()) || (row.owner === "(main)" && mainHolds.has(task))) continue;
     merges.add(task);
     cards.push(withRev({ key: `merge:${task}`, type: "merge", task, kind: token(row.kind), url: httpsUrl(row.url), reason: publicText(row.reason, Infinity), owner: token(row.owner), repo: repos.get(task) ?? null, checkedAt: isoDate(row.checked_at), clock: { label: "Checked", at: isoDate(row.checked_at) }, answer: mergeAnswer(task) }));
   }
@@ -513,11 +592,53 @@ function landedSection(raw) {
   }
   return { landed, landedInvalid };
 }
-export const SECTIONS = { call: callSection, landed: landedSection };
+// Preserve the snapshot's bucket membership and run state; no status/hold inference.
+const WORK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+const WARNING_IDS = new Set(["(main-inventory)", "(return-catchup)"]);
+function workSection(raw, source, section) {
+  const rows = [], seen = new Set();
+  let invalid = 0;
+  for (const row of Array.isArray(raw[source]) ? raw[source] : []) {
+    const id = object(row) && typeof row.id === "string" && row.id.length <= 321
+      && (WORK_ID.test(row.id) || (section === "charted" && WARNING_IDS.has(row.id))) ? row.id : null;
+    const title = id ? publicText(section === "underway" ? row.name : row.title, Infinity) : null;
+    const owner = token(row?.owner) || (section === "underway" ? token(id?.split("/").length === 2 ? id.split("/")[0] : "(main)") : null);
+    const identity = `${owner || ""}:${id}`;
+    if (!id || !title || seen.has(identity)) { invalid += 1; continue; }
+    seen.add(identity);
+    const warning = section === "charted" && (row.kind === "warning" || WARNING_IDS.has(id));
+    rows.push(withRev({ key: `${section}:${owner || ""}:${id}`, type: section, task: id, title,
+      repo: repoName(row.repo), owner,
+      ...(section === "underway" ? { home: owner === "(main)" ? "Main home" : owner,
+        stage: publicText(row.quarterdeckStage, Infinity) || "Stage unavailable",
+        startedAt: isoDate(row.startedAt),
+        pipeline: row.pipeline && ["unknown", "validating", "checks", "validation decision", "ready for review", "awaiting merge", "merged", "PR open"].includes(row.pipeline.position)
+          ? { position: row.pipeline.position, substep: ["review", "test", "docs", "lint"].includes(row.pipeline.substep) ? row.pipeline.substep : null,
+            milestones: Array.isArray(row.pipeline.milestones) && row.pipeline.milestones.includes("checks green") ? ["checks green"] : [] }
+          : { position: "unknown", substep: null, milestones: [] } } : {}),
+      kind: warning ? "warning" : section === "charted" ? "queued" : token(row.kind),
+      state: section === "underway" ? token(row.state) : null,
+      doing: section === "underway" ? publicText(row.doing, Infinity) : null,
+      reason: section === "charted" ? publicText(row.reason, Infinity) : null,
+      blockedBy: section === "charted" && row.blocked_by !== "-" ? publicText(row.blocked_by, Infinity) : null,
+      clock: { label: "Filed", at: section === "charted" ? durableDate(row.filed) : null },
+    }));
+  }
+  // Keep the producer's reserved catch-up warning first and stable unknown-date ties.
+  if (section === "charted") rows.sort((a, b) => a.task === "(return-catchup)" ? -1 : b.task === "(return-catchup)" ? 1
+    : (b.clock.at ? Date.parse(b.clock.at) : -Infinity) - (a.clock.at ? Date.parse(a.clock.at) : -Infinity));
+  return { [section]: rows, ...(invalid ? { workOmitted: [{ kind: `invalid-${section}`, count: invalid }] } : {}) };
+}
+export const SECTIONS = { call: callSection, landed: landedSection,
+  underway: raw => workSection(raw, "in_flight", "underway"), charted: raw => workSection(raw, "gates", "charted") };
 
-export function normalizeSnapshot(raw, enabled = ["call", "landed"]) {
+export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", "charted"]) {
   validateSnapshot(raw);
-  const content = { cards: [], coverage: null, omitted: [], landed: [] };
+  const content = { cards: [], coverage: null, omitted: [], landed: [], underway: [], charted: [],
+    workCoverage: { underway: Array.isArray(raw.in_flight), charted: Array.isArray(raw.gates),
+      disclosures: raw.omitted.filter(row => object(row) && typeof row.surface === "string" && /in_flight|gates|inventory|current|registry|secondmate/.test(row.surface))
+        .map(row => publicText(row.surface, Infinity)).filter(Boolean) } };
+  if (Array.isArray(raw.quarterdeckWorkDisclosures)) content.workCoverage.underwayDisclosures = raw.quarterdeckWorkDisclosures.map(value => publicText(value, Infinity)).filter(Boolean);
   let landedInvalid = 0;
   for (const name of enabled) {
     const section = SECTIONS[name]?.(raw);
@@ -527,7 +648,10 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed"]) {
       landedInvalid = section.landedInvalid || 0;
       continue;
     }
-    Object.assign(content, section);
+    if (name === "underway" || name === "charted") {
+      content[name] = section[name];
+      content.omitted.push(...(section.workOmitted || []));
+    } else Object.assign(content, section);
   }
   if (landedInvalid) content.omitted = [...(content.omitted || []), { kind: "invalid-landed", count: landedInvalid }];
   const holds = Array.isArray(raw.quarterdeck_holds) ? raw.quarterdeck_holds.filter(row => object(row) && TASK_ID.test(row.task) && row.source === "data/backlog.md")
@@ -536,21 +660,18 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed"]) {
 }
 // The revision covers only what the captain sees, never the snapshot clock, so an
 // unchanged Captain's Call is never pushed again. Empty landed rows stay out of the hash.
-export const contentRevision = ({ cards, coverage, omitted, holds, landed }) => shortHash({ cards, coverage, omitted, ...(holds?.length ? { holds } : {}), ...(landed?.length ? { landed } : {}) });
+export const contentRevision = ({ cards, coverage, omitted, holds, landed, underway, charted, workCoverage }) => shortHash({ cards, coverage, omitted, ...(workCoverage ? { workCoverage } : {}), ...(underway?.length ? { underway } : {}), ...(charted?.length ? { charted } : {}), ...(holds?.length ? { holds } : {}), ...(landed?.length ? { landed } : {}) });
 
 export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = access, setPriority = os.setPriority, timeoutMs = 45000, maxStdout = 2 * 1024 * 1024, maxStderr = 4096 } = {}) {
   let pending = null;
-  const once = async () => {
+  const once = async (script = "fm-bearings-snapshot.sh", args = ["--json", "--all-in-flight", "--all-secondmates"]) => {
     if (!home) throw new BearingsUnavailable("FM_HOME is not configured");
     if (!path.isAbsolute(home)) throw new BearingsUnavailable("FM_HOME must be absolute");
-    const executable = path.join(home, "bin", "fm-bearings-snapshot.sh");
+    const executable = path.join(home, "bin", script);
     try { await accessImpl(executable, constants.X_OK); } catch { throw new BearingsUnavailable("Firstmate bearings snapshot is not installed"); }
     return new Promise((resolve, reject) => {
-      // Remote collection stages tracked jobs in other homes. Dashboard reads use
-      // Firstmate's validated parent cache instead; Firstmate owns its refresh.
-      // Bound even a collector that waits for its disabled transport. Keep the
-      // independent 45 s process budget and never opt into GitHub discovery.
-      const child = spawnImpl(executable, ["--json"], { env: { ...process.env, FM_HOME: home, FM_SSH_BIN: "/usr/bin/false", FM_SNAPSHOT_BUDGET: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      // Never --include-prs: the background loop makes no GitHub calls.
+      const child = spawnImpl(executable, args, { env: { ...process.env, FM_HOME: home, FM_SSH_BIN: "/usr/bin/false", FM_SNAPSHOT_BUDGET: "1", FM_CREW_STATE_NO_FORGE: "1", FM_SNAPSHOT_SECONDMATES: "0" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
       let stdout = "", stderr = "", failure = null, settled = false;
       const stop = (reason) => {
         failure ||= reason;
@@ -577,7 +698,21 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
       });
     });
   };
-  return () => (pending ||= once().then((output) => addBacklogEvidence(output, home)).then((output) => addBoardEvidence(output, home)).finally(() => { pending = null; }));
+  const addWorkRecords = async output => {
+    const raw = JSON.parse(output);
+    try {
+      // This stock reader owns registry selection and permitted home-ledger reads.
+      // Its Underway observation stands alone; never join two task generations.
+      const snapshot = JSON.parse(await once("fm-fleet-snapshot.sh", ["--json"]));
+      const work = projectUnderwayRecords(snapshot, await readUnreadableChildren(snapshot));
+      raw.in_flight = work.rows.map(({ stage, ...row }) => ({ ...row, quarterdeckStage: stage }));
+      raw.quarterdeckWorkDisclosures = work.disclosures;
+    } catch {
+      raw.quarterdeckWorkDisclosures = ["Canonical work records unavailable; current stages and registered-home inventory unverified"];
+    }
+    return JSON.stringify(raw);
+  };
+  return () => (pending ||= once().then(addWorkRecords).then((output) => addBacklogEvidence(output, home)).then((output) => addBoardEvidence(output, home)).finally(() => { pending = null; }));
 }
 
 // Reads mtimes and sizes only (never contents) of the two record kinds whose change
@@ -622,7 +757,7 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
   now = Date.now, timers = globalThis, minGapMs, maxAgeMs, debounceMs = 2000, tickMs = 10000, firstRunAfterMs = 60000, pollTtlMs = 60000 } = {}) {
   const gap = boundedMs(minGapMs, 30000, MIN_GAP_FLOOR_MS);
   const ceiling = Math.max(gap, boundedMs(maxAgeMs, 300000, MAX_AGE_FLOOR_MS));
-  const empty = { cards: [], coverage: null, omitted: [], landed: [] };
+  const empty = { cards: [], coverage: null, omitted: [], landed: [], underway: [], charted: [] };
   let model = { schema: MODEL_SCHEMA, rev: contentRevision(empty), state: "loading", observedAt: null, checkedAt: null, generatedAt: null, stale: false, error: null, ...empty };
   let lastGood = null;
   let lastAttemptAt = 0;
@@ -661,7 +796,7 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
     try {
       const content = normalizeSnapshot(JSON.parse(await runner()));
       const at = new Date(now()).toISOString();
-      lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [] };
+      lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [], underway: content.underway || [], charted: content.charted || [], workCoverage: content.workCoverage };
       publish(lastGood);
     } catch (error) {
       const reason = error instanceof BearingsUnavailable ? error.message : error instanceof SyntaxError ? "Bearings output is not JSON" : "Bearings snapshot failed";

@@ -6,6 +6,7 @@ import path from "node:path";
 import { createServer, loadFirstmateHome } from "../server.js";
 import { reviewVersion, reconcileLocalReview, deliverLocalReview, localReviewStatus } from "../review.js";
 import { openBrowser } from "./browser-harness.mjs";
+import { fetchFixture } from "./fetch-fixture.mjs";
 
 assert.match(reviewVersion, /^[a-f0-9]{40}$/, "Run from a clean committed source checkout");
 const timeout = setTimeout(() => { console.error("Browser gate exceeded 120 seconds"); process.exit(1); }, 120000).unref();
@@ -45,22 +46,25 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   browser = await openBrowser();
   const { command, evaluate, until } = browser;
-  const reload = async (draft) => {
-    // The outgoing page can still persist config/status updates until unload.
-    // Install scenario storage in the new document before restoreDraft runs.
-    const initializer = draft === undefined ? null : await command("Page.addScriptToEvaluateOnNewDocument", {
-      source: draft === null ? "sessionStorage.removeItem('fm-agentos-review-draft-v1')"
-        : `sessionStorage.setItem('fm-agentos-review-draft-v1', ${JSON.stringify(JSON.stringify(draft))})`,
-    });
-    try {
-      // Page.reload acknowledges the command before replacing the document.
-      // Otherwise a readiness predicate can match the previous page's state.
-      await evaluate("window.syntheticReloadPending = true");
-      await command("Page.reload");
-      await until("!window.syntheticReloadPending && document.readyState === 'complete'");
-    } finally {
-      if (initializer) await command("Page.removeScriptToEvaluateOnNewDocument", { identifier: initializer.identifier });
-    }
+  let interception;
+  const reload = async () => {
+    // Page.reload acknowledges the command before replacing the document.
+    // Otherwise a readiness predicate can match the previous page's state.
+    await evaluate("window.syntheticReloadPending = true");
+    await interception?.beforeNavigation();
+    await command("Page.reload");
+    await until("!window.syntheticReloadPending && document.readyState === 'complete'");
+  };
+  const reloadWithDraft = async (draft) => {
+    // Seed synthetic storage in the NEW document before review-client restores
+    // it. Config/status responses in the old page call update()/saveDraft() and
+    // can otherwise overwrite a fixture between setItem() and Page.reload.
+    const source = draft === null
+      ? "sessionStorage.removeItem('fm-agentos-review-draft-v1')"
+      : `sessionStorage.setItem('fm-agentos-review-draft-v1', ${JSON.stringify(JSON.stringify(draft))})`;
+    const { identifier } = await command("Page.addScriptToEvaluateOnNewDocument", { source });
+    try { await reload(); }
+    finally { await command("Page.removeScriptToEvaluateOnNewDocument", { identifier }); }
   };
   const navigation = await command("Page.navigate", { url: base });
   assert.equal(navigation.errorText, undefined, `Fixture navigation failed: ${JSON.stringify(navigation)}`);
@@ -203,45 +207,49 @@ try {
   await until("document.querySelector('#lanes').dataset.view === 'overview'");
   console.log("PASS: synthetic phone-to-desktop Fleet Chats search focus; help consumes first Escape, search retains second Escape, annotation/picking and drafts preserved");
   // A realistic persisted board: >30 distinct batches, not >30 entries in one request.
-  const retainedBoard = await evaluate(`(() => {
+  const retainedDraft = await evaluate(`(() => {
     const entry = { kind: 'message', text: 'Synthetic retained note', region: null, route: '#overview', version: ${JSON.stringify(reviewVersion)} };
     const retries = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, payload: { schema: 'fm-agentos-review.v1', batchId: id, sessionId: '', version: entry.version, route: '#overview', end: false, entries: [entry] } }; });
     const sent = Array.from({ length: 35 }, () => { const id = crypto.randomUUID(); return { id, receiptId: 'local:' + id, state: 'accepted', entries: [entry] }; });
     return { queue: [], queueIds: [], retryBatches: retries, sent, message: 'Unsent draft', open: false };
   })()`);
-  await reload(retainedBoard);
+  await reloadWithDraft(retainedDraft);
   await until("document.querySelector('#review-message')?.value === 'Unsent draft'");
   assert.deepEqual(await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return [s.retryBatches.length, s.sent.length]; })()`), [35, 35]);
   assert.deepEqual(await evaluate("['#review-thread', '#review-sent-list', '#review-phone-thread'].map(selector => document.querySelector(selector).children.length)"), [35, 35, 70], "all retained batches render in desktop Queued/Sent and the combined phone Review thread");
-  let loseNext = true, newConfig = false, serverDown = false, eventError;
+  let loseNext = true, newConfig = false, serverDown = false;
   // Board rendering is not review readiness: loadConfig() is an independent
   // fetch. Hold its response to force the ordering that used to flake in CI.
-  let holdConfig = true;
+  let holdConfig = false;
+  let armConfig = true;
   const configPaused = Promise.withResolvers();
   const heldConfigRequests = [];
   browser.onEvent((event) => {
-    if (event.method !== "Fetch.requestPaused") return;
-    const { requestId, request } = event.params;
-    let action;
+    if (armConfig && event.method === "Page.frameNavigated" && !event.params.frame.parentId) {
+      holdConfig = true; armConfig = false;
+    }
+  });
+  interception = fetchFixture(browser, (paused, act, stale) => {
+    const { request } = paused;
+    if (stale) return;
     if (request.method === "GET" && serverDown) {
-      action = command("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" });
+      act("Fetch.failRequest", { errorReason: "ConnectionRefused" });
     } else if (request.method === "GET" && holdConfig) {
       // Recovery and live-connection rechecks can race the initial config fetch.
       // Hold all of them, not just the first, until the readiness assertion.
-      heldConfigRequests.push(requestId);
-      configPaused.resolve(requestId);
+      heldConfigRequests.push(paused);
+      configPaused.resolve(paused);
       return;
     } else if (request.method === "POST" && loseNext) {
       loseNext = false;
-      action = command("Fetch.failRequest", { requestId, errorReason: "Failed" });
+      act("Fetch.failRequest", { errorReason: "Failed" });
     } else if (request.method === "GET" && newConfig) {
-      action = command("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: [{ name: "content-type", value: "application/json" }],
+      act("Fetch.fulfillRequest", { responseCode: 200, responseHeaders: [{ name: "content-type", value: "application/json" }],
         body: Buffer.from(JSON.stringify({ ready: true, version: "b".repeat(40), sessionId: "", delivery: "local", awaitingReview: 0 })).toString("base64") });
-    } else action = command("Fetch.continueRequest", { requestId });
-    action.catch((error) => { eventError = error; });
+    } else act("Fetch.continueRequest");
   });
   await command("Fetch.enable", { patterns: [{ urlPattern: "*/api/review", requestStage: "Response" }] });
-  await reload(null);
+  await reloadWithDraft(null);
   await until("document.querySelector('#review-message') && document.querySelector('#summary').children.length > 0");
   await configPaused.promise;
   await evaluate("document.querySelector('#review-message').value = 'Synthetic lost response'; document.querySelector('#review-form').requestSubmit()");
@@ -250,7 +258,8 @@ try {
   assert.equal(deliveries, 0, "an early click is ignored, not a simulated lost delivery");
   assert.equal(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).queue.length"), 1, "early click preserves the queued note");
   holdConfig = false;
-  await Promise.all(heldConfigRequests.map(requestId => command("Fetch.continueRequest", { requestId })));
+  assert.ok(heldConfigRequests.some(request => !interception.stale(request)), "current document configuration is held for the early-send assertion");
+  await Promise.all(heldConfigRequests.map(request => interception.act(request, "Fetch.continueRequest")));
   await until("document.querySelector('#review-context')?.textContent.includes('Version') && !document.querySelector('#review-send').disabled");
   await evaluate("document.querySelector('#review-send').click()");
   await until("(() => { const s = JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')); return s.retryBatches.length === 1 && !s.inFlight; })()");
@@ -270,9 +279,10 @@ try {
   const delayedId = await evaluate("crypto.randomUUID()");
   const delayed = { schema: "fm-agentos-review.v1", batchId: delayedId, sessionId: "", version: "a".repeat(40), route: "#overview", end: false,
     entries: [{ kind: "message", text: "Synthetic delayed publication", region: null, route: "#overview", version: "a".repeat(40) }] };
-  await reload({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [{ id: delayedId, payload: delayed }] });
+  const delayedBatch = { id: delayedId, payload: delayed };
+  await reloadWithDraft({ queue: [], queueIds: [], sent: [], message: '', retryBatches: [delayedBatch] });
   await until("document.querySelector('#review-context')?.textContent.includes('bbbbbbbbbbbb') && !document.querySelector('#review-send').disabled");
-  assert.deepEqual(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]"), { id: delayedId, payload: delayed }, "reload restores the delayed-publication fixture before review startup");
+  assert.deepEqual(await evaluate("JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches"), [delayedBatch], "delayed publication fixture survives live config/status updates with its original identity");
   await evaluate("document.querySelector('#review-send').click()");
   await until("Boolean(JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches[0]?.rejected)");
   await deliverLocalReview({ ...delayed, provenance: { commit: delayed.version, branch: "uat" } }, receipts);
@@ -285,7 +295,7 @@ try {
   newConfig = false;
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await command("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await reload(null);
+  await reloadWithDraft(null);
   await until("document.querySelector('.mobile-dock #review-panel-toggle') && document.querySelector('#review-context')?.textContent.includes('Version')");
   const tap = async (selector) => {
     const point = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
@@ -324,8 +334,7 @@ try {
   await command("Emulation.setTouchEmulationEnabled", { enabled: false });
   await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 844, deviceScaleFactor: 1, mobile: false });
   console.log("PASS: phone 390×844 touch type-and-send; unreachable server greys Send with a reason, Queue stays local, tab return reconnects and sends");
-  // Keep interception enabled until browser close so late pauses retain valid IDs.
-  if (eventError) throw eventError;
+  await interception.stop();
   // Exercise history through actual controls: six older-page clicks retain 60 IDs.
   await evaluate("location.hash = '#lanes/alpha'");
   await until("document.querySelectorAll('.session-row').length >= 65");
