@@ -185,9 +185,16 @@ function changeCompactMode(compact, clickedLine = null) {
   pendingMessageAnchor = null;
   if (!compact && clickedLine) $("#sr-announcer").textContent = "Expanded all messages. The selected message is outlined until you click elsewhere.";
 }
-function updateLatestControl(atBottom) {
+const LATEST_TOLERANCE = 4;
+function distanceFromBottom(feed = $("#messages")) {
+  return feed.clientHeight > 0 ? Math.max(0, feed.scrollHeight - feed.scrollTop - feed.clientHeight) : 0;
+}
+function updateLatestControl() {
+  const atLatest = distanceFromBottom() <= LATEST_TOLERANCE && transcriptPage === previousPageCount - 1;
   const button = $("#jump-to-latest");
-  if (button) button.disabled = atBottom && transcriptPage === previousPageCount - 1;
+  if (button) button.disabled = atLatest;
+  const floating = $("#jump-to-latest-floating");
+  if (floating) floating.hidden = atLatest;
 }
 // Numeric indices cover loaded history, not just the bounded rendered page.
 const kindRecordIndices = new Map();
@@ -301,7 +308,7 @@ function navigateToRecord(index, { expand = false, announcement = "Returned to y
   $("#sr-announcer").textContent = announcement;
   updateLastViewedControl();
   updateKindNavigation();
-  updateLatestControl(feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60);
+  updateLatestControl();
 }
 function loadEarlierKindWindow() {
   const pending = pendingKindJump;
@@ -769,7 +776,7 @@ function renderFeed() {
   const pageCount = Math.max(1, Math.ceil(messages.length / TRANSCRIPT_PAGE_SIZE));
   const feedBefore = $("#messages");
   const followingLatest = !pendingLastViewedJump && !pendingMessageAnchor && (transcriptPage === null || (previousPageCount !== null && transcriptPage === previousPageCount - 1 &&
-    feedBefore.scrollHeight - feedBefore.scrollTop - feedBefore.clientHeight < 60));
+    distanceFromBottom(feedBefore) <= LATEST_TOLERANCE));
   transcriptPage = followingLatest ? pageCount - 1 : Math.min(transcriptPage, pageCount - 1);
   if (preservePageAnchor && !selectionChanged && !followingLatest && lastPageAnchor) {
     const index = messages.findIndex((message) => recordKey(message) === lastPageAnchor);
@@ -790,11 +797,7 @@ function renderFeed() {
   $("#transcript-newer").disabled = transcriptPage === pageCount - 1;
 
   const messagesEl = $("#messages");
-  const clientHeight = Number(messagesEl.clientHeight || 0);
-  const scrollHeight = Number(messagesEl.scrollHeight || 0);
-  const scrollTop = Number(messagesEl.scrollTop || 0);
-  const distanceFromBottom = clientHeight > 0 ? (scrollHeight - scrollTop - clientHeight) : 0;
-  const wasAtBottom = !pendingLastViewedJump && !pendingMessageAnchor && (!hasRenderedFeed || selectionChanged || (followingLatest && distanceFromBottom < 60));
+  const wasAtBottom = !pendingLastViewedJump && !pendingMessageAnchor && (!hasRenderedFeed || selectionChanged || followingLatest);
 
   const trimmedQuery = transcriptQuery.trim();
   const noLaneMessage = !selection.checked.length && !feedLaneOverrideId
@@ -874,7 +877,7 @@ function renderFeed() {
       }
     }
   }
-  updateLatestControl(messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60);
+  updateLatestControl();
   hasRenderedFeed = true;
   const bookmark = lastViewed.get(renderedReadingScope);
   lastViewedIndex = bookmark ? messages.findIndex((message) => recordKey(message) === bookmark) : -1;
@@ -2562,12 +2565,7 @@ $("#messages").addEventListener("click", (event) => {
   }
 });
 $("#messages").addEventListener("scroll", () => {
-  const messagesEl = $("#messages");
-  const clientHeight = Number(messagesEl.clientHeight || 0);
-  const scrollHeight = Number(messagesEl.scrollHeight || 0);
-  const scrollTop = Number(messagesEl.scrollTop || 0);
-  const isAtBottom = clientHeight > 0 ? (scrollHeight - scrollTop - clientHeight < 60) : true;
-  updateLatestControl(isAtBottom);
+  updateLatestControl();
   updateLastViewedControl();
   updateKindNavigation();
 });
@@ -2585,16 +2583,19 @@ $("#jump-to-last-viewed")?.addEventListener("click", () => {
   pendingKindJump = null;
   navigateToRecord(lastViewedIndex);
 });
-$("#jump-to-latest")?.addEventListener("click", () => {
+function jumpToLatest() {
   pendingKindJump = null;
   const messagesEl = $("#messages");
   transcriptPage = null;
   preservePageAnchor = false;
   renderFeed();
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  updateLatestControl(true);
+  updateLatestControl();
   updateLastViewedControl();
-});
+  messagesEl.focus({ preventScroll: true });
+}
+$("#jump-to-latest")?.addEventListener("click", jumpToLatest);
+$("#jump-to-latest-floating")?.addEventListener("click", jumpToLatest);
 $("#sessions-load-older").addEventListener("click", () => {
   taskOlderPages = Math.min(20, taskOlderPages + 1);
   requestLanes();

@@ -1662,7 +1662,7 @@ test("screen reader live regions prevent flood and announce status concisely", a
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 
   // Verify aria-live is removed from #messages
-  assert.match(html, /<div id="messages" class="messages" aria-label="Conversation feed, oldest to newest" aria-busy="true">/);
+  assert.match(html, /<div id="messages" class="messages" tabindex="-1" aria-label="Conversation feed, oldest to newest" aria-busy="true">/);
   assert.doesNotMatch(html, /id="messages"[^>]*aria-live/);
 
   // Verify dedicated announcer exists
