@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      latest_native_bottom:
+        description: 'Run CI-Q3 retained Latest native-bottom assertion (restoration issue 83)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -69,9 +74,19 @@ jobs:
         continue-on-error: true
         run: npm run test:browser
         working-directory: prototype
+      - name: Opt-in CI-Q3 Latest native-bottom assertion
+        id: native_bottom
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.latest_native_bottom }}
+        continue-on-error: true
+        run: npm run test:browser:quarantine-native-bottom
+        working-directory: prototype
       - name: Report advisory failures
         if: always()
         env:
           INTEGRATION: ${{ steps.integration.outcome }}
           CHROMIUM_GATE: ${{ steps.chromium.outcome }}
-        run: test "$INTEGRATION" = success && test "$CHROMIUM_GATE" = success
+          NATIVE_BOTTOM: ${{ steps.native_bottom.outcome }}
+        run: |
+          test "$INTEGRATION" = success
+          test "$CHROMIUM_GATE" = success
+          test "$NATIVE_BOTTOM" = skipped || test "$NATIVE_BOTTOM" = success

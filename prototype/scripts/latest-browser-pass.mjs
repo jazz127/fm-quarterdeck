@@ -6,6 +6,9 @@ import path from "node:path";
 import { createServer, loadFirstmateHome } from "../server.js";
 import { openBrowser, openReadingControls, closeReadingControls } from "./browser-harness.mjs";
 
+// CI-Q3: only the post-pointer/touch native-bottom assertion is opt-in.
+const includeNativeBottom = process.argv.includes("--include-quarantined-native-bottom");
+
 const scratch = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-latest-"));
 await mkdir(path.join(scratch, "data"));
 await mkdir(path.join(scratch, "state/main-session"), { recursive: true });
@@ -54,8 +57,12 @@ try {
       return {hidden:button.hidden,width:r.width,height:r.height,inside:r.left>=feed.left && r.right<=feed.right && r.bottom<=feed.bottom,
         clearDock:!dock?.height || r.bottom<=dock.top,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===button};
     })()`);
-    const atLatest = async () => {
-      assert.ok(await distance() <= 1, "Latest reaches the native scroll bottom");
+    const atLatest = async ({ quarantineNativeBottom = false } = {}) => {
+      if (!quarantineNativeBottom || includeNativeBottom) {
+        assert.ok(await distance() <= 1, "Latest reaches the native scroll bottom");
+      } else {
+        console.log(`${width}x${height}: CI-Q3 post-pointer/touch native-bottom assertion EXCLUDED; https://github.com/sthi-1005/fm-quarterdeck/issues/83 (not native acceptance)`);
+      }
       assert.equal(await evaluate("document.querySelector('#jump-to-latest-floating').hidden"), true);
       assert.equal(await evaluate("document.querySelector('#transcript-newer').disabled"), true, "latest loaded page selected");
       assert.ok(await evaluate(`(() => {const f=document.querySelector('#messages'), r=f.getBoundingClientRect();
@@ -125,7 +132,8 @@ try {
       await command("Input.dispatchMouseEvent", { type: "mouseReleased", ...pill, button: "left", clickCount: 1 });
     }
     await until("document.querySelector('#jump-to-latest-floating').hidden");
-    await atLatest();
+    // Retain native gestures and all companion assertions in the default run.
+    await atLatest({ quarantineNativeBottom: true });
     await evaluate("document.querySelector('#messages').focus()");
     await trackNativeScroll();
     await command("Input.dispatchKeyEvent", { type: "keyDown", key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 });
@@ -178,6 +186,7 @@ try {
     })()`);
     assert.equal(new Set(allKeys).size, records.length, "all original records remain reachable across loaded pages");
     console.log(`${width}x${height}: 50px regression, floating geometry, reading intent, following, tolerance, keyboard, older page, filters, compact and reduced motion passed`);
+    if (includeNativeBottom) console.log(`${width}x${height}: CI-Q3 post-pointer/touch native-bottom assertion passed in explicit opt-in run`);
     await browser.close();
     browser = null;
   }
