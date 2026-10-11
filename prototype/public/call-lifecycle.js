@@ -40,12 +40,10 @@ window.callLifecycle = (() => {
 
   // The reply joined to this captain note, else the latest reply text when the note is replied.
   function replyFor(entry, entries) {
-    if (!entry || !Array.isArray(entries)) return "";
+    if (!entry || !Array.isArray(entries) || entry.replyScope === "combined") return "";
     const matched = entries.find((item) => item && item.kind === "reply" && item.noteId && entry.noteId && item.noteId === entry.noteId && replyText(item.text));
     if (matched) return replyText(matched.text);
-    if (entry.state !== "replied") return "";
-    const replies = entries.filter((item) => item && item.kind === "reply" && replyText(item.text));
-    return replies.length ? replyText(replies[replies.length - 1].text) : "";
+    return ""; // Another note's latest reply cannot establish this note's answer.
   }
 
   function cardPosture(card) {
@@ -54,39 +52,53 @@ window.callLifecycle = (() => {
     return null;
   }
 
+  // Optional cycle evidence is independent of cosmetic presentation revisions.
+  function currentHoldNote(card, note) {
+    if (!card?.holdVersion) return true;
+    const updated = Date.parse(card.clock?.at), sent = Date.parse(note?.sentAt || note?.heldAt || note?.at);
+    if (Number.isFinite(updated) && Number.isFinite(sent) && updated > sent) return false;
+    if (note?.holdVersion) return note.holdVersion === card.holdVersion;
+    if (note?.cardRev) return note.cardRev === card.rev;
+    return note?.currentHold !== false && Number.isFinite(updated) && Number.isFinite(sent) && sent >= updated;
+  }
+
   // Latest captain note from receipts the page already holds.
   // Pending: still unread. Acknowledged: read, no reply. Replied: the call is the captain's again.
   function delivery({ card = null, answer = null, thread = null } = {}) {
     const entries = Array.isArray(thread?.entries) ? thread.entries : null;
-    const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer")) : [];
+    const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer") && currentHoldNote(card, entry)) : [];
     const latest = captain.length ? captain[captain.length - 1] : null;
     let posture = latest ? entryPosture(latest) : null;
     let reply = posture === "replied" ? replyFor(latest, entries) : "";
+    let replyScope = latest?.replyScope;
 
-    if (answer?.phase === "sent") {
+    if (answer?.phase === "sent" && currentHoldNote(card, answer)) {
       const local = receiptPosture(answer.receipt?.state);
-      const localReply = local === "replied" ? replyText(answer.receipt?.reply) : "";
+      const localReply = local === "replied" && answer.receipt?.replyScope === "individual" ? replyText(answer.receipt?.reply) : "";
       const answerIsLatest = !latest || latest.kind === "answer";
       const answerIsNewer = Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
       if (answerIsLatest || answerIsNewer) {
         if (!posture || POSTURE_RANK[local] >= POSTURE_RANK[posture] || answerIsNewer) {
           posture = local;
-          reply = local === "replied" ? (localReply || reply) : "";
+          replyScope = answer.receipt?.replyScope || replyScope;
+          reply = local === "replied" && replyScope !== "combined" ? (localReply || reply) : "";
         }
       }
     }
 
-    const held = answer?.heldReply != null && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
+    const held = answer?.heldReply != null && currentHoldNote(card, answer) && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
     if (held && answer.heldAt && latest?.at && String(answer.heldAt) > String(latest.at)) {
       posture = "replied";
-      reply = replyText(answer.heldReply);
+      replyScope = answer.heldReplyScope;
+      reply = replyScope === "individual" ? replyText(answer.heldReply) : "";
     } else if (held && posture !== "pending" && posture !== "acknowledged") {
       posture = "replied";
-      reply = reply || replyText(answer.heldReply);
+      replyScope = replyScope || answer.heldReplyScope;
+      reply = replyScope === "combined" ? "" : reply || (answer.heldReplyScope === "individual" ? replyText(answer.heldReply) : "");
     }
 
     // A thread send the history does not list yet is newer than the reply already on the card.
-    if (thread?.captainAsked === true) {
+    if (thread?.captainAsked === true && (!card?.holdVersion || thread.holdVersion === card.holdVersion)) {
       posture = "pending";
       reply = "";
     }
@@ -95,18 +107,20 @@ window.callLifecycle = (() => {
       const fallback = cardPosture(card);
       if (fallback) {
         posture = fallback;
-        reply = fallback === "replied" ? replyText(card?.sentReply) : "";
+        replyScope = card?.sentReplyScope;
+        reply = fallback === "replied" && replyScope !== "combined" ? replyText(card?.sentReply) : "";
       }
     }
 
-    return { posture, reply: posture === "replied" ? reply : "" };
+    return { posture, reply: posture === "replied" ? reply : "", ...(posture === "replied" && replyScope ? { replyScope } : {}) };
   }
 
   function sentLabel(posture) {
     return posture === "acknowledged" ? "Firstmate is on it" : "Sent - waiting for Firstmate to read";
   }
 
-  function replyBanner(reply) {
+  function replyBanner(reply, scope) {
+    if (scope === "combined") return "Firstmate replied to the combined submission; a card-specific reply is not recorded. See Original / contextual provenance.";
     const text = replyText(reply);
     return text ? `Firstmate replied: ${text}` : "Firstmate replied";
   }
@@ -187,5 +201,5 @@ window.callLifecycle = (() => {
     if (button.getAttribute("aria-label") !== view.label) button.setAttribute("aria-label", view.label);
   }
 
-  return { FILTERS, STORAGE_KEY, LABELS, derive, cardState, delivery, sentLabel, replyBanner, counts, readFilter, writeFilter, visible, emptyText, paintToggle, sendQueuedControl, paintSendQueued, answerQueued };
+  return { FILTERS, STORAGE_KEY, LABELS, derive, cardState, delivery, currentHoldNote, sentLabel, replyBanner, counts, readFilter, writeFilter, visible, emptyText, paintToggle, sendQueuedControl, paintSendQueued, answerQueued };
 })();

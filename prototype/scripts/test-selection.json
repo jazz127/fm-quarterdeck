@@ -56,6 +56,7 @@
     "test/bearings-landed.test.js",
     "test/bearings-procrastination.test.js",
     "test/bearings-thread.test.js",
+    "test/captains-call-clarity.test.js",
     "test/bearings.test.js",
     "test/browser-harness.test.mjs",
     "test/chat-asks-repair.test.js",

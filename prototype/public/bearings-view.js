@@ -192,6 +192,9 @@ window.bearingsView = (() => {
       <p class="call-meta" data-call-thread-earlier></p>
       <ol class="call-thread-log" id="call-thread-log-${id}" data-call-thread-log></ol>
       <button type="button" class="call-thread-history-toggle" data-call-thread-history-toggle aria-expanded="false" aria-controls="call-thread-log-${id}" hidden>Show earlier messages</button>
+    </section><button type="button" class="call-thread-expand" data-call-thread-provenance-toggle aria-expanded="false" aria-controls="call-provenance-${id}" hidden>Original / contextual provenance</button><section class="call-thread-history" id="call-provenance-${id}" data-call-thread-provenance hidden>
+      <p class="call-meta" data-call-thread-provenance-status>Combined replies, earlier cycles and task-only chat are not attributed answers to this call. Source text retains existing path redaction and size limits; original durable records are unchanged.</p>
+      <ol class="call-thread-log" data-call-thread-provenance-log></ol>
     </section><p class="call-meta" data-call-thread-notice role="status" hidden></p>`;
   const CHAT_LABELS = { approval: "Approval", action: "Action", decision: "Decision" };
   const repliesText = (replies) => (Array.isArray(replies) && replies.length ? replies.map((reply) => `“${reply}”`).join(" or ") : "No quoted reply");
@@ -214,7 +217,7 @@ window.bearingsView = (() => {
       ${answerHtml(card, summary, threadHistoryHtml(id))}`;
   }
   const linkedAsksHtml = (card) => Array.isArray(card.chatAsks) && card.chatAsks.length
-    ? `<div class="call-context-row call-context-ask"><dt>Also asked in chat</dt><dd>${card.chatAsks.map((ask) => `${escape(visibleChatText(ask.summary) || "Asked in chat")} · reply ${escape(repliesText(ask.replies))}`).join("<br>")}</dd></div>` : "";
+    ? `<div class="call-context-row call-context-ask"><dt>Also asked in chat · source-linked</dt><dd>${card.chatAsks.map((ask) => `${escape(visibleChatText(ask.summary) || "Asked in chat")} · reply ${escape(repliesText(ask.replies))}`).join("<br>")}</dd></div>` : "";
   function cardHtml(card) {
     if (card.type === "chat") return chatCardHtml(card);
     const merge = card.type === "merge";
@@ -231,7 +234,15 @@ window.bearingsView = (() => {
     const shortened = !card.boardTitle && sourceShortened(shown);
     const titleHtml = card.boardTitle ? `<h3 id="call-decide-${id}">${escape(card.boardTitle)}</h3>` : headlineHtml(id, fallbackDecide, card);
     const decideToShow = card.boardDecide ? `<p class="call-decide">${escape(card.boardDecide)}</p>` : (card.boardTitle ? headlineHtml(`${id}-fallback`, fallbackDecide, card, "p") : "");
-    const detailHtml = card.boardDetail ? `<h3 id="call-detail-${id}"><button type="button" class="call-text-toggle" data-call-text-toggle aria-expanded="false" aria-controls="call-detail-full-${id}">More details</button></h3><div class="call-full" id="call-detail-full-${id}" data-call-full hidden><p>${escape(card.boardDetail)}</p></div>` : "";
+    const recordedReason = decisionText(card);
+    const reasonContext = card.boardTitle && card.boardDecide && recordedReason && recordedReason !== card.boardDecide && recordedReason !== card.boardDetail
+      ? `<div class="call-context-row call-context-ask"><dt>Recorded hold reason</dt><dd>${escape(recordedReason)}</dd></div>` : "";
+    const detailHtml = reasonContext + (card.boardDetail ? `<div class="call-context-row call-context-ask"><dt>Recorded context</dt><dd>${escape(card.boardDetail)}</dd></div>` : "");
+    const sourceLabel = card.boardDecide ? "Source question / action" : decisionText(card) ? "Recorded hold reason" : merge ? "Recorded merge reason" : "Recorded description";
+    const completeContext = [card.boardDecide, decisionText(card)].some(text => typeof text === "string" && text.trim() && !sourceShortened(text));
+    const contextGap = !merge && !completeContext
+      ? `<p class="call-source-gap">${sourceShortened(ask) ? "The source did not provide a complete question or response context. This description does not establish whether action is needed now." : "No separate question or response guidance was supplied with this description. Ask Firstmate to clarify; do not infer approval or that no action is needed."}</p>` : "";
+    const responseGuidance = card.boardFreeformHint ? `<div class="call-context-row call-context-ask"><dt>Response guidance from source</dt><dd>${escape(card.boardFreeformHint)}</dd></div>` : "";
 
     const row = (name, text, extra = "") => `<div class="call-context-row"><dt>${name}</dt><dd${extra}>${escape(text)}</dd></div>`;
     const about = card.boardAbout || [card.repo || "Repository not recorded", card.owner || "Owner not recorded", merge && card.kind].filter(Boolean).join(" · ");
@@ -239,10 +250,11 @@ window.bearingsView = (() => {
       ${replyBannerHtml()}
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
+      <p class="call-meta call-recap-source">${sourceLabel}</p>
       ${titleHtml}
       ${decideToShow}
-      ${detailHtml}
-      <dl class="call-context">${row("About", about)}${linkedAsksHtml(card)}${merge && !card.boardAbout ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
+      ${contextGap}
+      <dl class="call-context">${detailHtml}${responseGuidance}${row("About", about)}${linkedAsksHtml(card)}${merge && !card.boardAbout ? row("Risk", "Not provided by the snapshot; see the full reason above.") : ""}</dl>
       <p class="call-id">Task <code>${escape(card.task || "unknown")}</code></p>
       ${shortened ? `<p class="call-shortened">Firstmate's snapshot shortened this ${merge ? "reason" : "ask"}; Quarterdeck shows everything it received. Ask Firstmate in chat for the full text of task <code>${escape(card.task || "unknown")}</code>.</p>` : ""}
       ${url ? `<a class="call-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(url)}</a>` : merge ? '<p class="call-meta">Merge link unavailable</p>' : ""}

@@ -57,6 +57,20 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
   return { dom, document, timers, list, patcher, answers, overflow, fetches, node, part, submit, leave, win };
 }
 
+test('optional cycle identity retains an accepted answer across presentation changes and resets only a new hold', async () => {
+  const t=setup();const key='merge:beta-merge';
+  const c={...merge(),holdVersion:'current'};
+  t.patcher.update(model([c]));
+  const radio=t.node(key).querySelector('input[value="merge"]');radio.checked=true;radio.dispatchEvent({type:'change'});
+  t.submit(key);t.part(key,'send').click();await flush();t.leave();
+  assert.equal(t.answers.state(key).holdVersion,'current');
+  t.patcher.update(model([{...c,rev:'b2'}]));t.leave();
+  assert.equal(t.answers.state(key).phase,'sent','cosmetic revision cannot reset a versioned accepted answer');
+  t.patcher.update(model([{...c,rev:'b3',holdVersion:'new'}]));t.leave();
+  assert.equal(t.answers.state(key),null,'new hold excludes the old local lock');
+  assert.equal(t.part(key,'text').readOnly,false);
+});
+
 test('protected sorting preserves typing, confirmation and viewer preference across reload', () => {
   const viewerStorage = tabStorage();
   const t = setup({ viewerStorage });
@@ -280,7 +294,7 @@ test("a named linked alternative relays its exact label; unselected text uses th
 });
 
 test("nothing is sent until Queue and then an explicit Send; the sent answer clears its draft and shows receipts", async () => {
-  const t = setup({ responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
+  const t = setup({ responses: [{ status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", replyScope: "individual", reply: "Holding until Tuesday" } } } }] });
   const card = decision();
   card.answer = { ...card.answer, options: [{ value: "staged", label: "Staged", hint: "Fewer users" }], recommend: "staged" };
   t.patcher.update(model([card]));
