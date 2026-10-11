@@ -25,7 +25,11 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     for (const byte of buffer) if (byte === 10) total += 1;
     if (buffer.length && buffer[buffer.length - 1] !== 10) total += 1;
     let drop = total - allowed, offset = 0;
-    while (drop-- > 0) offset = buffer.indexOf(10, offset) + 1;
+    while (drop-- > 0) {
+      const newline = buffer.indexOf(10, offset);
+      if (newline < 0) return buffer.length;
+      offset = newline + 1;
+    }
     return offset;
   }
   function countRecords(buffer) {
@@ -81,8 +85,10 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
         buffer = newline < 0 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
       }
       if (window) {
+        const allowed = windowRecords();
+        if (!allowed) return null;
         // Keep the newest whole records the request's record budget can still hold.
-        const kept = newestRecordsStart(buffer, windowRecords());
+        const kept = newestRecordsStart(buffer, allowed);
         omittedBytes += kept;
         buffer = buffer.subarray(kept);
       }

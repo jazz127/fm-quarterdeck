@@ -22,12 +22,7 @@ export async function readSupervisionOutcomes(home, publicMessage, reader = crea
     inventory.loaded = true;
     inventory.omittedBytes = window.omittedBytes;
     if (window.omittedBytes) warnings.push(`${source}: only its newest whole records loaded within this request's read budget; older outcomes are not shown.`);
-    // Line numbers are unknown once a window starts mid-file, so windowed
-    // records are identified by stable byte offset instead.
-    const byOffset = window.omittedBytes > 0;
-    let index = 0;
     for await (const { line, offset } of window.lines) {
-      index += 1;
       if (!line.trim()) continue;
       let record;
       try { record = JSON.parse(line); } catch { inventory.skippedRecords += 1; continue; }
@@ -40,9 +35,9 @@ export async function readSupervisionOutcomes(home, publicMessage, reader = crea
       reader.takeMessage();
       messages.push({ ...publicMessage({
         author: "Fleet", role: "supervision", kind: "supervision", state: record.verdict || "update",
-        source, taskId, timestamp, sourceSequence: byOffset ? offset : index,
+        source, taskId, timestamp, sourceSequence: offset,
         text: `${taskId ? `${taskId}: ` : ""}${record.summary.trim()}`,
-      }), recordId: byOffset ? `${source}@${offset}` : `${source}:${index}`, transcriptOrigin: "fleet note" });
+      }), recordId: `${source}@${offset}`, transcriptOrigin: "fleet note" });
       inventory.messageCount += 1;
     }
   }

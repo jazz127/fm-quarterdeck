@@ -801,12 +801,13 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       if (!projectName) return null;
 
       let statusEvents = [];
+      const statusActivity = stateNames.includes(statusName) ? new Date((await stat(path.join(resolvedHome, "state", statusName))).mtimeMs) : null;
       // Registered parent-channel files are projected once by the mate adapter.
       if (stateNames.includes(statusName) && !secondmates.sources.some(({ id }) => id === taskId)) {
         const statusPath = path.join(resolvedHome, "state", statusName);
         // Task events are history: a long status log shows its newest whole lines.
         // Work classification above still folds the whole file.
-        const [window, statusStat] = await Promise.all([reader.recent(statusPath), stat(statusPath)]);
+        const window = await reader.recent(statusPath);
         const lines = [];
         if (!window) statusWarnings.push(`state/${statusName} was not loaded: this request's read budget went to other sources.`);
         else {
@@ -818,7 +819,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
           const event = parseStatusLine(line);
           // A status file only supplies one clock. Keep its lines on that real mtime
           // and use file order solely as a stable tie-break, never fake milliseconds.
-          const timestamp = new Date(statusStat.mtimeMs);
+          const timestamp = statusActivity;
           return publicMessage({
             ...event,
             timestamp,
@@ -843,7 +844,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),
         events: statusEvents,
-        activityAt: lastSteer && (!statusEvents.length || lastSteer > statusEvents[0].timestamp) ? lastSteer : statusEvents[0]?.timestamp || null,
+        activityAt: lastSteer && (!statusActivity || lastSteer > statusActivity) ? lastSteer : statusActivity,
       };
     }));
     const tasks = taskResults.filter(Boolean);
