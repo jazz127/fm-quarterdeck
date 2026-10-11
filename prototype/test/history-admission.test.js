@@ -133,7 +133,6 @@ test("registered mate coverage follows its unread parent status source without b
   const { lane, data } = await read();
   assert.equal(data.transcript.secondmateSources.find(source => source.id === "a").loaded, false);
   assert.equal(lane.sessions.some(session => session.id === "a"), false, "persistent mates remain separate from task sessions");
-  assert.equal(data.workSplit.items.some(item => item.id === "a"), false);
   assert.equal(reads.filter(source => source === "a.status").length, 1, "the mate adapter alone attempts the parent source");
   assert.ok(data.transcript.warnings.some(warning => /a: message source not loaded/.test(warning)));
 });

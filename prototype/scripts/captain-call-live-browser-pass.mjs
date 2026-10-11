@@ -104,8 +104,10 @@ esac
 await chmod(inbox, 0o755);
 await writeFile(path.join(home, 'note.mjs'), `
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 const home = process.env.FM_HOME;
 const id = process.argv[2];
+const noteId = 'note-' + createHash('sha256').update(id).digest('hex').slice(0, 16);
 let body = ''; for await (const chunk of process.stdin) body += chunk;
 const match = /\`\`\`json fm-quarterdeck-batch\\n([\\s\\S]*?)\\n\`\`\`/.exec(body);
 const items = match ? JSON.parse(match[1]).items : [{ requestId: id, text: body }];
@@ -120,9 +122,10 @@ for (const item of items) {
     if (await readFile(home + '/fail-answer').then(() => true, () => false)) process.exit(1);
     if (await readFile(home + '/delay-answer').then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 5000));
   }
+  await writeFile(home + '/' + kind + '-' + item.requestId + '.receipt-id', noteId);
   await writeFile(home + '/' + kind + '-request-id', item.requestId);
 }
-console.log(JSON.stringify({ schema: 'fm-inbox-note.v1', request_id: id, saved: true, id: items.every(item => item.requestId.startsWith('quarterdeck-thread:')) ? 'thread-1' : 'note-1', announced: true, outcome: 'created' }));
+console.log(JSON.stringify({ schema: 'fm-inbox-note.v1', request_id: id, saved: true, id: noteId, announced: true, outcome: 'created' }));
 `);
 
 await writeFile(path.join(home, 'receipts.mjs'), `
@@ -130,8 +133,8 @@ import { readFile } from 'node:fs/promises';
 const read = async name => readFile(process.env.FM_HOME + '/' + name, 'utf8').catch(() => '');
 const id = await read('answer-request-id');
 const state = await read('receipt-state');
-const note = { id: 'note-1', request_id: id };
-const data = { schema: 'fm-inbox-receipts.v1', pending: state === 'received' || state === 'replied' ? [] : [note], handled: state === 'received' || state === 'replied' ? [note] : [], replies: state === 'replied' ? [{ id: 'note-1', body: 'Synthetic answer recorded' }] : [] };
+const note = { id: await read('answer-' + id + '.receipt-id'), request_id: id };
+const data = { schema: 'fm-inbox-receipts.v1', pending: state === 'received' || state === 'replied' ? [] : [note], handled: state === 'received' || state === 'replied' ? [note] : [], replies: state === 'replied' ? [{ id: note.id, body: 'Synthetic answer recorded' }] : [] };
 const lines = async (name) => (await read(name)).split('\\n').map((line) => line.trim()).filter(Boolean);
 const threadIds = await lines('thread-attempts');
 const acked = new Set(await lines('thread-acked'));
@@ -141,7 +144,7 @@ for (let i = 0; i < threadIds.length; i++) {
   const body = await read('thread-' + requestId + '.txt');
   if (!body) continue;
   const minute = String(i).padStart(2, '0');
-  const note = { id: 'thread-' + (i + 1), request_id: requestId, at: '2026-01-02T10:' + minute + ':00.000Z', body };
+  const note = { id: await read('thread-' + requestId + '.receipt-id'), request_id: requestId, at: '2026-01-02T10:' + minute + ':00.000Z', body };
   const answered = repliedIds.has(requestId);
   if (answered || acked.has(requestId)) data.handled.push(note);
   else data.pending.push(note);
@@ -965,7 +968,7 @@ try {
   await evaluate(`() => { const delta=proof.anchor.getBoundingClientRect().top-proof.anchorTop; if(Math.abs(delta)>2||!proof.anchor.contains(document.activeElement))throw Error('removal moved engaged anchor '+delta); document.activeElement.blur(); return {removedAnchorDelta:delta}; }`);
   for (const width of [360,390]) {
     await browser('resize', String(width), '844');
-    await evaluate(`() => { document.querySelector('#overview-view').scrollTop=0; const kpi=(${captureKpiGeometry.toString()})(); if(innerWidth!==${width}||document.querySelector('#call-mobile-badge').hidden||document.querySelector('#call-mobile-badge').textContent!=='15'||document.documentElement.scrollWidth>innerWidth||kpi.cards.length!==3||kpi.cards.some((c,i)=>c.width<=0||Math.abs(c.top-kpi.cards[0].top)>1||c.scrollWidth>c.clientWidth+1))throw Error('phone/KPI geometry'); return {width:innerWidth,kpi,calls:document.querySelectorAll('[data-call-key]').length}; }`);
+    await evaluate(`() => { document.querySelector('#overview-view').scrollTop=0; const kpi=(${captureKpiGeometry.toString()})(); if(innerWidth!==${width}||document.querySelector('#call-mobile-badge').hidden||document.querySelector('#call-mobile-badge').textContent!=='15'||document.documentElement.scrollWidth>innerWidth||kpi.cards.length!==3||kpi.cards.some((c,i)=>c.width<=0||Math.abs(c.top-kpi.cards[0].top)>1||c.scrollWidth>c.clientWidth+1))throw Error('phone/KPI geometry '+JSON.stringify({badge:document.querySelector('#call-mobile-badge').textContent,hidden:document.querySelector('#call-mobile-badge').hidden,kpi,states:[...document.querySelectorAll('[data-call-key]')].map(n=>[n.dataset.callKey,n.dataset.callLifecycle])})); return {width:innerWidth,kpi,calls:document.querySelectorAll('[data-call-key]').length}; }`);
     await browser('screenshot', path.join(proof, `captain-call-${width}.png`));
   }
   // Firstmate confirmation is disappearance from bearings, not a receipt reply.

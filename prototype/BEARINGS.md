@@ -39,7 +39,7 @@ Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `
 
 `GET /api/health` stays HTTP 200 with `ok:true` for service readiness and adds `status:"ok"|"degraded"` plus `bearings:{rev,state,observedAt,checkedAt,stale,error,ageMs,maxAgeMs,remoteCollection:"cache"}`. Only a ready, current snapshot reports status ok; loading, unavailable and stale data are degraded. Health reads do not run collection or wait for it. Age is measured from the last successful observation, never the latest failed attempt.
 
-Overview badges show `?` for loading or unavailable readings, keep stale counts explicitly labelled, and hide a zero badge only for a current reading. Phone tabs show loading/unavailable instead of zero and label stale counts. Freshness observations update both sections even when the content revision is unchanged. Both sections disclose that remote homes use cached readings; the call coverage footer uses the last-success age.
+Overview badges show `?` for loading or unavailable readings, keep stale counts explicitly labelled, and hide a zero badge only for a current reading. Phone tabs show loading/unavailable instead of zero and label stale counts. Freshness observations update all four sections even when the content revision is unchanged. Calls and landings disclose that remote homes use cached readings; the call coverage footer uses the last-success age.
 
 ## Card clocks and sorting
 
