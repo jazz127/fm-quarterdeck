@@ -1569,15 +1569,59 @@ test("reading scale and offline font stack are explicit design constraints", () 
 });
 
 test("desktop filtering belongs to Lane Chat columns, not the app shell", async () => {
-  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
-  const shell = html.slice(0, html.indexOf('<div class="main-stage"'));
-  const chat = html.slice(html.indexOf('<section id="conversations-view"'), html.indexOf('<section id="overview-view"'));
-  assert.doesNotMatch(shell, /id="lane-options"|id="lane-status"|id="message-type-filters"/);
-  assert.match(chat, /class="conversation-body"[\s\S]*id="lane-options"[\s\S]*class="conversation-feed"[\s\S]*id="conversation-kind-panel"/);
-  assert.match(chat, /id="kind-filter-menu"[\s\S]*id="message-type-filters"/);
-  assert.match(css, /\.conversation-body \{[^}]*grid-template-columns: minmax\(180px, 215px\) minmax\(0, 1fr\) minmax\(175px, 205px\)/);
-  assert.match(css, /\.conversation-kind-panel \.kind-filter-popover \{ position: static/);
-  assert.match(css, /@media \(max-width: 1200px\) \{[\s\S]*\.conversation-kind-panel \{ display: none; \}/);
+  const html = htmlModel(await readFile(new URL("../public/index.html", import.meta.url), "utf8"));
+  for (const id of ["lane-options", "lane-status", "message-type-filters"]) {
+    assert.equal(html.all(`#${id}`).length, 1);
+    assert.ok(html.one(`#conversations-view #${id}`));
+    assert.equal(html.one(`.lane-list #${id}`), null);
+  }
+  const body = html.one("#conversations-view .conversation-body");
+  assert.deepEqual(body.children.filter(node => !node.tag.startsWith("#")), [
+    html.one("#lane-options"), html.one(".conversation-feed"), html.one("#conversation-kind-panel"),
+  ]);
+  assert.ok(html.one("#kind-filter-menu #message-type-filters"));
+  const menu = html.one("#kind-filter-menu");
+  const popover = html.one("#kind-filter-menu .kind-filter-popover");
+  const panel = html.one("#conversation-kind-panel");
+  const rules = parseCss(css);
+  const app = ui({ compact: false });
+  const menuControl = app.node("#kind-filter-menu");
+  menuControl.parentElement = app.node(".feed-actions");
+  for (const selector of ["#conversation-kind-panel", ".feed-actions", "#lane-options"]) {
+    const destination = html.one(selector), control = app.node(selector);
+    control.appendChild = control.insertBefore = child => {
+      assert.equal(child, menuControl);
+      menu.parent.children = menu.parent.children.filter(node => node !== menu);
+      menu.parent = destination;
+      destination.children.push(menu);
+      child.parentElement = control;
+    };
+  }
+  for (const [width, compact, phone, destination, position] of [
+    [1440, false, false, "#conversation-kind-panel", "static"],
+    [1200.01, false, false, "#conversation-kind-panel", "static"],
+    [1200, true, false, ".feed-actions", "absolute"],
+    [721, true, false, ".feed-actions", "absolute"],
+    [720, true, true, "#lane-options", "static"],
+    [390, true, true, "#lane-options", "static"],
+    [360, true, true, "#lane-options", "static"],
+    [1440, false, false, "#conversation-kind-panel", "static"],
+  ]) {
+    app.run(`compactChatFilters.matches = ${compact}; phoneChatFilters.matches = ${phone}; syncConversationFilterLayout()`);
+    assert.equal(html.one(`${destination} #kind-filter-menu`), menu);
+    assert.ok(html.one("#conversations-view #kind-filter-menu #message-type-filters"));
+    assert.equal(computed(rules, popover, width).position, position);
+    const layout = computed(rules, body, width);
+    if (compact) {
+      assert.equal(layout.display, "flex");
+      assert.equal(layout["flex-direction"], "column");
+      assert.equal(computed(rules, panel, width).display, "none");
+    } else {
+      assert.equal(layout.display, "grid");
+      assert.equal(layout["grid-template-columns"], "minmax(180px, 215px) minmax(0, 1fr) minmax(175px, 205px)");
+      assert.notEqual(computed(rules, panel, width).display, "none");
+    }
+  }
 });
 
 test("desktop filter panels collapse independently without changing filter selection or mobile disclosure", async () => {

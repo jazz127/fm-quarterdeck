@@ -85,13 +85,11 @@ function compound(node, selector) {
   return !tag || tag === node.tag;
 }
 export function matches(node, selector) {
-  // Preserve child combinators while splitting only outside attribute/pseudo args.
-  const pieces = split(selector.replaceAll(' > ', '>'), c => c === ' ' || c === '>');
+  const pieces = split(selector.replace(/\s*>\s*/g, ' > '), c => /\s/.test(c));
   function walk(current, index) {
     if (!compound(current, pieces[index])) return false;
     if (!index) return true;
-    // The repository selectors under test use '>' only immediately before the leaf.
-    if (index === pieces.length - 1 && selector.includes('>')) return walk(current.parent, index - 1);
+    if (pieces[index - 1] === '>') return walk(current.parent, index - 2);
     for (let parent = current.parent; parent; parent = parent.parent) if (walk(parent, index - 1)) return true;
     return false;
   }
