@@ -422,7 +422,7 @@ function publicSessions(tasks) {
       startedAt: timestamps[0]?.toISOString() || null,
       updatedAt: task.activityAt?.toISOString() || timestamps.at(-1)?.toISOString() || null,
     };
-  });
+  }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
 // `identify(headers, body)` returns the record's author/role/state/kind.
@@ -820,6 +820,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),
         events: [],
+        eventsLoaded: false,
         eventSource,
         activityAt: lastSteer && (!statusActivity || lastSteer > statusActivity) ? lastSteer : statusActivity,
       };
@@ -833,31 +834,25 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
     };
     raiseActivity([...captainNotes, ...outboxMessages]);
-    const orderedTasks = [...tasks].sort((a, b) => String(b.activityAt?.toISOString() || null).localeCompare(String(a.activityAt?.toISOString() || null)));
-    // History loading is independent of live execution and completion attention.
-    const requestedTasks = new Set(sessionIds.slice(0, 60));
-    const visibleTasks = new Set(requestedTasks);
-    for (const project of projects) {
-      const ordered = publicSessions(orderedTasks.filter((task) => task.projectName === project.name));
-      for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
-      for (const session of ordered) if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
-    }
-    // Task events are history: a long status log shows its newest whole lines, and
-    // work classification above still folds the whole file. Only tasks this response
-    // shows are read, requested first, then open work, then newest, so an unshown or
-    // older task cannot spend the event budget the shown ones need.
-    const admission = (session) => requestedTasks.has(session.id) ? 0 : ["done", "failed"].includes(session.state) ? 2 : 1;
-    if (includeHistory) for (const { id } of publicSessions(orderedTasks.filter((task) => visibleTasks.has(task.id) && task.eventSource)).sort((a, b) => admission(a) - admission(b))) {
-      const task = byTask.get(id);
+    const displayedProjects = new Set(projects.filter(({ id }) => id !== "general").map(({ name }) => name));
+    const admittedTasks = new Set();
+    const loadTaskEvents = async (task) => {
+      if (!includeHistory || !task || !displayedProjects.has(task.projectName) || admittedTasks.has(task.id)) return;
+      admittedTasks.add(task.id);
+      // Registered parent-channel history is owned/read only by the mate adapter.
+      if (!task.eventSource) {
+        task.eventsLoaded = secondmates.sources.find(({ id }) => id === task.id)?.loaded ?? true;
+        return;
+      }
       const { statusName, size, mtime } = task.eventSource;
       // An empty log is fully read; nonempty history the budget cannot reach is not loaded.
       const window = size ? await reader.recent(path.join(resolvedHome, "state", statusName)) : null;
       task.eventsLoaded = !size || Boolean(window);
       if (!task.eventsLoaded) {
         statusWarnings.push(`state/${statusName} was not loaded: this request's read budget went to other sources.`);
-        continue;
+        return;
       }
-      if (!window) continue;
+      if (!window) return;
       task.eventsOmittedBytes = window.omittedBytes;
       if (window.omittedBytes) statusWarnings.push(`state/${statusName}: only its newest whole lines loaded within this request's read budget; older task events are not shown.`);
       let index = 0;
@@ -881,11 +876,23 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
           kind: "crew",
         }));
       }
+    };
+    // Requested/nonterminal displayed tasks are guaranteed visible independently
+    // of outcomes, so their sequential windows precede competing ledger reads.
+    const visibleTasks = new Set(sessionIds.slice(0, 60).filter((id) => displayedProjects.has(byTask.get(id)?.projectName)));
+    for (const session of publicSessions(tasks.filter((task) => displayedProjects.has(task.projectName)))) {
+      if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
     }
-    // The fleet outcome ledgers only grow; read them after task events so a long
-    // ledger takes what is left of the record budget rather than starving lanes.
+    for (const id of visibleTasks) await loadTaskEvents(byTask.get(id));
     const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
     raiseActivity(supervision.messages);
+    // Retained genuine clocks finish recent membership; discarded windows have
+    // spent no event records, and already attempted sources are never reread.
+    for (const project of projects.filter((project) => displayedProjects.has(project.name))) {
+      const ordered = publicSessions(tasks.filter((task) => task.projectName === project.name));
+      for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
+    }
+    for (const session of publicSessions(tasks)) if (visibleTasks.has(session.id)) await loadTaskEvents(byTask.get(session.id));
     if (includeHistory) await Promise.all(tasks.filter((task) => visibleTasks.has(task.id)).map(async (task) => {
       task.events.push(...await readTaskSteers(resolvedHome, task.id, reader));
     }));
@@ -967,7 +974,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         crew: liveTasks.length,
         progress,
         items,
-        sessions: publicSessions(orderedTasks.filter((task) => task.projectName === project.name)).map((session) => {
+        sessions: publicSessions(projectTasks).map((session) => {
           const task = byTask.get(session.id);
           return { ...session, loaded: visibleTasks.has(session.id) && task.eventsLoaded !== false, ...(task.eventsOmittedBytes ? { omittedBytes: task.eventsOmittedBytes } : {}) };
         }),

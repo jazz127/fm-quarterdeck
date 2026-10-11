@@ -140,7 +140,7 @@ test("registered mate task coverage follows its unread parent status source with
   assert.ok(data.transcript.warnings.some(warning => /a: message source not loaded/.test(warning)));
 });
 
-test("default-limit API distinguishes unread nonempty from successfully read empty status and retains mtime", async t => {
+test("default-limit API distinguishes unread nonempty from genuinely empty status and retains mtime", async t => {
   const home = await fixture(t, { a: 2 });
   const ledger = path.join(home, "state/branch-outcomes.jsonl");
   await writeFile(ledger, "{}\n".repeat(20001));

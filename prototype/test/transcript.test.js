@@ -374,7 +374,7 @@ test("requested task windows precede large outcome ledgers within real default b
   for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source} was not loaded`)));
 });
 
-test("later outcome activity keeps its real clock without changing admission order or claiming unread task history", async (t) => {
+test("retained outcome activity selects genuine recent windows without claiming unread task history", async (t) => {
   const home = await fixture(t);
   const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
   for (const [id, clock] of Object.entries(clocks)) {
@@ -401,19 +401,20 @@ test("later outcome activity keeps its real clock without changing admission ord
       const data = await response.json();
       assert.equal(response.status, 200, data.error);
       const lane = data.lanes.find(entry => entry.id === "alpha");
-      assert.deepEqual(lane.sessions.map(session => session.id), ["c", "b", "a"], "session order uses the Jan 3/2/1 clocks available at admission");
+      assert.deepEqual(lane.sessions.map(session => session.id), ["a", "c", "b"], "retained Jan 4 activity governs genuine recent membership and order");
       const updated = lane.sessions.find(session => session.id === "a");
-      const selected = query !== "";
-      assert.equal(updated.updatedAt, outcomeClock, "A still reports the later Jan 4 outcome's real time");
-      assert.equal(updated.loaded, selected, "a newer outcome does not claim A's unread status history was loaded");
-      assert.equal(updated.eventCount, selected ? 2000 : 0);
-      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, selected ? 2000 : 0);
+      const older = query === "?older=1";
+      assert.equal(updated.updatedAt, outcomeClock, "A reports the retained outcome's real time");
+      assert.equal(updated.loaded, true, "A's actual status window is read after genuine recent selection");
+      assert.equal(updated.eventCount, 2000);
+      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, 2000);
       assert.equal(lane.sessions[0].loaded, true);
       assert.equal(lane.sessions[1].loaded, true);
       assert.ok(lane.messages.some(message => message.text === "done: c completed"));
-      assert.ok(lane.messages.some(message => message.text === "done: b completed"));
+      assert.equal(lane.sessions.find(session => session.id === "b").loaded, older, "discarded recent windows are not read; explicit older expansion still works");
+      assert.equal(lane.messages.some(message => message.text === "done: b completed"), older);
       const inventory = data.transcript.outcomeSources.find(entry => entry.source === source);
-      assert.equal(inventory.loaded, true, "outcomes use the allowance left after task events");
+      assert.equal(inventory.loaded, true, "outcomes use the allowance left after guaranteed-visible task windows");
       assert.equal(inventory.messageCount, 1, "silent, empty and invalid outcomes do not advance session activity");
     }
     await rm(ledger);
