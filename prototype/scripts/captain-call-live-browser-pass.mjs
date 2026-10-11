@@ -898,6 +898,18 @@ try {
   await browser('emulate','--color-scheme','dark');
   await phoneShot('decision:alpha-call','dark-preference');
   await browser('emulate','--color-scheme','light');
+  // The refused answer remains an unsent draft. Abandon only that synthetic
+  // text before the separate empty/unengaged immediate-update scenario.
+  await evaluate(`() => {
+    const card=document.querySelector('[data-call-key="decision:alpha-call"]');
+    const field=card.querySelector('[data-call-answer-text]');
+    if(card.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='refused'||field.value!=='A revised synthetic answer')throw Error('refused draft precondition');
+    field.value='';
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+    const saved=JSON.parse(sessionStorage.getItem('fm-quarterdeck-call-draft.v1:decision:alpha-call')||'{}');
+    if(Object.entries(saved).some(([name,value])=>name!=='selection'&&typeof value==='string'&&value.length))throw Error('unengaged update still has saved unsent text');
+    return 'abandoned refused synthetic text before empty/unengaged update';
+  }`);
   await disengage();
   await evaluate(`() => { window.proof={}; proof.alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); proof.beta=document.querySelector('[data-call-key="merge:beta-merge"]'); proof.alphaField=proof.alpha.querySelector('[data-call-answer-text]'); proof.betaField=proof.beta.querySelector('[data-call-answer-text]'); proof.rebuilds=0; new MutationObserver(ms=>proof.rebuilds+=ms.filter(m=>m.target===proof.alpha&&m.type==='childList'&&m.removedNodes.length>1).length).observe(proof.alpha,{childList:true}); return {revision:window.FM_BOOT_REVISION, noTree:!document.querySelector('#projects')}; }`);
   raw.decisions_open[0].summary = 'Changed rollout question'; await change();

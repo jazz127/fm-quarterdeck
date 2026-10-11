@@ -27,7 +27,15 @@ export async function captureStaticReplyLinks({ browser, evaluate, base, head, p
           if (!card || card.hidden || card.dataset.callLifecycle !== 'active') throw Error('recorded reply card not visible');
           const expand = card.querySelector('[data-call-thread-expand]');
           if (expand.getAttribute('aria-expanded') !== 'true') expand.click();
-          const reply = [...card.querySelectorAll('.call-thread-firstmate .call-thread-text')].find(node => node.textContent.startsWith('This call chooses the synthetic release window.'));
+          const findReply = () => [...card.querySelectorAll('.call-thread-firstmate .call-thread-text')].find(node => node.textContent.startsWith('This call chooses the synthetic release window.'));
+          let reply = findReply();
+          // A fresh tab starts with the latest exchange. The recorded reply can
+          // precede newer chat entries, just as on the original fixture page.
+          if (!reply) {
+            const earlier = card.querySelector('[data-call-thread-history-toggle]');
+            if (earlier && !earlier.hidden) earlier.click();
+            reply = findReply();
+          }
           const banner = card.querySelector('[data-fm-reply]');
           if (!reply || !reply.textContent.endsWith('(keep this note).') || banner.hidden) throw Error('recorded reply text missing');
           const anchors = [...banner.querySelectorAll('a'), ...reply.querySelectorAll('a')];
