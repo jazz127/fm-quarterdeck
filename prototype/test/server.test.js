@@ -232,7 +232,7 @@ test("message kinds are independent, persisted feed filters with crew off by def
   assert.match(kinds, /id: "thinking", label: "thinking"/);
   assert.match(kinds, /id: "crew", label: "crew status"/);
   assert.match(kinds, /return new Set\(DEFAULT_IDS\)/);
-  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "supervision"\]/);
+  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "primary-input", "supervision"\]/);
   assert.match(kinds, /message\.role === "captain" \? "captain"/);
   assert.match(html, /<script src="\/message-kinds\.js"><\/script>/);
   assert.match(html, /<script src="\/filter-view\.js"><\/script>/);
