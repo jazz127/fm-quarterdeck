@@ -17,7 +17,7 @@ import { readSecondmateMessages } from "./secondmate-messages.js";
 import { readConversationTranscript } from "./transcript.js";
 import { readFirstmateActivity } from "./firstmate-activity.js";
 import { compactLanes } from "./lane-payload.js";
-import { readSupervisionActivity, readSupervisionOutcomes } from "./supervision.js";
+import { readSupervisionOutcomes } from "./supervision.js";
 import { createQuotaReader } from "./quota.js";
 import { createBearingsHub } from "./bearings.js";
 import { createProcrastinationStore, procrastinationKey } from "./call-procrastination.js";
@@ -422,7 +422,7 @@ function publicSessions(tasks) {
       startedAt: timestamps[0]?.toISOString() || null,
       updatedAt: task.activityAt?.toISOString() || timestamps.at(-1)?.toISOString() || null,
     };
-  }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  });
 }
 
 // `identify(headers, body)` returns the record's author/role/state/kind.
@@ -833,15 +833,12 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
     };
     raiseActivity([...captainNotes, ...outboxMessages]);
-    if (includeHistory) for (const [taskId, timestamp] of await readSupervisionActivity(resolvedHome, reader)) {
-      const task = byTask.get(taskId);
-      if (task && (!task.activityAt || timestamp > task.activityAt)) task.activityAt = timestamp;
-    }
+    const orderedTasks = [...tasks].sort((a, b) => String(b.activityAt?.toISOString() || null).localeCompare(String(a.activityAt?.toISOString() || null)));
     // History loading is independent of live execution and completion attention.
     const requestedTasks = new Set(sessionIds.slice(0, 60));
     const visibleTasks = new Set(requestedTasks);
     for (const project of projects) {
-      const ordered = publicSessions(tasks.filter((task) => task.projectName === project.name));
+      const ordered = publicSessions(orderedTasks.filter((task) => task.projectName === project.name));
       for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
       for (const session of ordered) if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
     }
@@ -850,7 +847,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     // shows are read, requested first, then open work, then newest, so an unshown or
     // older task cannot spend the event budget the shown ones need.
     const admission = (session) => requestedTasks.has(session.id) ? 0 : ["done", "failed"].includes(session.state) ? 2 : 1;
-    if (includeHistory) for (const { id } of publicSessions(tasks.filter((task) => visibleTasks.has(task.id) && task.eventSource)).sort((a, b) => admission(a) - admission(b))) {
+    if (includeHistory) for (const { id } of publicSessions(orderedTasks.filter((task) => visibleTasks.has(task.id) && task.eventSource)).sort((a, b) => admission(a) - admission(b))) {
       const task = byTask.get(id);
       const { statusName, size, mtime } = task.eventSource;
       // An empty log is fully read; nonempty history the budget cannot reach is not loaded.
@@ -888,6 +885,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     // The fleet outcome ledgers only grow; read them after task events so a long
     // ledger takes what is left of the record budget rather than starving lanes.
     const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
+    raiseActivity(supervision.messages);
     if (includeHistory) await Promise.all(tasks.filter((task) => visibleTasks.has(task.id)).map(async (task) => {
       task.events.push(...await readTaskSteers(resolvedHome, task.id, reader));
     }));
@@ -969,7 +967,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         crew: liveTasks.length,
         progress,
         items,
-        sessions: publicSessions(projectTasks).map((session) => {
+        sessions: publicSessions(orderedTasks.filter((task) => task.projectName === project.name)).map((session) => {
           const task = byTask.get(session.id);
           return { ...session, loaded: visibleTasks.has(session.id) && task.eventsLoaded !== false, ...(task.eventsOmittedBytes ? { omittedBytes: task.eventsOmittedBytes } : {}) };
         }),

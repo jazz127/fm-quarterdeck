@@ -310,7 +310,8 @@ test("task event windows admit requested, then newest shown sessions within real
     await writeFile(file, Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
     await utimes(file, new Date(clock), new Date(clock));
   }
-  const server = createServer({ FM_HOME: home });
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const read = async (query = "") => {
@@ -337,13 +338,49 @@ test("task event windows admit requested, then newest shown sessions within real
   assert.ok(older.data.transcript.warnings.some(warning => warning.includes("state/b.status was not loaded")));
 });
 
-test("outcome activity determines task admission before history spends the real default record budget", async (t) => {
+test("requested task windows precede large outcome ledgers within real default byte limits", async (t) => {
+  const home = await fixture(t);
+  const rowBytes = Math.floor(6 * 1024 * 1024 / 3200);
+  const extraBytes = 6 * 1024 * 1024 % 3200;
+  for (const [id, day] of [["a", 1], ["b", 2], ["c", 3]]) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    const rows = Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`.padEnd(rowBytes - 1 + (i < extraBytes ? 1 : 0), "x") + "\n");
+    rows.push(`done: ${id} completed`.padEnd(rowBytes - 1, "x") + "\n");
+    await writeFile(file, rows.join(""));
+    const clock = new Date(`2026-01-0${day}T00:00:00.000Z`);
+    await utimes(file, clock, clock);
+  }
+  const outcomes = Array.from({ length: 5000 }, (_, i) => JSON.stringify({ epoch: 1700000000 + i, task: "a", summary: `Outcome ${i} ${"x".repeat(2048)}` }) + "\n").join("");
+  assert.ok(Buffer.byteLength(outcomes) > 8 * 1024 * 1024);
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) await writeFile(path.join(home, source), outcomes);
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes?session=a`);
+  const data = await response.json();
+  assert.equal(response.status, 200, data.error);
+  const lane = data.lanes.find(entry => entry.id === "alpha");
+  const requested = lane.sessions.find(session => session.id === "a");
+  assert.equal(requested.loaded, true, "the explicitly requested older task gets the remaining byte allowance before either outcome ledger");
+  assert.equal(requested.updatedAt, "2026-01-01T00:00:00.000Z");
+  assert.ok(requested.omittedBytes > 0, "the task's oldest partial record is omitted at the remaining byte boundary");
+  const events = lane.messages.filter(message => message.kind === "crew" && message.taskId === "a");
+  assert.ok(events.some(message => message.text.startsWith("working: a step 3198")));
+  assert.ok(events.some(message => message.text.startsWith("done: a completed")), "the newest completion survives the byte limit");
+  assert.equal(lane.messages.some(message => ["b", "c"].includes(message.taskId)), false, "later windows cannot displace the requested history");
+  assert.deepEqual(data.transcript.outcomeSources.map(({ loaded }) => loaded), [false, false]);
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source} was not loaded`)));
+});
+
+test("later outcome activity keeps its real clock without changing admission order or claiming unread task history", async (t) => {
   const home = await fixture(t);
   const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
   for (const [id, clock] of Object.entries(clocks)) {
     await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
     const file = path.join(home, "state", `${id}.status`);
-    await writeFile(file, Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await writeFile(file, Array.from({ length: 1999 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
     await utimes(file, new Date(clock), new Date(clock));
   }
   const revision = "a".repeat(40);
@@ -364,18 +401,20 @@ test("outcome activity determines task admission before history spends the real 
       const data = await response.json();
       assert.equal(response.status, 200, data.error);
       const lane = data.lanes.find(entry => entry.id === "alpha");
-      assert.deepEqual(lane.sessions.map(session => session.id), ["a", "c", "b"], "the Jan 4 outcome puts A ahead of the Jan 3 and Jan 2 status clocks");
-      assert.equal(lane.sessions[0].updatedAt, outcomeClock);
+      assert.deepEqual(lane.sessions.map(session => session.id), ["c", "b", "a"], "session order uses the Jan 3/2/1 clocks available at admission");
+      const updated = lane.sessions.find(session => session.id === "a");
+      const selected = query !== "";
+      assert.equal(updated.updatedAt, outcomeClock, "A still reports the later Jan 4 outcome's real time");
+      assert.equal(updated.loaded, selected, "a newer outcome does not claim A's unread status history was loaded");
+      assert.equal(updated.eventCount, selected ? 2000 : 0);
+      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, selected ? 2000 : 0);
       assert.equal(lane.sessions[0].loaded, true);
-      assert.equal(lane.sessions[0].omittedBytes, undefined);
-      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, 3200, "A is admitted first and retains every event");
-      assert.ok(lane.messages.some(message => message.text === "working: a step 0"));
-      assert.ok(lane.messages.some(message => message.text === "done: a completed"));
-      assert.ok(lane.messages.some(message => message.text === "done: c completed"), "C keeps its newest events after A");
-      assert.equal(lane.sessions[2].loaded, false);
-      assert.equal(lane.messages.some(message => message.taskId === "b"), false);
-      assert.equal(data.transcript.outcomeSources.find(entry => entry.source === source).loaded, false, "outcome history uses only the record budget left after task events");
-      assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source} was not loaded`)));
+      assert.equal(lane.sessions[1].loaded, true);
+      assert.ok(lane.messages.some(message => message.text === "done: c completed"));
+      assert.ok(lane.messages.some(message => message.text === "done: b completed"));
+      const inventory = data.transcript.outcomeSources.find(entry => entry.source === source);
+      assert.equal(inventory.loaded, true, "outcomes use the allowance left after task events");
+      assert.equal(inventory.messageCount, 1, "silent, empty and invalid outcomes do not advance session activity");
     }
     await rm(ledger);
   }
@@ -388,7 +427,8 @@ test("an outcome ledger beyond the record limit keeps /api/lanes online with its
   const outcome = (i) => JSON.stringify({ epoch: 1700000000 + i, task: "alpha-task", summary: `Outcome ${i}` }) + "\n";
   const ledger = path.join(home, "state/branch-outcomes.jsonl");
   await writeFile(ledger, Array.from({ length: 20001 }, (_, i) => outcome(i)).join(""));
-  const server = createServer({ FM_HOME: home });
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const read = async () => {

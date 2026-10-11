@@ -47,9 +47,9 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     }
     if (lineBytes && ++records > maxRecords) throw new HistoryLimitError();
   }
-  async function read(filename, { firstOnly = false, window = false, maxBytes = maxFileBytes, scanOnly = false } = {}) {
+  async function read(filename, { firstOnly = false, window = false, maxBytes = maxFileBytes } = {}) {
     // No record budget left for a window: leave the source unread.
-    if (window && !scanOnly && !windowRecords()) return null;
+    if (window && !windowRecords()) return null;
     if (++files > maxFiles) throw new HistoryLimitError();
     const file = await open(filename, "r");
     try {
@@ -90,14 +90,14 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
         buffer = newline < 0 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
       }
       if (window) {
-        const allowed = scanOnly ? Infinity : windowRecords();
+        const allowed = windowRecords();
         // Keep the newest whole records the request's record budget can still hold.
         const kept = newestRecordsStart(buffer, allowed);
         if (!allowed) return null;
         omittedBytes += kept;
         buffer = buffer.subarray(kept);
       }
-      if (!scanOnly) countRecords(buffer);
+      countRecords(buffer);
       const text = buffer.toString("utf8");
       return window ? { text, omittedBytes, totalBytes: start + size } : text;
     } finally { await file.close(); }
@@ -128,10 +128,6 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
     recent: async (filename, maxBytes = maxFileBytes) => {
       const window = await read(filename, { window: true, maxBytes });
       return window && { lines: splitWithOffsets(window.text, window.omittedBytes), omittedBytes: window.omittedBytes, totalBytes: window.totalBytes };
-    },
-    scanRecent: async (filename, visit) => {
-      const window = await read(filename, { window: true, scanOnly: true });
-      if (window) for await (const { line } of splitWithOffsets(window.text, window.omittedBytes)) visit(line);
     },
     windowBudget,
     takeMessage,

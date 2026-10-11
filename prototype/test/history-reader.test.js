@@ -81,34 +81,6 @@ test("recent windows validate whole lines before trimming and charge only retain
   }
 });
 
-test("activity scans preserve record admission while sharing byte, file and line safety limits", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "history-activity-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const file = path.join(root, "source.jsonl");
-  await writeFile(file, "old\nnew\nlatest\n");
-  const reader = createHistoryReader({ maxRecords: 2, windowReserveRecords: 1 });
-  const scanned = [];
-  await reader.scanRecent(file, line => { if (line) scanned.push(line); });
-  assert.deepEqual(scanned, ["old", "new", "latest"], "activity discovery covers the byte window before record admission");
-  const window = await reader.recent(file);
-  const retained = [];
-  for await (const entry of window.lines) if (entry.line) retained.push(entry);
-  assert.deepEqual(retained, [{ line: "latest", offset: 8 }], "only retained history spends the record allowance");
-  const exhausted = [];
-  await reader.scanRecent(file, line => { if (line) exhausted.push(line); });
-  assert.deepEqual(exhausted, scanned, "activity remains discoverable after history exhausts its allowance");
-  const metadata = path.join(root, "metadata.md");
-  await writeFile(metadata, "a\n");
-  assert.equal(await reader.text(metadata), "a\n", "the whole-file record reserve remains intact");
-  await assert.rejects(createHistoryReader({ maxLineBytes: 5 }).scanRecent(file, () => {}), HistoryLimitError);
-  const bytes = createHistoryReader({ maxTotalBytes: 20, windowReserveBytes: 0 });
-  await bytes.scanRecent(file, () => {});
-  await assert.rejects(bytes.text(file), HistoryLimitError, "metadata bytes count against the shared total");
-  const files = createHistoryReader({ maxFiles: 1 });
-  await files.scanRecent(file, () => {});
-  await assert.rejects(files.text(metadata), HistoryLimitError, "metadata reads count against the shared file limit");
-});
-
 test("concurrent windows recheck record exhaustion and retain only newest whole records", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "history-concurrent-"));
   t.after(() => rm(root, { recursive: true, force: true }));
