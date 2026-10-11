@@ -208,7 +208,7 @@ window.bearingsView = (() => {
       ${headlineHtml(id, summary, card)}
       <dl class="call-context">${row("About", "Firstmate asked in chat; no captain hold is filed")}${row("Reply", repliesText(card.replies))}</dl>
       <p class="call-meta">Found by its <code>${escape(card.marker || "")}</code> line in the Firstmate transcript.</p>
-      <p class="call-meta">Answering here, dismissing, or replying in chat with the quoted reply closes this card.</p>
+      <p class="call-meta">A confirmed answer here or dismissal closes this card. Replies typed in chat do not close it.</p>
       <div class="call-dismiss-confirm" data-call-dismiss-confirm role="group" aria-label="Confirm dismissal" hidden><p>Hide this ask from Captain's Call? Nothing is sent to Firstmate. Unsent text stays in this tab.</p><div class="call-answer-actions"><button type="button" data-call-dismiss-send>Dismiss this ask</button><button type="button" data-call-dismiss-cancel>Cancel</button></div></div>
       <p class="call-answer-error" data-call-dismiss-error role="alert" hidden></p></div>
       ${answerHtml(card, summary, threadHistoryHtml(id))}`;
