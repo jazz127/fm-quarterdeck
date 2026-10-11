@@ -45,7 +45,6 @@ Inside a source, only the model's own text parts count as Firstmate text: Claude
 | --- | --- |
 | Answered in Quarterdeck | A confirmed send through the existing `POST /api/bearings/answer` keyed relay (`202`) resolves the ask in Quarterdeck state. |
 | Dismissed in Quarterdeck | Review dismissal → Dismiss this ask posts `POST /api/bearings/dismiss {key, cardRev}` (host-only, same-origin, revision-guarded). Cancel and review are local; no inbox note is sent. |
-| Replied in chat | A later captain prompt containing a suggested reply as a whole phrase anywhere after normalization resolves every earlier open ask offering that reply. Longer messages and punctuation/case variants are accepted, including different markers sharing a suggested phrase. |
 | Hold answered/released/closed | On fresh selected-home ledger evidence, all linked holds have closed/answered/released lifecycle records. Snapshot disappearance alone never closes an ask; unverified bare ids and owner-qualified links remain actionable standalone cards until explicitly answered or dismissed. The ask resolves as `answered`, with `resolutionSource` (`data/backlog.md`), task ids and recorded modes retained. Stale ledger evidence cannot close holds. |
 | Superseded | A later Firstmate ask repeats the same marker and normalized reply, or identical normalized ask text. |
 

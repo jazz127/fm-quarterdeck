@@ -153,13 +153,13 @@ test("Overview call counts announce increases and hide the empty badge", () => {
 
 test("BEARINGS lifecycle renders waiting, acknowledged and replied labels on the card", async () => {
   const dom = callDom();
-  const window = {};
+  const window = { document: dom.document };
   vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
   const card = { key: "decision:alpha-call", type: "decision", task: "alpha-call", summary: "Pick the rollout window", rev: "a1" };
   const node = dom.document.createElement("article");
   node.dataset = { callKey: card.key };
   node.innerHTML = window.bearingsView.cardHtml(card);
-  const app = ui();
+  const app = ui({ bearingsView: window.bearingsView });
   app.node("#call-cards").querySelectorAll = () => [node];
   app.run(`callPatcher.applied = { cards: [${JSON.stringify(card)}] };
     callPatcher.tracker = { state: () => ({ selected: null }) };
@@ -356,7 +356,7 @@ test("second mates render separately with escaped evidence, backlog counts and r
 });
 
 // This is not a layout engine; responsive/keyboard checks remain a review obligation.
-function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage = new Map() } = {}) {
+function ui({ bearingsView = undefined, fetchImpl = () => new Promise(() => {}), compact = true, storage = new Map() } = {}) {
   const nodes = new Map();
   const documentListeners = new Map();
   const windowListeners = new Map();
@@ -445,7 +445,7 @@ function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage =
   document.createElement = (tag) => quotaNodes.element(tag);
   const context = vm.createContext({
     document, URL,
-    window: { location: { hash: "#lanes" }, callHooks: null, callPatches: [], callObservations: [],
+    window: { bearingsView, location: { hash: "#lanes" }, callHooks: null, callPatches: [], callObservations: [],
       bearingsPatch: { createCallPatcher: () => ({ update: model => context.window.callPatches.push(model), observe: data => context.window.callObservations.push(data) }) },
       bearingsLive: { createBearingsLive: hooks => { queueMicrotask(() => { context.window.callHooks = hooks; }); return { start() {}, refresh() {} }; } },
       getSelection: () => document.selection, addEventListener(name, listener) { windowListeners.set(name, listener); }, matchMedia: (query) => ({ matches: query.includes("max-width") ? compact : false, addEventListener() {} }) },

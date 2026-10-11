@@ -2,7 +2,7 @@
 
 The oracle is the selected review decision and `prototype/BEARINGS.md`: the latest durable captain note owns lifecycle state; uncertain delivery retries preserve the exact attempted words and request ID. Fixtures use synthetic inbox records, client DOMs and session storage. They do not contact production accounts or services.
 
-Before implementation changes, at commit `a59142b1662047c840e00bbdbd238b827234a627`, this command exited **1**, with **0 passing and 7 failing tests**:
+Before implementation changes, this command exited **1**, with **0 passing and 7 failing tests**:
 
 ```sh
 npm exec --yes --cache ./.quarterdeck-review-runtime-01M4JCQ710P23W7SSY5CT5JSKJ --package=node@24 -- node --test prototype/test/receipt-retry-regressions.test.js

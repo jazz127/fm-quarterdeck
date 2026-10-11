@@ -125,17 +125,15 @@ test("removing only the retained outcome restores genuine status-clock recent me
   assert.equal(lane.messages.filter(message => message.kind === "crew").length, 4);
 });
 
-test("registered mate task coverage follows its unread parent status source without losing mtime", async t => {
+test("registered mate coverage follows its unread parent status source without becoming task work", async t => {
   const home = await fixture(t, { a: 2 });
   await writeFile(path.join(home, "data/secondmates.md"), "- a - Synthetic mate (home: /synthetic/home-beta; scope: synthetic; projects: example-app; added 2026-01-01)\n");
   const reads = [];
   const read = await api(t, home, { lanesReader: (home, options) => loadFirstmateHome(home, { ...options, reader: observedReader(reads, "a.status") }) });
   const { lane, data } = await read();
   assert.equal(data.transcript.secondmateSources.find(source => source.id === "a").loaded, false);
-  const session = lane.sessions.find(session => session.id === "a");
-  assert.equal(session.loaded, false);
-  assert.equal(session.eventCount, 0);
-  assert.equal(session.updatedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(lane.sessions.some(session => session.id === "a"), false, "persistent mates remain separate from task sessions");
+  assert.equal(data.workSplit.items.some(item => item.id === "a"), false);
   assert.equal(reads.filter(source => source === "a.status").length, 1, "the mate adapter alone attempts the parent source");
   assert.ok(data.transcript.warnings.some(warning => /a: message source not loaded/.test(warning)));
 });

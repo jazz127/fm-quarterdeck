@@ -449,7 +449,6 @@ Firstmate also asks the captain things in chat without filing a captain hold, so
 - **Resolution** (state `<FM_QUARTERDECK_STATE_PATH>.chat-asks.json`, outside `FM_HOME`) happens in any of these ways:
   - a confirmed answer (`202`);
   - `POST /api/bearings/dismiss`;
-  - a later captain prompt containing a suggested reply as a whole phrase anywhere, including inside a longer message. Unicode compatibility normalization and lowercasing apply; punctuation/whitespace become word separators. Partial words never match. Every earlier open ask offering a matching reply resolves, including different-marker asks sharing that phrase. Later means later byte/part order in the same source without a reversed known clock, or a strictly later timestamp across sources;
   - fresh selected-home ledger evidence that every linked hold is answered/released/closed;
   - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes).
 

@@ -15,6 +15,8 @@ async function fixture(t) {
   const home = path.join(directory, "home");
   for (const dir of ["bin", "data", "state"]) await mkdir(path.join(home, dir), { recursive: true });
   const snapshot = JSON.parse(await readFile(new URL("./fixtures/bearings/two-calls.json", import.meta.url), "utf8"));
+  // Both submitted decisions belong to the selected home; remote calls stay read-only.
+  snapshot.decisions_open = snapshot.decisions_open.map(row => ({ ...row, owner: "(main)" }));
   await writeFile(path.join(home, "snapshot.json"), JSON.stringify(snapshot));
   await writeFile(path.join(home, "receipts.json"), JSON.stringify({ schema: "fm-inbox-receipts.v1", pending: [], handled: [], replies: [] }));
   await writeFile(path.join(home, "bin/fm-bearings-snapshot.sh"), '#!/bin/sh\ncat "$FM_HOME/snapshot.json"\n');

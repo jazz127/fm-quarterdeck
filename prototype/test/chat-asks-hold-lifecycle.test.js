@@ -84,7 +84,7 @@ test('lifecycle parser rejects duplicate ids and unscoped body prose', () => {
   assert.deepEqual(backlogHoldRecords('- [ ] work - Regular\n  Resolution mode: answered\n## Done\n  Resolution recorded by fm-captain-hold.\n  Resolution mode: released'), []);
 });
 
-const decisionModel = (rows) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: rows,
+const decisionModel = (rows) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: rows.map(row => ({ ...row, key: row.id.split("/").at(-1) })),
   contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
 
 test('local chat asks stay actionable across every read-only decision matching field', async t => {
