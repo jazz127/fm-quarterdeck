@@ -61,7 +61,7 @@ try {
   const selected = await browser('pages');
   assert.ok(selected.split('\n').some(line => line.trim() === `${owned[0][1]},about:blank,true`), 'actual owned target must be selected');
   await evaluate(`() => { if(location.href !== 'about:blank')throw Error('unexpected selected fixture target'); return 'owned fixture selected'; }`);
-  const viewports = process.argv.includes('--phone-only') ? [[390, 844, '#mobile-quota-sheet']]
+  const viewports = process.argv.includes('--initial-unavailable-only') ? [] : process.argv.includes('--phone-only') ? [[390, 844, '#mobile-quota-sheet']]
     : [[1280, 900, '#sidebar-quota'], [390, 844, '#mobile-quota-sheet']];
   for (const [width, height, surface] of viewports) {
     mode = 'fresh'; clock += 300000; refreshed = clock; calls = 0;
@@ -105,9 +105,24 @@ try {
     assert.equal(calls, before + 1);
     console.log(`Quota ${width}px age, source execution, failure, reuse and recovery checkpoints passed`);
   }
+  // A same-URL fragment navigation can retain the existing document and its
+  // successful quota history. Isolate no-history unavailable in a fresh page.
+  await evaluate(`() => { window.__quotaFixturePreviousRealm = true; return 'previous realm marked'; }`);
   mode = 'fail'; reader = createQuotaReader({ run, now: () => clock, maxAge: '5m' });
-  await browser('open', `http://127.0.0.1:${server.address().port}/#quota`);
+  const initialRequests = calls;
+  const unavailableTarget = `http://127.0.0.1:${server.address().port}/?fixture=unavailable#quota`;
+  await browser('newpage', unavailableTarget);
+  const newPages = await browser('pages');
+  const freshTarget = newPages.split('\n').map(line => line.trim().split(','))
+    .filter(row => /^\d+$/.test(row[0]) && row[1] === unavailableTarget);
+  assert.equal(freshTarget.length, 1, 'fresh unavailable target must be unique');
+  assert.notEqual(freshTarget[0][0], owned[0][1], 'unavailable target is a new owned page');
+  await browser('selectpage', freshTarget[0][0]);
+  await browser('resize', '390', '844');
+  await evaluate(`() => { if(location.href !== ${JSON.stringify(unavailableTarget)} || innerWidth !== 390 || innerHeight !== 844 || window.FM_BOOT_REVISION !== ${JSON.stringify(expectedHead)} || window.__quotaFixturePreviousRealm !== undefined || !Date.now.toString().includes('[native code]'))throw Error('fresh selected realm, viewport or serving revision mismatch'); return 'fresh selected phone realm verified'; }`);
   await until(`document.querySelector('#quota-providers').textContent.includes('Quota unavailable')`);
+  assert.equal(calls, initialRequests + 1, 'fresh document must make the initial mocked reader request');
+  console.log('Initial no-history phone unavailable state passed in a verified fresh selected realm with its source request');
   console.log('Exact-head selected viewport age boundary, visible red stale age, five-minute source execution, failure, cached old data, recovery and unavailable acceptance passed');
 } finally {
   clearTimeout(deadline);
