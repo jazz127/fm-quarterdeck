@@ -1,3 +1,5 @@
+import { extractAskSections } from "./chat-ask-extraction.js";
+
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value)
   .replaceAll("&", "&amp;")
@@ -142,6 +144,30 @@ function renderReviewContent(review, query) {
     const title = `Annotation target for note ${i + 1}: ${entry.tag} ${entry.text || entry.label || ""}`;
     return `<li><div class="review-prompt-line"><span>${highlightSearchMatches(escapeHtml(prompt), query)}</span>${entry.tag !== "message" ? reviewChip("a", `note-${i}`, title, target, query) : ""}</div></li>`;
   }).join("")}</ol></div>`;
+}
+
+// A reading treatment only. Canonical marker ranges preserve the exact ask and all
+// remaining text; nothing here matches a board card or adds an answer action.
+function renderChatCallContent(text, key, query = transcriptQuery) {
+  const sections = extractAskSections(text);
+  if (!sections.length) return highlightSearchMatches(renderMarkdown(text), query);
+  const background = [];
+  let end = 0;
+  for (const section of sections) {
+    background.push(text.slice(end, section.start));
+    end = section.end;
+  }
+  background.push(text.slice(end));
+  const detail = background.join("\n");
+  const primary = sections.map(({ ask, raw }) => `<section class="chat-call-primary"><span class="decision-banner">${escapeHtml(`Captain's Call · ${ask.marker}`)}</span>${highlightSearchMatches(renderMarkdown(raw), query)}</section>`).join("");
+  const open = chatCallDetailChoices.get(key) === true;
+  return `${primary}${detail.trim() ? `<details class="decision-context-fold" data-chat-call-detail="${escapeHtml(key)}"${open ? " open" : ""}><summary>Background rationale &amp; technical context</summary><div class="context-fold-body">${highlightSearchMatches(renderMarkdown(detail), query)}</div></details>` : ""}`;
+}
+
+// Disclosure choices stay in this tab and in the existing reading scope.
+const chatCallDetailChoices = new Map();
+function chatCallMessage(message) {
+  return ["conversation", "narration", "branch", "supervision"].includes(message.kind || "conversation");
 }
 
 function compactPreview(text) {
@@ -605,7 +631,7 @@ function renderMixedLaneContent(message) {
     const body = block.text.replace(/^\[fm-lane [^\]\r\n]+\]\r?\n/, "").replace(/\r?\n\[end [^\]\r\n]+\]$/, "");
     const preview = body.replace(/\s+/g, " ").trim().slice(0, 80);
     const lines = body.split(/\r?\n/).length;
-    const content = messageFormat === "markdown" ? renderMarkdown(body) : escapeHtml(body);
+    const content = messageFormat === "markdown" ? (chatCallMessage(message) ? renderChatCallContent(body, JSON.stringify([renderedReadingScope, key]), "") : renderMarkdown(body)) : escapeHtml(body);
     const id = `mixed-lane-${reviewId(key)}`;
     if (compact) return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle message-compact-line" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="false" aria-controls="${id}" title="Expand all messages here">${compactMetadata(message)}<strong class="compact-lane">${escapeHtml(block.name)}</strong><span class="compact-line-preview">${escapeHtml(preview)}</span></button></div><div id="${id}" class="mixed-lane-content" hidden>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
     return `<section class="mixed-lane-section"><div class="mixed-lane-heading"><button type="button" class="mixed-lane-toggle" data-mixed-lane-key="${escapeHtml(key)}" aria-expanded="${expanded}" aria-controls="${id}"><span class="mixed-lane-chevron" aria-hidden="true">${expanded ? "▾" : "▸"}</span>[fm-lane <strong>${escapeHtml(block.name)}</strong>]</button><span class="mixed-lane-summary"${expanded ? " hidden" : ""}><span class="mixed-lane-preview">${escapeHtml(preview)}</span><small>${lines} ${lines === 1 ? "line" : "lines"}</small></span></div><div id="${id}" class="mixed-lane-content"${expanded ? "" : " hidden"}>${highlightSearchMatches(content, transcriptQuery)}</div></section>`;
@@ -828,7 +854,7 @@ function renderFeed() {
       ? `<span class="avatar-status">${escapeHtml(statusIcon(message.state))}</span>`
       : (messageTypeSvg(typeId) || `<span class="avatar-mono">${escapeHtml(message.author.slice(0, 1).toUpperCase())}</span>`);
     const rawOrRendered = kind !== "tools" && messageFormat === "markdown" ? renderMarkdown(message.text) : escapeHtml(message.text);
-    const content = message.review && messageFormat !== "raw" ? renderReviewContent(message.review, transcriptQuery) : message.mixedLaneMessage ? renderMixedLaneContent(message) : highlightSearchMatches(rawOrRendered, transcriptQuery);
+    const content = message.review && messageFormat !== "raw" ? renderReviewContent(message.review, transcriptQuery) : message.mixedLaneMessage ? renderMixedLaneContent(message) : messageFormat === "markdown" && chatCallMessage(message) ? renderChatCallContent(message.text, JSON.stringify([renderedReadingScope, recordKey(message)])) : highlightSearchMatches(rawOrRendered, transcriptQuery);
     const compact = (kind === "thinking" || kind === "tools") && !(dense && message.mixedLaneMessage);
     const detailOpen = fullDetailChoices.get(JSON.stringify([renderedReadingScope, recordKey(message)])) ?? expandedFullViews.has(renderedReadingScope);
     const previewText = message.review && messageFormat !== "raw" ? message.review.prompts.map((entry) => entry.prompt).join("; ") : message.text;
@@ -848,13 +874,13 @@ function renderFeed() {
   });
   const feedHtml = messages.length ? messageHtml.join("") : `<div class="empty compact">${emptyMessage}</div>`;
   // Don't discard disclosure/annotation DOM or reset scroll for identical pages.
-    const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].map((node) => `${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`));
+    const open = new Set([...messagesEl.querySelectorAll("article.message details[open]")].filter((node) => !node.dataset.chatCallDetail).map((node) => `${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`));
     const visibleAnchor = [...messagesEl.querySelectorAll("article.message")].find((node) => node.getBoundingClientRect().bottom > messagesEl.getBoundingClientRect().top);
     const anchorKey = visibleAnchor?.dataset.recordKey;
     const anchorOffset = visibleAnchor ? visibleAnchor.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top : 0;
     messagesEl.innerHTML = feedHtml;
     for (const node of messagesEl.querySelectorAll("article.message details")) {
-      if (open.has(`${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`)) node.open = true;
+      if (!node.dataset.chatCallDetail && open.has(`${node.closest("article.message").dataset.recordKey}:${node.dataset.reviewChip || "full"}`)) node.open = true;
     }
     if (!wasAtBottom && anchorKey) {
       const moved = [...messagesEl.querySelectorAll("article.message")].find((node) => node.dataset.recordKey === anchorKey);
@@ -2552,7 +2578,9 @@ document.addEventListener("click", (event) => {
 }, true);
 $("#messages").addEventListener("toggle", (event) => {
   const article = event.target?.closest?.("article.message");
-  if (article && event.target.tagName === "DETAILS" && !event.target.dataset.reviewChip) fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
+  if (article && event.target.tagName === "DETAILS" && event.target.dataset.chatCallDetail) {
+    chatCallDetailChoices.set(event.target.dataset.chatCallDetail, event.target.open);
+  } else if (article && event.target.tagName === "DETAILS" && !event.target.dataset.reviewChip) fullDetailChoices.set(JSON.stringify([renderedReadingScope, article.dataset.recordKey]), event.target.open);
 }, true);
 $("#messages").addEventListener("keydown", (event) => {
   const chip = event.target?.closest?.("details.review-meta");

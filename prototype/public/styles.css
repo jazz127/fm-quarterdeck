@@ -335,6 +335,15 @@ input[type="search"]::-webkit-search-results-decoration {
 .message-content.markdown code { padding: 1px 4px; border-radius: 4px; background: var(--surface-soft); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .message-content.markdown pre { overflow-x: auto; padding: var(--space-2); background: var(--surface-soft); }
 .message-content.markdown pre code { padding: 0; background: transparent; }
+.chat-call-primary { margin-bottom: var(--space-3); min-width: 0; }
+.decision-banner { display: inline-block; margin-bottom: var(--space-2); padding: 4px 8px; border: 1px solid #d9bd85; border-radius: 4px; background: #fbf0dc; color: var(--amber); font-size: var(--text-small); font-weight: 800; }
+.chat-call-primary > p:first-of-type { font-weight: 700; }
+.decision-context-fold { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-soft); }
+.decision-context-fold > summary { min-height: 44px; box-sizing: border-box; padding: var(--space-2) var(--space-3); cursor: pointer; color: var(--muted); font-weight: 600; touch-action: manipulation; }
+.decision-context-fold > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.decision-context-fold[open] > summary { border-bottom: 1px solid var(--line); color: var(--text); }
+.context-fold-body { padding: var(--space-3); min-width: 0; }
+.context-fold-body pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.command .message-content, .message.captain .message-content { background: #e6f0eb; border-color: #cbded3; border-radius: var(--radius) 0 var(--radius) var(--radius); }
 .message-source { display: block; margin-top: var(--space-2); color: var(--muted); font-size: var(--text-small); line-height: 1.4; overflow-wrap: anywhere; }
 .message.kind-thinking .avatar, .message.kind-crew .avatar { border: 1px solid var(--line-strong); border-radius: 50%; }

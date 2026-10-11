@@ -6,7 +6,8 @@ import { quotaDom } from "./helpers/quota-dom.js";
 import { createHash } from "node:crypto";
 import { parseCss, computed, element } from './helpers/css-model.mjs';
 
-const script = `${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/app.js", import.meta.url), "utf8")}`;
+const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
+const script = `${extraction}\n${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${(await readFile(new URL("../public/app.js", import.meta.url), "utf8")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
 test("opt-in compact headers preserve Quota markup and expose full descriptions", async () => {
@@ -1259,6 +1260,70 @@ test("unverified input is its own default-hidden kind, and a confirmed send refr
   app.run('window.location.hash = "#lanes"');
   app.hashchange("#lanes");
   assert.equal(calls.length, 3, "returning to Fleet Chats catches up once");
+});
+
+test("Captain's Call keeps the original decision and replies above one collapsed context fold", () => {
+  const app = ui();
+  const text = 'Background for example-app.\n\n**DECISION NEEDED:** [task:acme-choice] Choose a release window.\n- "staged": validate a small sample\n- "wait": keep the current version\nReply "staged" or "wait".\n\n```text\nTechnical evidence <script>unsafe</script>\n```\nFinal supporting detail.';
+  seed(app, [lane("alpha", [record({ recordId: "sample-call", text })])]);
+  app.run("renderFeed()");
+  const html = app.node("#messages").innerHTML;
+  assert.match(html, /Captain&#039;s Call/);
+  assert.match(html, /<details class="decision-context-fold"[^>]*><summary>/);
+  const [top, detail] = html.split('<details class="decision-context-fold"');
+  assert.match(top, /Choose a release window/);
+  assert.match(top, /staged.*validate a small sample/);
+  assert.match(top, /wait.*keep the current version/);
+  assert.doesNotMatch(top, /Background for example-app|Technical evidence|Final supporting/);
+  assert.match(detail, /Background for example-app/);
+  assert.match(detail, /Technical evidence &lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.match(detail, /Final supporting detail/);
+  assert.doesNotMatch(html, /data-call-key|data-call-answer|call-card|href="#overview|<input|<script>/);
+  assert.equal(app.run('window.quarterdeckMessageTargets[0].recordId'), "sample-call");
+  assert.equal(app.run('messagesForSelection()[0].text'), text);
+  app.run('messageFormat = "raw"; renderFeed()');
+  assert.doesNotMatch(app.node("#messages").innerHTML, /decision-context-fold|decision-banner/);
+  assert.match(app.node("#messages").innerHTML, /Background for example-app\.[\s\S]*\*\*DECISION NEEDED:\*\*[\s\S]*Final supporting detail\./);
+});
+
+test("historical and unmatched Captain's Calls remain text; ordinary and fenced markers keep their rendering", () => {
+  const app = ui();
+  for (const text of [
+    'Historical answer was staged.\n\nDECISION NEEDED: [task:acme-historical] Pick a sample. Reply "staged" or "wait".\n\nThis was already answered.',
+    'Unmatched example.\n\nAPPROVAL NEEDED: Allow the sample. Reply "allow" or "hold".',
+  ]) {
+    seed(app, [lane("alpha", [record({ text })])]);
+    app.run('renderFeed()');
+    const html = app.node("#messages").innerHTML;
+    assert.match(html, /decision-context-fold/);
+    assert.doesNotMatch(html, /data-call-|call-card|Your answer|Firstmate is on it/);
+    assert.equal(app.run('messagesForSelection().length'), 1);
+    assert.equal(app.run('messagesForSelection()[0].text'), text);
+  }
+  for (const text of ['Ordinary **reply** about example-app.', 'A mention of DECISION NEEDED is prose.', '```text\nDECISION NEEDED: sample code. Reply "yes" or "no".\n```']) {
+    seed(app, [lane("alpha", [record({ text })])]);
+    app.run('renderFeed()');
+    assert.doesNotMatch(app.node("#messages").innerHTML, /decision-context-fold|decision-banner/);
+  }
+});
+
+test("call detail disclosure choices are scoped and review annotation controls retain their existing renderer", () => {
+  const app = ui();
+  const text = 'Sample background.\n\nDECISION NEEDED: Pick sample a. Reply "a" or "b".\n\nEnd detail.\n\nACTION NEEDED: Confirm sample. Reply "yes" or "no".';
+  app.run(`window.__callText = ${JSON.stringify(text)}; chatCallDetailChoices.set('scope-a', true)`);
+  assert.match(app.run("renderChatCallContent(window.__callText, 'scope-a')"), /data-chat-call-detail="scope-a" open/);
+  const closed = app.run("renderChatCallContent(window.__callText, 'scope-b')");
+  assert.equal((closed.match(/class="decision-context-fold"/g) || []).length, 1);
+  assert.equal((closed.match(/class="chat-call-primary"/g) || []).length, 2);
+  assert.doesNotMatch(closed, /data-chat-call-detail="scope-b" open/);
+  const review = { batch: '123e4567-e89b-12d3-a456-426614174000', prompts: [{ prompt: 'DECISION NEEDED: annotation text', tag: 'p', selector: '#sample', text: 'Original target' }] };
+  seed(app, [lane('alpha', [record({ review, text })])]);
+  app.run('renderFeed()');
+  const html = app.node('#messages').innerHTML;
+  assert.match(html, /data-review-chip="batch"/);
+  assert.match(html, /data-review-chip="note-0"/);
+  assert.match(html, /Copy target/);
+  assert.doesNotMatch(html, /decision-context-fold/);
 });
 
 test("message metadata and safe Markdown/raw views preserve readable source text", () => {
