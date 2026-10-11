@@ -56,6 +56,31 @@ test("recent windows keep only whole newest records, report omitted bytes and re
   await assert.rejects(counted.text(metadata), HistoryLimitError, "whole-file reads keep the record bound");
 });
 
+test("recent windows validate whole lines before trimming and charge only retained records", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "history-window-lines-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "source.jsonl");
+  const options = { maxLineBytes: 4, maxRecords: 3, windowReserveRecords: 1, windowReserveBytes: 0 };
+  for (const ending of ["", "\n"]) {
+    for (const oversized of ["xxxxx", "ééé"]) {
+      await writeFile(file, `${oversized}\nold\nnew\nlast${ending}`);
+      await assert.rejects(createHistoryReader(options).recent(file), HistoryLimitError, "an omitted whole line still obeys the byte limit");
+    }
+    await writeFile(file, `old\nnew\nxxxxx${ending}`);
+    await assert.rejects(createHistoryReader(options).recent(file), HistoryLimitError, "the final whole line obeys the same limit");
+    await writeFile(file, `xxxxxxxxxxxx\nold\nfour\nlast${ending}`);
+    const reader = createHistoryReader({ ...options, maxFileBytes: 16 });
+    const window = await reader.recent(file);
+    const retained = [];
+    for await (const entry of window.lines) if (entry.line) retained.push(entry);
+    assert.deepEqual(retained, [{ line: "four", offset: 17 }, { line: "last", offset: 22 }], "a partial leading line is dropped before validating the whole lines");
+    assert.equal(window.omittedBytes, 17);
+    const metadata = path.join(root, "metadata.md");
+    await writeFile(metadata, "a\n");
+    assert.equal(await reader.text(metadata), "a\n", "discarded records do not consume the whole-file reserve");
+  }
+});
+
 test("concurrent windows recheck record exhaustion and retain only newest whole records", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "history-concurrent-"));
   t.after(() => rm(root, { recursive: true, force: true }));

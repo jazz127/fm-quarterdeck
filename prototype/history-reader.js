@@ -21,8 +21,13 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
   // Offset after the oldest records that do not fit `allowed`; a final record
   // without a newline is the newest and counts as one.
   function newestRecordsStart(buffer, allowed) {
-    let total = 0;
-    for (const byte of buffer) if (byte === 10) total += 1;
+    let total = 0, lineBytes = 0;
+    for (const byte of buffer) {
+      if (byte === 10) {
+        total += 1;
+        lineBytes = 0;
+      } else if (++lineBytes > maxLineBytes) throw new HistoryLimitError();
+    }
     if (buffer.length && buffer[buffer.length - 1] !== 10) total += 1;
     let drop = total - allowed, offset = 0;
     while (drop-- > 0) {
@@ -86,9 +91,9 @@ export function createHistoryReader({ maxFileBytes = 8 * 1024 * 1024, maxTotalBy
       }
       if (window) {
         const allowed = windowRecords();
-        if (!allowed) return null;
         // Keep the newest whole records the request's record budget can still hold.
         const kept = newestRecordsStart(buffer, allowed);
+        if (!allowed) return null;
         omittedBytes += kept;
         buffer = buffer.subarray(kept);
       }

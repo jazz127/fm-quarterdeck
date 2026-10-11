@@ -333,6 +333,31 @@ test("an outcome ledger beyond the record limit keeps /api/lanes online with its
   assert.ok(later.messages.some(m => m.text === "alpha-task: Outcome 20001"));
 });
 
+test("oversized outcome records still fail /api/lanes when record trimming would omit them", async (t) => {
+  const home = await fixture(t);
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/lanes`;
+  const newer = Array.from({ length: 16000 }, (_, i) => JSON.stringify({ epoch: 1700000001 + i, summary: `Outcome ${i}` }) + "\n").join("");
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const file = path.join(home, source);
+    await writeFile(file, JSON.stringify({ epoch: 1700000000, summary: "x".repeat(1024 * 1024 + 1) }) + "\n" + newer);
+    let response = await fetch(url);
+    assert.equal(response.status, 503, source);
+    assert.equal((await response.json()).error, "Fleet Chats offline: History exceeds safe read limits; source files are unchanged.");
+    await writeFile(file, newer);
+    response = await fetch(url);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    assert.ok(data.lanes.flatMap(lane => lane.messages).some(message => message.text === "Outcome 15999"));
+    assert.ok(data.transcript.outcomeSources.some(entry => entry.source === source && entry.loaded && entry.omittedBytes > 0));
+    assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source}: only its newest whole records loaded`)));
+    await rm(file);
+  }
+});
+
 test("oversized sources share the request budget: newest active windows load, a starved source is reported unloaded", async (t) => {
   const home = await fixture(t);
   for (const [n, day] of [["a", 1], ["b", 2], ["c", 3]]) {
