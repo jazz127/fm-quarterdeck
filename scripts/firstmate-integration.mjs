@@ -207,7 +207,7 @@ async function apply(home, operation, after) {
 }
 const manifestFile = 'state/quarterdeck-integration.json';
 async function save(home, manifest) { await publish(home, manifestFile, regular(`${JSON.stringify(manifest, null, 2)}\n`)); }
-const runtimeFiles = ['state/fm-quarterdeck-health.lock', 'state/fm-quarterdeck-health.stamp'];
+const runtimeFiles = ['state/fm-quarterdeck-health.lock', 'state/fm-quarterdeck-health.stamp', 'state/fm-quarterdeck-health.notes.json'];
 function taggedManifest(manifest) {
   return manifest.tag === tag && manifest.pin.tag === tag && manifest.checkId === 'fm-quarterdeck-health'
     && manifest.entry?.hooks?.[0]?.command?.includes('# fm-quarterdeck')

@@ -326,7 +326,7 @@ test('every projection is tagged directly or by manifest; inventory includes pin
   assert.match(manifest.block, /<!-- \/fm-quarterdeck:integration:v1 -->/);
   assert.equal(JSON.parse(await readFile(path.join(home, 'state/quarterdeck-health.json'))).integrationTag, 'fm-quarterdeck');
   for (const op of manifest.operations) assert.equal(op.tag, 'fm-quarterdeck');
-  for (const file of ['fm-quarterdeck-health.lock', 'fm-quarterdeck-health.stamp']) await writeFile(path.join(home, 'state', file), 'synthetic runtime');
+  for (const file of ['fm-quarterdeck-health.lock', 'fm-quarterdeck-health.stamp', 'fm-quarterdeck-health.notes.json']) await writeFile(path.join(home, 'state', file), 'synthetic runtime');
   const before = await snapshot(home);
   const inventory = await run('inventory');
   assert.deepEqual(await snapshot(home), before);
@@ -358,12 +358,14 @@ test('inventory identifies tagged remnants after journal loss without granting r
 test('tag tampering and unsafe runtime bookkeeping are reported read-only and refuse blind uninstall', async t => {
   const { home, run } = await fixture(t);
   await run('install');
-  await symlink('quarterdeck-health.json', path.join(home, 'state/fm-quarterdeck-health.stamp'));
-  const before = await snapshot(home);
-  assert.ok((await run('verify')).problems.includes('state/fm-quarterdeck-health.stamp'));
-  await assert.rejects(run('uninstall'), /Unsafe runtime/);
-  assert.deepEqual(await snapshot(home), before);
-  await rm(path.join(home, 'state/fm-quarterdeck-health.stamp'));
+  for (const runtime of ['fm-quarterdeck-health.stamp', 'fm-quarterdeck-health.notes.json']) {
+    await symlink('quarterdeck-health.json', path.join(home, 'state', runtime));
+    const before = await snapshot(home);
+    assert.ok((await run('verify')).problems.includes('state/' + runtime));
+    await assert.rejects(run('uninstall'), /Unsafe runtime/);
+    assert.deepEqual(await snapshot(home), before);
+    await rm(path.join(home, 'state', runtime));
+  }
   const file = path.join(home, 'state/quarterdeck-integration.json');
   const manifest = JSON.parse(await readFile(file));
   delete manifest.operations[0].tag;
@@ -445,9 +447,10 @@ test('toolcheck runs status/verify, reports pin and projection drift with exact 
   await rm(path.join(home, '.agents/skills/fmqd-toolcheck'));
   await rm(path.join(home, 'state/fm-quarterdeck-health.check-trust'));
   await writeFile(path.join(home, 'state/quarterdeck-health.json'), '{}\n');
+  await symlink('quarterdeck-health.json', path.join(home, 'state/fm-quarterdeck-health.notes.json'));
   const drifted = await snapshot(home);
   const output = report();
-  for (const evidence of ['status:', 'verify:', 'out-of-date-pin', revision, main, '.claude/settings.local.json', 'data/captain.md', '.agents/skills/fmqd-toolcheck', 'state/fm-quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'Exact reinstall command (review only; NEVER executed)', source + '/scripts/firstmate-integration.mjs', 'cp --', 'uninstall', 'install', 'mktemp']) assert.ok(output.includes(evidence), evidence);
+  for (const evidence of ['status:', 'verify:', 'out-of-date-pin', revision, main, '.claude/settings.local.json', 'data/captain.md', '.agents/skills/fmqd-toolcheck', 'state/fm-quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.notes.json', 'Exact reinstall command (review only; NEVER executed)', source + '/scripts/firstmate-integration.mjs', 'cp --', 'uninstall', 'install', 'mktemp']) assert.ok(output.includes(evidence), evidence);
   assert.deepEqual(await snapshot(home), drifted);
 });
 
@@ -473,4 +476,12 @@ test('printed reinstall command is executable after separate operator approval a
   const config = JSON.parse(await readFile(path.join(home, 'state/quarterdeck-health.json')));
   assert.equal(config.FM_QUARTERDECK_HEALTH_PORT, '4321');
   assert.equal(config.integrationTag, 'fm-quarterdeck');
+});
+
+test('an unowned new-note marker refuses installation and is never adopted', async t => {
+  const { home, run } = await fixture(t);
+  await writeFile(path.join(home, 'state/fm-quarterdeck-health.notes.json'), '{}');
+  const before = await snapshot(home);
+  await assert.rejects(run('install'), /Unowned runtime bookkeeping/);
+  assert.deepEqual(await snapshot(home), before);
 });
