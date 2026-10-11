@@ -123,7 +123,7 @@ try {
   await until(`document.querySelector('#quota-providers').textContent.includes('Quota unavailable')`);
   assert.equal(calls, initialRequests + 1, 'fresh document must make the initial mocked reader request');
   console.log('Initial no-history phone unavailable state passed in a verified fresh selected realm with its source request');
-  console.log('Exact-head selected viewport age boundary, visible red stale age, five-minute source execution, failure, cached old data, recovery and unavailable acceptance passed');
+  console.log('Requested quota acceptance checkpoints passed');
 } finally {
   clearTimeout(deadline);
   await browser('stop').catch(() => {});
