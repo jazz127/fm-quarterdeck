@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { normalizeSnapshot } from '../bearings.js';
 import { ThreadRefused, createThreadRelay, noteForCard, taggedEnvelope } from '../bearings-thread.js';
-import { activeUntil, emptyProcrastination, nextUntil, procrastinationKey } from '../call-procrastination.js';
+import { activeUntil, createProcrastinationStore, emptyProcrastination, nextUntil, procrastinationKey } from '../call-procrastination.js';
 
 const uuid = (n = 1) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const refusal = code => error => error instanceof ThreadRefused && error.code === code;
@@ -81,4 +84,28 @@ test('child decisions park independently without accepting qualified merge or pa
   for (const key of ['merge:home-alpha/example-app-release', 'decision:home-alpha/../example-app-release', 'decision:/example-app-release']) {
     assert.equal(procrastinationKey(key), false);
   }
+});
+
+test('long scoped decision keys cannot make existing parking evidence unreadable', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'quarterdeck-decision-capacity-'));
+  const now = Date.parse('2026-01-02T12:00:00Z');
+  const store = createProcrastinationStore({ FM_QUARTERDECK_STATE_PATH: path.join(root, 'presentation.json') }, () => now);
+  const state = emptyProcrastination();
+  const key = n => `decision:home-alpha-${'a'.repeat(149)}/example-app-${'b'.repeat(140)}-${n}`;
+  const encode = state => `${JSON.stringify(state)}\n`;
+  let nextKey;
+  for (let n = 0; n < 200; n += 1) {
+    assert(procrastinationKey(key(n)));
+    const candidate = { ...state, until: { ...state.until, [key(n)]: '2026-01-02T15:00:00.000Z' } };
+    if (Buffer.byteLength(encode(candidate)) > 64 * 1024) { nextKey = key(n); break; }
+    state.until = candidate.until;
+  }
+  assert(nextKey, 'scoped identities exercise the existing byte limit before the entry limit');
+  const original = encode(state);
+  try {
+    await writeFile(store.file, original);
+    await assert.rejects(store.set(nextKey, '3h'), /procrastination state exceeds capacity/);
+    assert.equal(await readFile(store.file, 'utf8'), original, 'a refused park preserves all existing evidence');
+    assert.deepEqual(await store.evidence(), state, 'the retained state remains readable');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

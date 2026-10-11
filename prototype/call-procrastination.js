@@ -14,6 +14,7 @@ export const PROCRASTINATE_MS = Object.freeze({
   "3d": 3 * 24 * 60 * 60 * 1000,
 });
 const KEY = /^(?:(?:decision|merge):[A-Za-z0-9][A-Za-z0-9._-]{0,159}|decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/[A-Za-z0-9][A-Za-z0-9._-]{0,159}|chat:[0-9a-f]{16})$/;
+const MAX_STATE_BYTES = 64 * 1024;
 export const procrastinationKey = (value) => typeof value === "string" && KEY.test(value);
 export const procrastinationPath = (env = {}) => path.join(path.dirname(configuredStatePath(env)), "quarterdeck-call-procrastination.json");
 export const emptyProcrastination = () => ({ schema: PROCRASTINATION_SCHEMA, until: {} });
@@ -53,7 +54,7 @@ export function createProcrastinationStore(env = {}, now = () => Date.now()) {
     try {
       handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       const info = await handle.stat();
-      if (!info.isFile() || info.size > 64 * 1024) throw new Error("Invalid procrastination evidence");
+      if (!info.isFile() || info.size > MAX_STATE_BYTES) throw new Error("Invalid procrastination evidence");
       const value = JSON.parse(await handle.readFile("utf8"));
       if (!validProcrastination(value)) throw new Error("Invalid procrastination evidence");
       return value;
@@ -78,8 +79,10 @@ export function createProcrastinationStore(env = {}, now = () => Date.now()) {
       const next = change(state);
       if (next === state) return state;
       if (!validProcrastination(next)) throw new Error("Invalid procrastination state");
+      const payload = `${JSON.stringify(next)}\n`;
+      if (Buffer.byteLength(payload) > MAX_STATE_BYTES) throw new Error("Quarterdeck procrastination state exceeds capacity");
       const handle = await open(temp, "wx", 0o600);
-      try { await handle.writeFile(`${JSON.stringify(next)}\n`); await handle.sync(); }
+      try { await handle.writeFile(payload); await handle.sync(); }
       finally { await handle.close(); }
       await rename(temp, file);
       return next;
