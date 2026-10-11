@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       latest_native_bottom:
-        description: 'Run CI-Q3 retained Latest native-bottom assertion (restoration issue 83)'
+        description: 'Run both CI-Q3 retained Latest native-bottom assertions (restoration issue 83)'
         type: boolean
         default: false
 permissions:
@@ -74,7 +74,7 @@ jobs:
         continue-on-error: true
         run: npm run test:browser
         working-directory: prototype
-      - name: Opt-in CI-Q3 Latest native-bottom assertion
+      - name: Opt-in CI-Q3 Latest native-bottom assertions
         id: native_bottom
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.latest_native_bottom }}
         continue-on-error: true

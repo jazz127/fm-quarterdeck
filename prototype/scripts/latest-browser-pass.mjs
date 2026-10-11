@@ -6,7 +6,7 @@ import path from "node:path";
 import { createServer, loadFirstmateHome } from "../server.js";
 import { openBrowser, openReadingControls, closeReadingControls } from "./browser-harness.mjs";
 
-// CI-Q3: only the post-pointer/touch native-bottom assertion is opt-in.
+// CI-Q3: only the post-pointer/touch and after-PageUp/Latest-click native-bottom assertions are opt-in.
 const includeNativeBottom = process.argv.includes("--include-quarantined-native-bottom");
 
 const scratch = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-latest-"));
@@ -61,7 +61,7 @@ try {
       if (!quarantineNativeBottom || includeNativeBottom) {
         assert.ok(await distance() <= 1, "Latest reaches the native scroll bottom");
       } else {
-        console.log(`${width}x${height}: CI-Q3 post-pointer/touch native-bottom assertion EXCLUDED; https://github.com/sthi-1005/fm-quarterdeck/issues/83 (not native acceptance)`);
+        console.log(`${width}x${height}: CI-Q3 ${quarantineNativeBottom} native-bottom assertion EXCLUDED; https://github.com/sthi-1005/fm-quarterdeck/issues/83 (not native acceptance)`);
       }
       assert.equal(await evaluate("document.querySelector('#jump-to-latest-floating').hidden"), true);
       assert.equal(await evaluate("document.querySelector('#transcript-newer').disabled"), true, "latest loaded page selected");
@@ -133,7 +133,7 @@ try {
     }
     await until("document.querySelector('#jump-to-latest-floating').hidden");
     // Retain native gestures and all companion assertions in the default run.
-    await atLatest({ quarantineNativeBottom: true });
+    await atLatest({ quarantineNativeBottom: "post-pointer/touch" });
     await evaluate("document.querySelector('#messages').focus()");
     await trackNativeScroll();
     await command("Input.dispatchKeyEvent", { type: "keyDown", key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 });
@@ -141,7 +141,7 @@ try {
     await until("!document.querySelector('#jump-to-latest-floating').hidden");
     await evaluate("window.latestScrollEnd");
     await evaluate("document.querySelector('#jump-to-latest-floating').click()");
-    await atLatest();
+    await atLatest({ quarantineNativeBottom: "after-PageUp/Latest-click" });
     await openReadingControls(browser);
     await evaluate("(() => {document.querySelector('#transcript-older').click(); const f=document.querySelector('#messages');f.scrollTop=f.scrollHeight;f.dispatchEvent(new Event('scroll'));})()");
     await closeReadingControls(browser);
@@ -186,7 +186,7 @@ try {
     })()`);
     assert.equal(new Set(allKeys).size, records.length, "all original records remain reachable across loaded pages");
     console.log(`${width}x${height}: 50px regression, floating geometry, reading intent, following, tolerance, keyboard, older page, filters, compact and reduced motion passed`);
-    if (includeNativeBottom) console.log(`${width}x${height}: CI-Q3 post-pointer/touch native-bottom assertion passed in explicit opt-in run`);
+    if (includeNativeBottom) console.log(`${width}x${height}: CI-Q3 post-pointer/touch and after-PageUp/Latest-click native-bottom assertions passed in explicit opt-in run`);
     await browser.close();
     browser = null;
   }
