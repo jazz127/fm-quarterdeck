@@ -20,7 +20,7 @@ test("history budgets bound bytes, lines, records and file count without changin
   assert.equal(await createHistoryReader().text(file), "abc\ndef\n", "limits never edit source");
 });
 
-test("recent windows keep only whole newest records, report omitted bytes and respect the request budget", async (t) => {
+test("recent windows keep only whole newest records, report omitted bytes and respect the request byte and record budgets", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "history-window-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, "source.jsonl");
@@ -45,4 +45,68 @@ test("recent windows keep only whole newest records, report omitted bytes and re
   await shared.recent(file);
   assert.equal(await shared.recent(file), null, "a window that cannot hold one record is left unread");
   await assert.rejects(shared.text(file), HistoryLimitError, "whole-file reads keep the total bound");
+  const counted = createHistoryReader({ maxRecords: 6, windowReserveRecords: 2 });
+  const capped = await read(counted);
+  assert.deepEqual(capped.records.map(({ line }) => JSON.parse(line).n), [6, 7, 8, 9], "a record budget keeps the newest records");
+  assert.equal(capped.window.omittedBytes, capped.records[0].offset, "records left out are reported as omitted bytes");
+  assert.equal(await counted.recent(file), null, "a window with no record budget left is left unread");
+  const metadata = path.join(root, "metadata.md");
+  await writeFile(metadata, "a\nb\n");
+  assert.equal(await counted.text(metadata), "a\nb\n", "the reserve stays available to whole-file reads");
+  await assert.rejects(counted.text(metadata), HistoryLimitError, "whole-file reads keep the record bound");
+});
+
+test("recent windows validate whole lines before trimming and charge only retained records", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "history-window-lines-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "source.jsonl");
+  const options = { maxLineBytes: 4, maxRecords: 3, windowReserveRecords: 1, windowReserveBytes: 0 };
+  for (const ending of ["", "\n"]) {
+    for (const oversized of ["xxxxx", "ééé"]) {
+      await writeFile(file, `${oversized}\nold\nnew\nlast${ending}`);
+      await assert.rejects(createHistoryReader(options).recent(file), HistoryLimitError, "an omitted whole line still obeys the byte limit");
+    }
+    await writeFile(file, `old\nnew\nxxxxx${ending}`);
+    await assert.rejects(createHistoryReader(options).recent(file), HistoryLimitError, "the final whole line obeys the same limit");
+    await writeFile(file, `xxxxxxxxxxxx\nold\nfour\nlast${ending}`);
+    const reader = createHistoryReader({ ...options, maxFileBytes: 16 });
+    const window = await reader.recent(file);
+    const retained = [];
+    for await (const entry of window.lines) if (entry.line) retained.push(entry);
+    assert.deepEqual(retained, [{ line: "four", offset: 17 }, { line: "last", offset: 22 }], "a partial leading line is dropped before validating the whole lines");
+    assert.equal(window.omittedBytes, 17);
+    const metadata = path.join(root, "metadata.md");
+    await writeFile(metadata, "a\n");
+    assert.equal(await reader.text(metadata), "a\n", "discarded records do not consume the whole-file reserve");
+  }
+});
+
+test("concurrent windows recheck record exhaustion and retain only newest whole records", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "history-concurrent-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const files = [path.join(root, "a.status"), path.join(root, "b.status")];
+  for (const ending of ["", "\n"]) {
+    await Promise.all(files.map(file => writeFile(file, `old\nmiddle\nnewest${ending}`)));
+    for (const allowance of [3, 4]) {
+      const reader = createHistoryReader({ maxRecords: allowance + 2, windowReserveRecords: 2 });
+      const windows = await Promise.all(files.map(file => reader.recent(file)));
+      const retained = await Promise.all(windows.map(async window => {
+        if (!window) return [];
+        const entries = [];
+        for await (const entry of window.lines) if (entry.line) entries.push(entry);
+        return entries;
+      }));
+      assert.deepEqual(retained.map(entries => entries.length).sort(), [allowance - 3, 3]);
+      if (allowance === 3) assert.equal(windows.filter(window => window === null).length, 1, "a concurrently exhausted source is unloaded");
+      for (const entries of retained) {
+        if (!entries.length) continue;
+        assert.deepEqual(entries.map(entry => entry.line), entries.length === 3 ? ["old", "middle", "newest"] : ["newest"]);
+        assert.equal(entries.at(-1).offset, 11, "the newest record keeps its original byte position");
+      }
+      assert.equal(await reader.recent(files[0]), null);
+      const metadata = path.join(root, "metadata.md");
+      await writeFile(metadata, "a\nb\n");
+      assert.equal(await reader.text(metadata), "a\nb\n", "concurrent windows leave the whole-file reserve intact");
+    }
+  }
 });
