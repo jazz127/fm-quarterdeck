@@ -3,6 +3,38 @@
 window.bearingsView = (() => {
   const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  // Use the same HTTPS/no-userinfo policy as source card links. Build text and
+  // anchors as DOM nodes; prose, line breaks and sentence punctuation stay intact.
+  function messageText(node, text, doc = window.document) {
+    node.textContent = "";
+    const plain = (value) => {
+      if (!value) return;
+      const span = doc.createElement("span");
+      span.textContent = value;
+      node.append(span);
+    };
+    let offset = 0;
+    for (const match of text.matchAll(/https:\/\/[^\s<>"'`]+/g)) {
+      if (match.index && !/[\s([{]/.test(text[match.index - 1])) continue;
+      let address = match[0].replace(/[.,;!]+$/, "");
+      for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
+        while (address.endsWith(close) && address.split(close).length > address.split(open).length) address = address.slice(0, -1);
+      }
+      let url;
+      try { url = new URL(address); } catch { continue; }
+      if (url.protocol !== "https:" || url.username || url.password) continue;
+      plain(text.slice(offset, match.index));
+      const link = doc.createElement("a");
+      link.className = "call-message-link";
+      link.setAttribute("href", url.href);
+      link.setAttribute("target", "_blank");
+      link.setAttribute("rel", "noopener noreferrer");
+      link.textContent = address;
+      node.append(link);
+      offset = match.index + address.length;
+    }
+    plain(text.slice(offset));
+  }
   function age(value, now = Date.now()) {
     const ms = now - Date.parse(value);
     if (!Number.isFinite(ms) || ms < 0) return "age unknown";
@@ -134,7 +166,7 @@ window.bearingsView = (() => {
       <p class="call-answer-error" data-call-answer-error role="alert" hidden></p>
       <div class="call-answer-confirm" data-call-answer-confirm role="group" aria-label="Queued answer" hidden>
         <p>Queued for Firstmate: <strong data-call-answer-preview></strong></p>
-        <p class="call-meta" data-call-answer-confirm-note>Send submits this answer with a short batching delay; Send now in the message composer bypasses it; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.</p>
+        <p class="call-meta" data-call-answer-confirm-note>Send submits this answer with a short batching delay; Send in the message composer bypasses it and submits every queued answer. Edit takes it out of the queue.</p>
       </div>
       <div class="call-answer-receipt" data-call-answer-receipt tabindex="-1" hidden><p role="status" data-call-answer-receipt-text></p><button type="button" data-call-answer-again>Answer again</button></div>
     </form>`;
@@ -285,7 +317,7 @@ window.bearingsView = (() => {
     if (model.chat?.behind) parts.push("Still reading the Firstmate transcript");
     return parts.join(" · ");
   }
-  const heldText = (change) => `Call ${change} — updates when you're done`;
+  const heldText = (change) => `Update incoming — call ${change}`;
   const stubHtml = () => '<div class="call-chrome"><h3>Resolved by Firstmate — your unsent text</h3><p class="call-meta">This text was not sent. Copy it before dismissing.</p></div><pre data-call-stub-text></pre><div class="call-stub-actions"><button type="button" data-call-stub-copy>Copy</button><button type="button" data-call-stub-dismiss>Dismiss</button></div>';
-  return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, landedHeadlineHtml, createTextController };
+  return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, landedHeadlineHtml, createTextController, messageText };
 })();

@@ -43,7 +43,7 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Each landed card has an Acknowledge control and one follow-up box. It has no Procrastinate control.
 - The Just landed heading shows the new, unacknowledged count in the Captain's Call count badge. The badge hides when that count is 0.
 - Acknowledge and Acknowledged (N) are at least 44px high.
-- On a phone the two Overview sections are tabs, Captain's Call (N) and Just landed (N). Just landed N is the same new count, and the chosen tab is remembered for that viewer.
+- Underway and Charted Next follow Just landed in the second column, using the same poster cards and source state/reason text. Repair warnings are excluded from queued counts. On a phone the four Overview sections are tabs, Captain's Call (N), Just landed (N), Underway (N) and Charted Next (N). Just landed N is the same new count, and the chosen tab is remembered for that viewer.
 - Those tabs are one segmented control: a single ink border and hard shadow, with the selected tab in the accent fill.
 - Chat asks keep a double left border at the same width as other cards, so the mark does not indent the card. Also asked in chat stacks on its own line and does not widen the context column.
 - A decision title is the filed hold's full reason when one is recorded. Also asked in chat is a smaller secondary line, and a `[task:...]` marker is omitted. Reply phrases from that ask are option choices under the reason.

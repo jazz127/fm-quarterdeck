@@ -347,16 +347,14 @@ test("local Send uses an unqueued draft and keeps a failed send available to ret
   element("review-message").value = "Please improve this card";
   element("review-message").listeners.input();
   assert.equal(element("review-send").disabled, false);
-  assert.equal(element("review-end").disabled, false);
   element("review-send").listeners.click();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(attempts.length, 1);
   assert.equal(attempts[0].sessionId, "");
   assert.equal(attempts[0].entries[0].prompt, "Please improve this card");
   assert.equal(element("review-send").disabled, false, "Send can retry a failed batch without a fresh draft");
-  assert.equal(element("review-end").disabled, false, "Send & end can drain a failed board");
   assert.match(element("review-state").textContent, /disk error/);
-  element("review-end").listeners.click();
+  element("review-send").listeners.click();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(attempts.length, 2);
   assert.equal(attempts[1].batchId, attempts[0].batchId);
@@ -435,18 +433,15 @@ test("queued local batch enables both Send actions while an empty queue stays di
   vm.runInContext(script, context);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(element("review-send").disabled, true);
-  assert.equal(element("review-end").disabled, true);
   element("review-message").value = "Queued note";
   element("review-form").listeners.submit({ preventDefault() {} });
   assert.equal(element("review-message").value, "");
   assert.equal(vm.runInContext("queue.length", context), 1);
   assert.equal(element("review-send").disabled, false);
-  assert.equal(element("review-end").disabled, false);
   element("review-send").listeners.click();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(vm.runInContext("queue.length", context), 0);
   assert.equal(element("review-send").disabled, true);
-  assert.equal(element("review-end").disabled, true);
 });
 
 async function composeBoard() {
@@ -485,7 +480,7 @@ async function composeBoard() {
   return { element, posts, calls, callSends, queue, send, context };
 }
 
-test("Send batch includes compose text with queued notes, sends either alone, and does nothing when both are empty", async () => {
+test("Send includes compose text with queued notes, sends either alone, and does nothing when both are empty", async () => {
   const both = await composeBoard();
   both.queue("Queued note");
   assert.equal(both.element("review-message").value, "");
@@ -493,7 +488,7 @@ test("Send batch includes compose text with queued notes, sends either alone, an
   both.element("review-message").listeners.input();
   await both.send();
   assert.deepEqual(both.posts[0].entries.map((entry) => entry.prompt), ["Queued note", "Typed note"], "queued notes and typed text go together");
-  assert.equal(both.element("review-message").value, "", "the compose box clears after Send batch");
+  assert.equal(both.element("review-message").value, "", "the compose box clears after Send");
 
   const typed = await composeBoard();
   typed.element("review-message").value = "Only typed";
@@ -518,7 +513,7 @@ test("Send batch includes compose text with queued notes, sends either alone, an
   assert.equal(empty.element("review-message").value, "   ");
 });
 
-test("Send batch does not send compose text again when that text was already queued", async () => {
+test("Send does not send compose text again when that text was already queued", async () => {
   const stale = await composeBoard();
   stale.queue("Same note");
   stale.element("review-message").value = "Same note";
@@ -561,7 +556,7 @@ test("Send batch does not send compose text again when that text was already que
   assert.equal(full.element("review-message").value, "Stays in the box", "a draft past the board cap stays in the box");
 });
 
-test("queued Captain's Call answers count in the review queue and Send batch sends them through their own route first", async () => {
+test("queued Captain's Call answers count in the review queue and Send sends them through their own route first", async () => {
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
@@ -590,10 +585,10 @@ test("queued Captain's Call answers count in the review queue and Send batch sen
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(typeof context.window.quarterdeckReviewQueue.refresh, "function");
   assert.equal(element("review-count").textContent, "· 2 queued", "every queued answer counts with the notes");
-  assert.equal(element("review-send").disabled, false, "queued answers alone enable Send batch");
+  assert.equal(element("review-send").disabled, false, "queued answers alone enable Send");
   element("review-send").listeners.click();
   for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(sends, [2], "Send batch sends every queued card answer");
+  assert.deepEqual(sends, [2], "Send sends every queued card answer");
   assert.deepEqual(posts, [], "answers never travel as review annotations");
   assert.match(element("review-state").textContent, /^Sent 2 Captain's Call answers;/);
   assert.equal(element("review-count").textContent, "");
@@ -602,7 +597,7 @@ test("queued Captain's Call answers count in the review queue and Send batch sen
   assert.equal(context.window.quarterdeckReviewQueue.sending(), false);
 });
 
-test("Send queued and Send batch share one sender, and a second call does not send again", async () => {
+test("Send queued and Send share one sender, and a second call does not send again", async () => {
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
@@ -643,7 +638,7 @@ test("Send queued and Send batch share one sender, and a second call does not se
   release();
   assert.equal(await first, true);
   for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(sends, [1], "Send batch and Send queued share one in-flight sender");
+  assert.deepEqual(sends, [1], "Send and Send queued share one in-flight sender");
   assert.deepEqual(refreshes, ["refresh"]);
   assert.equal(context.window.quarterdeckReviewQueue.sending(), false);
   assert.match(element("review-state").textContent, /^Sent 1 Captain's Call answer;/);
@@ -658,14 +653,15 @@ test("native review stays available with panel hidden and click precedence toggl
   assert.match(html, /id="review-panel-toggle"[^>]+aria-controls="review-panel"/);
   assert.doesNotMatch(html, /id="review-panel-toggle"[^>]+hidden/);
   assert.match(html, /id="review-send"/);
-  assert.match(html, /id="review-end"/);
+  assert.doesNotMatch(html, /id="review-end"|id="review-send-now"/);
+  assert.match(html, /id="review-clear-messages"/);
   assert.match(script, /annotateByDefault === event\.altKey/);
   assert.match(script, /event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);\s*if \(!regionFor\(event\.target\)\) return;\s*selectRegion/);
   assert.doesNotMatch(script, /active = false/);
   assert.match(script, /entry\.region/);
   assert.match(html, /Enter: queue · Shift\+Enter: new line · Ctrl\/Cmd\+Enter: send/);
   assert.match(html, /Queue message \(Enter\)/);
-  assert.match(html, /data-hint="Ctrl\/Cmd\+Enter">Send batch/);
+  assert.match(html, /data-hint="Ctrl\/Cmd\+Enter">Send/);
 });
 
 // Minimal DOM with real ancestry and event listeners: catches a control being
@@ -704,7 +700,7 @@ test("annotation addresses the clicked control, never its enclosing sidebar", as
   const tab = node("button", "", "", nav);
   const tabLabel = node("span", "", "Overview", tab);
   const content = node("article", "", "Card", sidebar);
-  for (const id of ["review-annotation", "review-toggle", "review-panel", "review-panel-toggle", "review-message", "review-count", "review-awaiting", "review-inline-summary", "review-history", "review-history-summary", "review-target", "review-queue", "review-context", "review-send", "review-end", "review-pick", "review-thread", "review-phone-thread", "review-sent", "review-sent-list", "review-sent-summary", "review-sent-count", "review-queued-count", "review-state", "review-close", "review-form-close", "review-form"]) if (!nodes.has(id)) node("button", id);
+  for (const id of ["review-annotation", "review-toggle", "review-panel", "review-panel-toggle", "review-message", "review-count", "review-awaiting", "review-inline-summary", "review-history", "review-history-summary", "review-target", "review-queue", "review-context", "review-send", "review-clear-messages", "review-history-actions", "review-pick", "review-thread", "review-phone-thread", "review-sent", "review-sent-list", "review-sent-summary", "review-sent-count", "review-queued-count", "review-state", "review-close", "review-form-close", "review-form"]) if (!nodes.has(id)) node("button", id);
   const documentListeners = new Map();
   const document = { body: { append() {} }, createElement: () => node("div"), getElementById: (id) => nodes.get(id), querySelector: () => ({ textContent: "" }), addEventListener: (type, fn) => documentListeners.set(type, fn) };
   const sent = [];

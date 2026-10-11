@@ -1,34 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, cp, rm, symlink, lstat, readdir, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, cp, rm, symlink, lstat, readdir, rename, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
+import { claudeProjectDirectory } from '../prototype/claude-transcript.js';
 
 const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
 // Synthetic prior-release discovery names; ownership schema and rollback stay v1.
 const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
 
-async function fixture(t, { alias = false, discoveryDirectory = false, registrationFails = false, legacy = false } = {}) {
+async function fixture(t, { alias = false, discoveryDirectory = false, registrationFails = false, legacy = false, realSource = false } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'quarterdeck-integration-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, 'source'), home = path.join(dir, 'home');
   await mkdir(path.join(source, 'scripts'), { recursive: true });
-  for (const file of ['firstmate-integration.mjs', 'captain-ask-hook-install.mjs']) await cp(new URL(`../scripts/${file}`, import.meta.url), path.join(source, 'scripts', file));
-  if (legacy) {
-    const installer = path.join(source, 'scripts/firstmate-integration.mjs');
-    await writeFile(installer, (await readFile(installer, 'utf8')).replace(/^const skills = .+;$/m, `const skills = ${JSON.stringify(legacySkills)};`));
-  }
-  await writeFile(path.join(source, 'FIRSTMATE.md'), '# Synthetic rules\n');
-  await mkdir(path.join(source, 'prototype/public'), { recursive: true });
-  await writeFile(path.join(source, 'prototype/public/unneeded-ui.js'), '// Excluded from integration pin.\n');
-  await writeFile(path.join(source, 'scripts/quarterdeck-health-check.sh'), '#!/bin/bash\nexit 0\n');
-  for (const name of legacy ? legacySkills : skills) {
-    await mkdir(path.join(source, 'skills', name), { recursive: true });
-    await writeFile(path.join(source, 'skills', name, 'SKILL.md'), `# ${name}\n`);
+  if (realSource) {
+    // Real tracked pin inputs, so the pinned hook exposes its actual import graph.
+    const repo = fileURLToPath(new URL('..', import.meta.url));
+    const tracked = execFileSync('git', ['-C', repo, 'ls-files', '-z', '--', 'FIRSTMATE.md', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'scripts', 'skills', 'docs', 'prototype'], { encoding: 'utf8' }).split('\0').filter(Boolean);
+    for (const file of tracked) { await mkdir(path.dirname(path.join(source, file)), { recursive: true }); await cp(path.join(repo, file), path.join(source, file)); }
+  } else {
+    for (const file of ['firstmate-integration.mjs', 'captain-ask-hook-install.mjs']) await cp(new URL(`../scripts/${file}`, import.meta.url), path.join(source, 'scripts', file));
+    if (legacy) {
+      const installer = path.join(source, 'scripts/firstmate-integration.mjs');
+      await writeFile(installer, (await readFile(installer, 'utf8')).replace(/^const skills = .+;$/m, `const skills = ${JSON.stringify(legacySkills)};`));
+    }
+    await writeFile(path.join(source, 'FIRSTMATE.md'), '# Synthetic rules\n');
+    await mkdir(path.join(source, 'prototype/public'), { recursive: true });
+    await writeFile(path.join(source, 'prototype/public/unneeded-ui.js'), '// Excluded from integration pin.\n');
+    await writeFile(path.join(source, 'scripts/quarterdeck-health-check.sh'), '#!/bin/bash\nexit 0\n');
+    for (const name of legacy ? legacySkills : skills) {
+      await mkdir(path.join(source, 'skills', name), { recursive: true });
+      await writeFile(path.join(source, 'skills', name, 'SKILL.md'), `# ${name}\n`);
+    }
   }
   const git = (...args) => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' });
   git('init', '-q', '-b', 'main'); git('add', '.'); git('-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', 'Synthetic integration');
@@ -326,7 +334,7 @@ test('every projection is tagged directly or by manifest; inventory includes pin
   assert.match(manifest.block, /<!-- \/fm-quarterdeck:integration:v1 -->/);
   assert.equal(JSON.parse(await readFile(path.join(home, 'state/quarterdeck-health.json'))).integrationTag, 'fm-quarterdeck');
   for (const op of manifest.operations) assert.equal(op.tag, 'fm-quarterdeck');
-  for (const file of ['fm-quarterdeck-health.lock', 'fm-quarterdeck-health.stamp']) await writeFile(path.join(home, 'state', file), 'synthetic runtime');
+  for (const file of ['fm-quarterdeck-health.lock', 'fm-quarterdeck-health.stamp', 'fm-quarterdeck-health.notes.json']) await writeFile(path.join(home, 'state', file), 'synthetic runtime');
   const before = await snapshot(home);
   const inventory = await run('inventory');
   assert.deepEqual(await snapshot(home), before);
@@ -358,12 +366,14 @@ test('inventory identifies tagged remnants after journal loss without granting r
 test('tag tampering and unsafe runtime bookkeeping are reported read-only and refuse blind uninstall', async t => {
   const { home, run } = await fixture(t);
   await run('install');
-  await symlink('quarterdeck-health.json', path.join(home, 'state/fm-quarterdeck-health.stamp'));
-  const before = await snapshot(home);
-  assert.ok((await run('verify')).problems.includes('state/fm-quarterdeck-health.stamp'));
-  await assert.rejects(run('uninstall'), /Unsafe runtime/);
-  assert.deepEqual(await snapshot(home), before);
-  await rm(path.join(home, 'state/fm-quarterdeck-health.stamp'));
+  for (const runtime of ['fm-quarterdeck-health.stamp', 'fm-quarterdeck-health.notes.json']) {
+    await symlink('quarterdeck-health.json', path.join(home, 'state', runtime));
+    const before = await snapshot(home);
+    assert.ok((await run('verify')).problems.includes('state/' + runtime));
+    await assert.rejects(run('uninstall'), /Unsafe runtime/);
+    assert.deepEqual(await snapshot(home), before);
+    await rm(path.join(home, 'state', runtime));
+  }
   const file = path.join(home, 'state/quarterdeck-integration.json');
   const manifest = JSON.parse(await readFile(file));
   delete manifest.operations[0].tag;
@@ -445,9 +455,10 @@ test('toolcheck runs status/verify, reports pin and projection drift with exact 
   await rm(path.join(home, '.agents/skills/fmqd-toolcheck'));
   await rm(path.join(home, 'state/fm-quarterdeck-health.check-trust'));
   await writeFile(path.join(home, 'state/quarterdeck-health.json'), '{}\n');
+  await symlink('quarterdeck-health.json', path.join(home, 'state/fm-quarterdeck-health.notes.json'));
   const drifted = await snapshot(home);
   const output = report();
-  for (const evidence of ['status:', 'verify:', 'out-of-date-pin', revision, main, '.claude/settings.local.json', 'data/captain.md', '.agents/skills/fmqd-toolcheck', 'state/fm-quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'Exact reinstall command (review only; NEVER executed)', source + '/scripts/firstmate-integration.mjs', 'cp --', 'uninstall', 'install', 'mktemp']) assert.ok(output.includes(evidence), evidence);
+  for (const evidence of ['status:', 'verify:', 'out-of-date-pin', revision, main, '.claude/settings.local.json', 'data/captain.md', '.agents/skills/fmqd-toolcheck', 'state/fm-quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.notes.json', 'Exact reinstall command (review only; NEVER executed)', source + '/scripts/firstmate-integration.mjs', 'cp --', 'uninstall', 'install', 'mktemp']) assert.ok(output.includes(evidence), evidence);
   assert.deepEqual(await snapshot(home), drifted);
 });
 
@@ -473,4 +484,38 @@ test('printed reinstall command is executable after separate operator approval a
   const config = JSON.parse(await readFile(path.join(home, 'state/quarterdeck-health.json')));
   assert.equal(config.FM_QUARTERDECK_HEALTH_PORT, '4321');
   assert.equal(config.integrationTag, 'fm-quarterdeck');
+});
+
+test('an unowned new-note marker refuses installation and is never adopted', async t => {
+  const { home, run } = await fixture(t);
+  await writeFile(path.join(home, 'state/fm-quarterdeck-health.notes.json'), '{}');
+  const before = await snapshot(home);
+  await assert.rejects(run('install'), /Unowned runtime bookkeeping/);
+  assert.deepEqual(await snapshot(home), before);
+});
+
+test('installed pin runs the real Stop hook from its captured import graph', async t => {
+  const { dir, home, run } = await fixture(t, { realSource: true });
+  const configDir = path.join(dir, 'claude-config'), root = await realpath(home);
+  assert.equal((await run('install', { config: { CLAUDE_CONFIG_DIR: configDir } })).ok, true);
+  const { command } = JSON.parse(await readFile(path.join(home, '.claude/settings.local.json'), 'utf8')).hooks.Stop[0].hooks[0];
+  assert.match(command, /\/data\/quarterdeck-integration\/pins\/[a-f0-9]{40}\/scripts\/captain-ask-stop-hook\.mjs'/);
+  await writeFile(path.join(home, 'state/.lock-session'), 'primary');
+  await writeFile(path.join(home, 'data/backlog.md'), '- [ ] hold-alpha - Choose (hold-kind: captain)\n');
+  const transcript = path.join(claudeProjectDirectory(configDir, root), 'primary.jsonl');
+  await mkdir(path.dirname(transcript), { recursive: true });
+  const stop = async text => {
+    await writeFile(transcript, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })}\n`);
+    const input = { hook_event_name: 'Stop', session_id: 'primary', cwd: root, transcript_path: transcript, stop_hook_active: false };
+    const hook = spawnSync('/bin/bash', ['-c', command], { input: JSON.stringify(input), encoding: 'utf8', timeout: 15000 });
+    assert.ifError(hook.error);
+    // A missing pinned module crashes at import, before the hook's own fail-open diagnostics.
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.equal(hook.stderr, '');
+    return hook.stdout ? JSON.parse(hook.stdout) : {};
+  };
+  assert.deepEqual(await stop('[fm-lane General]\nAll done.\n[end General]'), {});
+  assert.deepEqual(await stop('[fm-lane General]\nDECISION NEEDED: choose a layout [task:hold-alpha]\n[end General]'), {});
+  assert.match((await stop('[fm-lane General]\nDECISION NEEDED: choose a layout\n[end General]')).reason, /captain hold/);
+  assert.match((await stop('All done.')).reason, /fm-lane/);
 });

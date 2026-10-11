@@ -6,6 +6,10 @@ Quarterdeck's own source is offered under the [MIT License](LICENSE), attributed
 - **Provider names:** quota/billing labels identify their actual data providers. Neutral text/first-letter monograms replace the former provider drawings; no provider logo files or brand-color mappings are shipped. Names/marks belong to their respective owners; their appearance does not imply sponsorship.
 - **Dependencies/platforms:** Node, Python, Git and npm dependencies retain their own licenses and notices. Package manifests/lockfiles identify dependencies; the project MIT license does not relicense third-party software. Preserve applicable upstream notices when separately bundling dependencies. This source preview does not bundle installed packages or account tools.
 
+## Web Push standards library
+
+`prototype/package.json` pins [`web-push` 3.6.7](https://github.com/web-push-libs/web-push), licensed under [MPL-2.0](https://github.com/web-push-libs/web-push/blob/v3.6.7/LICENSE). It owns RFC 8291 payload encryption and RFC 8292 VAPID signatures. Its source is consumed as a package without modification; no installed dependency code is bundled in this repository. Preserve its license and transitive dependency notices when distributing installed packages. Exact resolved versions and integrity hashes are in `prototype/package-lock.json`.
+
 ## lavish-axi capture helpers
 
 `prototype/public/review-target.js` adapts the selector, text-range boundary and table-cell capture patterns from lavish-axi 0.1.78 (<https://github.com/kunchenguid/lavish-axi>), with Quarterdeck-specific stop points and bounded context. Upstream license:

@@ -253,3 +253,22 @@ test("the Just landed heading badge and phone tab count only unacknowledged land
   board.destroy();
   phone.destroy();
 });
+
+test('four phone sections preserve landed navigation and expose only the selected work panel', () => {
+  const dom = callDom(), { context, root, tabs, calls, landed } = mount(dom);
+  const secondary = dom.document.createElement('div');
+  const underway = dom.document.createElement('section'), charted = dom.document.createElement('section');
+  for (const name of ['underway', 'charted']) { const button = dom.document.createElement('button'); button.setAttribute('data-overview-tab', name); tabs.append(button); }
+  secondary.append(landed, underway, charted); root.append(secondary);
+  const matches = { value: true }, media = mediaQuery(matches), storage = memoryStorage();
+  const controller = context.window.overviewTabs.createController({ root, tabs, secondary, panels: {calls,landed,underway,charted}, counts: { underway: () => 2, charted: () => 1 }, media, storage, doc: dom.document });
+  assert.equal(secondary.hidden, true);
+  const tab = tabs.querySelector('[data-overview-tab="underway"]'); tab.click();
+  assert.equal(calls.hidden, true); assert.equal(secondary.hidden, false); assert.equal(landed.hidden, true); assert.equal(underway.hidden, false); assert.equal(charted.hidden, true);
+  assert.equal(tab.textContent, 'Underway (2)');
+  press(tab, 'ArrowRight'); assert.equal(charted.hidden, false); assert.equal(underway.hidden, true);
+  assert.equal(storage.getItem(context.window.overviewTabs.KEY), 'charted');
+  matches.value = false; media.change();
+  for (const panel of [calls,landed,underway,charted,secondary]) assert.equal(panel.hidden, false);
+  controller.destroy();
+});

@@ -226,7 +226,14 @@ export async function readConversationTranscript(home, publicMessage, { selected
             author: recordKind === "supervision" ? "Fleet" : role === "toolResult" ? turn.author || "Tool" : turn.author || (origin === "branch" ? "Firstmate (branch)" : "Firstmate"), role: "firstmate",
             state: thinking ? "thinking" : preToolNarration ? "working" : "response", kind: thinking ? "thinking" : toolCall ? "tools" : preToolNarration ? "narration" : recordKind || "conversation",
           };
+          // Display provenance only: human-marked injections share this metadata.
+          // Keep the input identity; inferred primaries and other sources stay opt-in.
+          const nonconversationInput = /^\s*(?:MAIN DIALOG MIRROR\b|<task-notification>|<local-command-(?:stdout|stderr)>)/.test(text);
+          const primaryHumanInput = role === "user" && !nonconversationInput && claudePrimary?.file === file && !claudePrimary.inferred &&
+            (record.type === "user" ? record.origin?.kind === "human" :
+              record.type === "attachment" && record.attachment?.type === "queued_command" && record.attachment.origin?.kind === "human");
           messages.push({ ...publicMessage({ ...identity, source, text: text.trim(), timestamp, sourceSequence: lineIndex * 1000 + partIndex }),
+            ...(primaryHumanInput ? { primaryHumanInput: true } : {}),
             transcriptSessionId: source, transcriptOrigin: origin, recordId: byOffset ? `${source}@${offset}:${partIndex}` : `${source}:${lineIndex}:${partIndex}` });
           session.messageCount += 1;
           const iso = timestamp.toISOString();

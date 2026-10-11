@@ -1,6 +1,6 @@
 // Captain's Call one-box flow (BEARINGS.md "Answers"). Nothing is sent without an explicit
 // captain click: Queue locks the note and shows exactly what will go to Firstmate, and
-// only Send (this card) or Send batch (the review queue) relays it. A checked option is an
+// only Send (this card) or Send (the review queue) relays it. A checked option is an
 // answer. Text with no option is a card thread note. That path does not use the answer
 // phase sent; the thread receipt marks the card Sent until Firstmate replies or closes it.
 // A retry after an unconfirmed send is another explicit click and reuses the same request id.
@@ -179,8 +179,8 @@ window.bearingsAnswerForm = (() => {
       const confirmNote = part(form, "confirm-note");
       if (confirmNote) {
         const text = state?.path === "thread"
-          ? "Send submits this note with a short batching delay; Send now in the message composer bypasses it; Send batch in the review queue sends every queued note together. Edit takes it out of the queue."
-          : "Send submits this answer with a short batching delay; Send now in the message composer bypasses it; Send batch in the review queue sends every queued answer together. Edit takes it out of the queue.";
+          ? "Send submits this note with a short batching delay; Send in the message composer bypasses it and submits every queued note. Edit takes it out of the queue."
+          : "Send submits this answer with a short batching delay; Send in the message composer bypasses it and submits every queued answer. Edit takes it out of the queue.";
         if (confirmNote.textContent !== text) confirmNote.textContent = text;
       }
       const compose = part(form, "compose");
@@ -285,7 +285,7 @@ window.bearingsAnswerForm = (() => {
       update(key, { ...state, path, attempted: true, phase: "refused", error: body?.error || `The ${noun} was not accepted.` }, focus ? "text" : null);
       return false;
     }
-    // Queued cards, for the review queue's list and its Send batch. Each item keeps its own
+    // Queued cards, for the review queue's list and its Send. Each item keeps its own
     // request id and its own path, an answer note or a thread note. The server combines nearby submissions into one guarded inbox note.
     const queuedPhases = new Set(["confirm", "sending", "failed"]);
     function queued() {

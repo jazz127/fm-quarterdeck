@@ -5,7 +5,7 @@
   const status = document.getElementById("inbox-pending-status");
   const button = document.getElementById("inbox-pending-send");
   if (!panel || !items || !button) return;
-  let busy = false, previous = "";
+  let busy = false, flushing = null, previous = "", count = 0;
   async function refresh() {
     if (busy || document.hidden) return;
     busy = true;
@@ -14,6 +14,10 @@
       if (response.status === 404) return;
       if (!response.ok) throw Error("unavailable");
       const data = await response.json();
+      if (count !== data.items.length) {
+        count = data.items.length;
+        window.dispatchEvent(new Event("quarterdeck-inbox-pending"));
+      }
       const signature = JSON.stringify(data.items);
       if (signature !== previous) {
         previous = signature;
@@ -37,15 +41,21 @@
       status.textContent = "Pending inbox state unavailable; saved items are retained. Reload or retry when the server is available.";
     } finally { busy = false; }
   }
-  button.addEventListener("click", async () => {
+  function flush() {
+    if (flushing) return flushing;
     button.disabled = true;
-    try {
-      const response = await fetch("/api/inbox/send-now", { method: "POST" });
-      if (!response.ok) throw Error("unconfirmed");
-      await refresh();
-    } catch { status.textContent = "Delivery unconfirmed; saved items retained. Retry sends the same batch once."; }
-    finally { button.disabled = false; }
-  });
+    flushing = (async () => {
+      try {
+        const response = await fetch("/api/inbox/send-now", { method: "POST" });
+        if (!response.ok) throw Error("unconfirmed");
+        await refresh();
+      } catch { status.textContent = "Delivery unconfirmed; saved items retained. Retry sends the same batch once."; }
+      finally { button.disabled = false; flushing = null; }
+    })();
+    return flushing;
+  }
+  window.quarterdeckInboxPending = { count: () => count, flush };
+  button.addEventListener("click", flush);
   window.addEventListener("quarterdeck-sent", refresh);
   document.addEventListener("visibilitychange", refresh);
   void refresh();

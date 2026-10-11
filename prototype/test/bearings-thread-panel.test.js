@@ -162,3 +162,61 @@ test("long entries stay fully readable and copy fails visibly", async () => {
   assert.match(t.part("notice").textContent, /Copy unavailable/);
   assert.match(t.part("status").textContent, /Copy unavailable/);
 });
+
+test("recorded replies and thread messages expose safe links without changing note text or state", async () => {
+  const text = 'Read https://example.invalid/acme/example-app/one. Then https://example.invalid/acme/example-app/two?a=1&b=2 (keep this note).';
+  const entries = [
+    { kind: "ask", from: "captain", noteId: "note-1", at: null, text, state: "replied" },
+    { kind: "reply", from: "firstmate", noteId: "note-1", at: "2026-01-02T11:00:00Z", text },
+  ];
+  const t = setup({ responses: [history(entries), { status: 502, body: { error: "Firstmate receipts unavailable" } }] });
+  t.patcher.update(model([decision()]));
+  await flush();
+  t.part("expand").click();
+  for (const entry of t.part("log").children) {
+    const body = entry.querySelector(".call-thread-text");
+    assert.equal(body.textContent, text);
+    const links = body.querySelectorAll("a");
+    assert.deepEqual(links.map((link) => link.getAttribute("href")), ["https://example.invalid/acme/example-app/one", "https://example.invalid/acme/example-app/two?a=1&b=2"]);
+    for (const link of links) {
+      assert.equal(link.getAttribute("target"), "_blank");
+      assert.equal(link.getAttribute("rel"), "noopener noreferrer");
+      link.focus();
+      assert.equal(t.document.activeElement, link);
+    }
+  }
+  assert.match(t.part("log").textContent, /time unknown/);
+  assert.match(t.part("log").textContent, /replied/);
+  await t.threads.load(KEY);
+  assert.equal(t.threads.state(KEY).error, "Firstmate receipts unavailable", "a recorded reply does not erase a later read failure");
+  assert.equal(t.part("log").querySelectorAll("a").length, 4, "retain original reply evidence on a failed refresh");
+});
+
+test("untrusted schemes, credentials and HTML remain plain thread text", async () => {
+  const text = '<img src=x onerror=alert(1)> javascript:alert(1) http://example.invalid/ https://user:secret@example.invalid/ javascript:https://example.invalid/';
+  const t = setup({ responses: [history([
+    { kind: "ask", from: "captain", text: "Which link?", state: "waiting" },
+    { kind: "reply", from: "firstmate", text },
+  ])] });
+  t.patcher.update(model([decision()]));
+  await flush();
+  t.part("expand").click();
+  const body = t.part("log").children[1].querySelector(".call-thread-text");
+  assert.equal(body.textContent, text);
+  assert.equal(body.querySelectorAll("a").length, 0);
+  assert.equal(body.querySelectorAll("img").length, 0);
+});
+
+test("link boundaries preserve surrounding punctuation, balanced URL paths and fragments", async () => {
+  const text = 'Read (https://example.invalid/acme/example-app/a_(b)). Next https://example.invalid/acme/example-app/page?q=a&x=b#notes; done.';
+  const t = setup({ responses: [history([
+    { kind: "ask", from: "captain", text: "Which guide?", state: "replied" },
+    { kind: "reply", from: "firstmate", text },
+  ])] });
+  t.patcher.update(model([decision()]));
+  await flush();
+  t.part("expand").click();
+  const body = t.part("log").children[1].querySelector(".call-thread-text");
+  assert.equal(body.textContent, text);
+  assert.deepEqual(body.querySelectorAll("a").map((link) => link.getAttribute("href")), ["https://example.invalid/acme/example-app/a_(b)", "https://example.invalid/acme/example-app/page?q=a&x=b#notes"]);
+});

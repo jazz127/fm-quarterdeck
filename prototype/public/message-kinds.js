@@ -1,6 +1,7 @@
 // Stock Firstmate/Pi message-kind catalog and preference storage. No DOM.
 window.messageKinds = (() => {
-  const KEY = "fm-agentos-message-types-v2";
+  const KEY = "fm-agentos-message-types-v3";
+  const PREVIOUS_KEY = "fm-agentos-message-types-v2";
   const LEGACY_KEY = "fm-agentos-message-types-v1";
   // Lucide-like stroke SVGs (16px in a 22px well). currentColor; no emoji.
   const svgAttrs = 'class="message-kind-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
@@ -23,6 +24,8 @@ window.messageKinds = (() => {
   const TYPES = [
     { id: "captain", label: "captain", icon: "captain", filterGlyph: "captain", svg: ICONS.captain },
     { id: "conversation", label: "Firstmate replies", icon: "conversation", filterGlyph: "conversation", svg: ICONS.conversation },
+    // Selected primary, human-marked input is readable, but authorship stays unverified.
+    { id: "primary-input", label: "primary session input (unverified)", icon: "input", filterGlyph: "input", svg: ICONS.input },
     { id: "supervision", label: "supervision outcomes", icon: "supervision", filterGlyph: "supervision", svg: ICONS.supervision },
     { id: "thinking", label: "thinking", icon: "thinking", filterGlyph: "thinking", svg: ICONS.thinking },
     // Assistant text written before a tool call. Off by default; not a reply.
@@ -36,24 +39,33 @@ window.messageKinds = (() => {
     // shown on request, never as the captain's (authorship.js).
     { id: "input", label: "unverified input", icon: "input", filterGlyph: "input", svg: ICONS.input },
   ];
-  const DEFAULT_IDS = ["captain", "conversation", "supervision"];
+  const DEFAULT_IDS = ["captain", "conversation", "primary-input", "supervision"];
   const known = (id) => TYPES.some((type) => type.id === id);
-  const typeId = (message) => message.role === "captain" ? "captain" : (message.kind || "conversation");
+  const typeId = (message) => message.role === "captain" ? "captain" :
+    message.role === "input" && message.kind === "input" && message.primaryHumanInput === true ? "primary-input" : (message.kind || "conversation");
   const label = (id) => TYPES.find((type) => type.id === id)?.label || id;
   const icon = (id) => TYPES.find((type) => type.id === id)?.icon;
   const svg = (id) => TYPES.find((type) => type.id === id)?.svg || ICONS.help;
   const stored = () => {
     try {
       const current = localStorage.getItem(KEY);
-      const legacy = current === null ? JSON.parse(localStorage.getItem(LEGACY_KEY)) : null;
-      const raw = current === null && Array.isArray(legacy)
+      const previous = current === null ? localStorage.getItem(PREVIOUS_KEY) : null;
+      const legacy = current === null && previous === null ? JSON.parse(localStorage.getItem(LEGACY_KEY)) : null;
+      const raw = current === null && previous === null && Array.isArray(legacy)
         ? [...legacy, "supervision", ...(legacy.includes("conversation") ? ["captain"] : [])]
-        : JSON.parse(current);
-      if (Array.isArray(raw)) return new Set(raw.filter(known));
+        : JSON.parse(current ?? previous);
+      if (Array.isArray(raw)) {
+        // Saved omissions may be deliberate: never replace a saved set with defaults.
+        // Old explicit all-input choices include this subset; v3 choices are independent.
+        const selected = new Set(raw.filter(known));
+        if (current === null && selected.has("input")) selected.add("primary-input");
+        return selected;
+      }
     } catch {
       // Use readable defaults when storage is unavailable.
     }
     return new Set(DEFAULT_IDS);
   };
-  return { KEY, LEGACY_KEY, TYPES, DEFAULT_IDS, ICONS, known, typeId, label, icon, svg, stored };
+  const hasStored = () => [KEY, PREVIOUS_KEY, LEGACY_KEY].some((key) => localStorage.getItem(key) !== null);
+  return { KEY, PREVIOUS_KEY, LEGACY_KEY, TYPES, DEFAULT_IDS, ICONS, known, typeId, label, icon, svg, stored, hasStored };
 })();

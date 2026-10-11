@@ -60,7 +60,7 @@ export function parseBacklogTask(prose, closed, today = currentLocalDate()) {
   const blockers = [...new Set(fields.filter((entry) => entry.name === "blocked-by").flatMap((entry) => entry.value.split(",")))];
   // Expired captain annotations still own an open call; a closed backlog row
   // keeps its historical fields without creating current captain pressure.
-  return { title: title.trim(), repositoryPath: field("repo"), workGroup: group ? { kind: group.name, name: group.value } : null, doneDate,
+  return { title: title.trim(), kind: field("kind"), repositoryPath: field("repo"), workGroup: group ? { kind: group.name, name: group.value } : null, doneDate,
     holdKind, holdReason, holdUntil, blockers, holdOpen: !closed,
     holdDeferred: !closed && Boolean(holdUntil && holdUntil > today),
     holdActive: !closed && Boolean(holdKind || holdReason) && (!holdUntil || holdUntil > today || holdKind === "captain") };

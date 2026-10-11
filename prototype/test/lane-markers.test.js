@@ -47,10 +47,12 @@ test("canonical fmqd-lanes examples survive transcript ingestion and safe render
   const script = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const fontPrefs = await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8");
   const messageKinds = await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8");
-  const renderCode = script.slice(0, script.indexOf("function orderedProjectLanes()"));
+  const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
+  const renderCode = script.slice(0, script.indexOf("function orderedProjectLanes()")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "");
   const context = vm.createContext({ window: {}, localStorage: { getItem: () => null, setItem() {} } });
   vm.runInContext(fontPrefs, context);
   vm.runInContext(messageKinds, context);
+  vm.runInContext(extraction, context);
   vm.runInContext(renderCode, context);
   for (const block of [generalBlock, databaseBlock, hostile]) {
     context.block = block;

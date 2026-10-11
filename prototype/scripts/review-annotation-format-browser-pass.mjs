@@ -134,7 +134,7 @@ try {
     await closeReadingControls(browser);
     await until("document.querySelector('.review-meta[data-review-chip=note-0]')?.open");
     assert.ok(await evaluate("document.querySelector('.review-prompt-line').innerText.includes('Link the CI run here.')"));
-    // Send batch takes text still in the compose box together with notes already queued.
+    // Send takes text still in the compose box together with notes already queued.
     await evaluate(`(() => {
       const panel = document.querySelector('#review-panel');
       if (panel.hidden) document.querySelector('#review-panel-toggle').click();

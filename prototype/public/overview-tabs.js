@@ -1,15 +1,16 @@
 // Phone Overview tabs (BEARINGS.md). Desktop keeps both columns and hides this control.
 window.overviewTabs = (() => {
   const KEY = "fm-quarterdeck-overview-tab.v1";
-  const ORDER = ["calls", "landed"];
-  const LABELS = { calls: "Captain's Call", landed: "Just landed" };
+  const ORDER = ["calls", "landed", "underway", "charted"];
+  const LABELS = { calls: "Captain's Call", landed: "Just landed", underway: "Underway", charted: "Charted Next" };
 
-  function createController({ root, tabs, panels, counts = {}, storage = null, media = null, doc = document } = {}) {
+  function createController({ root, tabs, panels, secondary = null, counts = {}, storage = null, media = null, doc = document } = {}) {
     if (!tabs || !panels?.calls || !panels?.landed) return { paint() {}, select() {}, destroy() {} };
+    const order = ORDER.filter(name => panels[name]);
     let selected = "calls";
     try {
       const saved = storage?.getItem(KEY);
-      if (saved === "calls" || saved === "landed") selected = saved;
+      if (order.includes(saved)) selected = saved;
     } catch { /* a blocked storage read keeps Captain's Call */ }
     const phone = () => Boolean(media?.matches);
     const buttonFor = (name) => tabs.querySelector(`[data-overview-tab="${name}"]`);
@@ -26,7 +27,8 @@ window.overviewTabs = (() => {
         if (narrow) root.setAttribute("data-overview-tab", selected);
         else root.removeAttribute("data-overview-tab");
       }
-      for (const name of ORDER) {
+      if (secondary) secondary.hidden = narrow && selected === "calls";
+      for (const name of order) {
         const button = buttonFor(name);
         const panel = panels[name];
         const on = !narrow || name === selected;
@@ -58,7 +60,7 @@ window.overviewTabs = (() => {
       }
     }
     function select(name, focus = false) {
-      if (!ORDER.includes(name) || name === selected) {
+      if (!order.includes(name) || name === selected) {
         if (focus) focusSelected();
         return;
       }
@@ -76,7 +78,7 @@ window.overviewTabs = (() => {
       const button = event.target?.closest?.("[data-overview-tab]");
       if (!button || !tabs.contains(button)) return;
       event.preventDefault();
-      const list = ORDER.map(buttonFor).filter(Boolean);
+      const list = order.map(buttonFor).filter(Boolean);
       const index = list.indexOf(button);
       const next = event.key === "Home" ? 0 : event.key === "End" ? list.length - 1
         : (index + (event.key === "ArrowRight" ? 1 : -1) + list.length) % list.length;

@@ -8,7 +8,9 @@ import path from 'node:path';
 import { createServer } from '../server.js';
 import { claudeProjectDirectory } from '../claude-transcript.js';
 import { captureKpiGeometry } from './kpi-geometry.mjs';
-import { waitForBrowserPort, cleanupBrowserProfile } from './browser-harness.mjs';
+import { captureStaticReplyLinks } from './card-reply-links-static-proof.mjs';
+import { capturePendingUpdates } from './call-pending-update-acceptance.mjs';
+import { acquireFixturePage, waitForBrowserPort, cleanupBrowserProfile } from './browser-harness.mjs';
 const root = path.resolve(import.meta.dirname, '../..');
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(), '', 'serve a clean committed candidate');
@@ -36,9 +38,15 @@ raw.landed = [
   { id: 'ship-window', what: 'Ship the example-app release…', artifact: 'https://example.invalid/acme/example-app/pull/42', owner: '(main)' },
   { id: 'local-notes', what: 'Notes from the other ledger…', artifact: 'local main', owner: '(main)' },
 ];
+raw.in_flight.push({ id: 'sample-mate/check-layout', name: 'Check the sample layout', kind: 'scout', state: 'working', doing: 'Validating sample geometry', repo: 'sample-ui' });
+raw.gates = [
+  { id: 'sample-queue', title: 'Prepare the sample follow-up', reason: 'Deferred until 2026-12-01', blocked_by: 'sample-mate/check-layout', filed: '2026-10-01', owner: '(main)' },
+  { id: '(main-inventory)', title: 'Repair sample inventory', reason: 'main inventory', blocked_by: '-', owner: '(main)', filed: null },
+];
 await writeFile(fixturePath, JSON.stringify(raw));
 let extraBacklog = "";
-const landedBacklog = `- [x] ship-window - Ship the example-app release window (repo: example-app) (done 2026-10-01)
+const landedBacklog = `- [ ] sample-queue - Prepare the sample follow-up (repo: sample-ui)
+- [x] ship-window - Ship the example-app release window (repo: example-app) (done 2026-10-01)
 - [x] local-notes - Land the sample notes on local main (repo: sample-notes) (merged 2026-10-02)
 `;
 const alphaBacklog = () => `# Synthetic backlog ${raw.generated}\n- [ ] alpha-call - ${alphaFull} (repo: example-app)\n${landedBacklog}${extraBacklog}`;
@@ -47,6 +55,22 @@ await writeFile(path.join(home, 'data/projects.md'), '- synthetic-repository - O
 const script = path.join(home, 'bin/fm-bearings-snapshot.sh');
 await writeFile(script, '#!/bin/sh\ncat "$FM_HOME/snapshot.json"\n');
 await chmod(script, 0o755);
+const workTitle = `Build example-app ${'Complete source context. '.repeat(12)}final full title`;
+const workToken = 'UnbrokenExampleText'.repeat(30);
+const canonicalWork = {
+  schema: 'fm-fleet-snapshot.v1',
+  tasks: [{ id: 'check-layout', kind: 'ship', backlog: { title: workTitle, repo: 'example-app' },
+    current_state: { state: 'done', source: 'run-step', detail: 'run passed: PR open', freshness: 'fresh' } },
+    { id: 'idle-mate', kind: 'secondmate' }],
+  secondmate_current: { registry: { available: true }, records: ['home-alpha', 'home-beta'].map((id, index) => ({
+    id, registered: true, provenance: { selected: 'structured-home' }, freshness: { status: 'fresh' },
+    active_children: [{ id: 'check-layout', name: `Check the sample layout ${workToken} final child title`, kind: 'scout', state: 'working',
+      source: index ? 'pane' : 'run-step', doing: index ? 'harness busy' : 'validating (running) · Validating sample geometry' }],
+  })).concat([{ id: 'home-unavailable', registered: true, provenance: { selected: 'unknown' } }]) },
+};
+await writeFile(path.join(home, 'canonical-work.json'), JSON.stringify(canonicalWork));
+await writeFile(path.join(home, 'bin/fm-fleet-snapshot.sh'), '#!/bin/sh\ncat "$FM_HOME/canonical-work.json"\n');
+await chmod(path.join(home, 'bin/fm-fleet-snapshot.sh'), 0o755);
 await mkdir(path.join(home, '.lavish'), { recursive: true });
 const boardPayload = {
   schema: 'fm-bearings-board.v1', home: 'synthetic-home', generated: new Date().toISOString(), prs_live: false,
@@ -115,7 +139,7 @@ for (let i = 0; i < threadIds.length; i++) {
   const answered = repliedIds.has(requestId);
   if (answered || acked.has(requestId)) data.handled.push(note);
   else data.pending.push(note);
-  if (answered) data.replies.push({ id: note.id, at: '2026-01-02T11:' + minute + ':00.000Z', body: 'This call chooses the synthetic release window.' });
+  if (answered) data.replies.push({ id: note.id, at: '2026-01-02T11:' + minute + ':00.000Z', body: 'This call chooses the synthetic release window. Read https://example.invalid/acme/example-app/guide. Then https://example.invalid/acme/example-app/details?mode=phone&section=notes (keep this note).' });
 }
 console.log(JSON.stringify(data));
 `);
@@ -130,7 +154,14 @@ let spawnError, diagnostics = '';
 chrome.on('error', error => { spawnError = error; });
 chrome.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-2000); });
 const exec = promisify(execFile);
-const browser = async (...args) => (await exec('chrome-devtools-axi', args, { env, timeout: 45000, maxBuffer: 1024 * 1024 })).stdout;
+const browser = async (...args) => {
+  const options = { env, timeout: 45000, maxBuffer: 1024 * 1024 };
+  if (args[0] !== 'run') return (await exec('chrome-devtools-axi', args, options)).stdout;
+  return new Promise((resolve, reject) => {
+    const child = execFile('chrome-devtools-axi', ['run'], options, (error, stdout) => error ? reject(error) : resolve(stdout));
+    child.stdin.end(args[1]);
+  });
+};
 const results = [];
 async function evaluate(js) {
   const output = await browser('eval', js);
@@ -168,7 +199,10 @@ const deadline = setTimeout(() => { console.error('Captain Call browser deadline
 try {
   const port = await waitForBrowserPort(chrome, profile, { spawnError: () => spawnError, diagnostics: () => diagnostics });
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
-  await browser('newpage', `http://127.0.0.1:${server.address().port}/#overview`);
+  if (process.argv.includes('--pending-update-only')) {
+    await capturePendingUpdates({ browser, evaluate, until, base: `http://127.0.0.1:${server.address().port}`, head, proof, raw, change, server });
+  } else {
+  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
   // Deterministic transport races in the real page realm, isolated from the UI's feed.
   await evaluate(`async () => {
@@ -233,8 +267,26 @@ try {
   assert.equal(await readFile(path.join(home, 'answer-note.txt'), 'utf8').catch(() => null), null, 'Dismiss never sends an inbox note');
   await appendFile(transcriptPath, chatRecord('synthetic-ask-two', 'ACTION NEEDED: Rotate the sample token. Reply "rotated".'));
   await until(`!!document.querySelector('[data-call-type="chat"]')`);
+  // Chat answers legitimately resolve their source before POST 202 reaches the
+  // client. Delay only that response's consumption to exercise the earliest race.
+  await evaluate(`() => {
+    window.chatAnswerFetch=window.fetch;
+    window.chatAnswerKey=document.querySelector('[data-call-type="chat"]').dataset.callKey;
+    window.fetch=async (...args) => {
+      const response=await window.chatAnswerFetch(...args);
+      if(args[0]==='/api/bearings/answer'){
+        const json=response.json.bind(response);
+        response.json=async () => { const body=await json(); window.chatAnswerResponse={status:response.status,state:body.state}; await new Promise(resolve=>{window.consumeChatAnswer=resolve;}); window.chatAnswerConsumed=true; return body; };
+      }
+      return response;
+    };
+    return 'observe accepted chat before response consumption';
+  }`);
   await evaluate(`() => { const c=document.querySelector('[data-call-type="chat"]'); if(!c.innerText.includes('Rotate the sample token'))throw Error('appended transcript ask missed'); const radio=c.querySelector('input[value="reply-1"]'); radio.checked=true; radio.dispatchEvent(new Event('change',{bubbles:true})); c.querySelector('.call-answer-queue').click(); if(c.querySelector('[data-call-answer-confirm]').hidden||c.querySelector('[data-call-answer-preview]').textContent!=='rotated')throw Error('suggested reply review'); c.querySelector('[data-call-answer-send]').click(); return 'chat reply sent'; }`);
-  await until(`document.querySelector('[data-call-type="chat"] [data-call-answer]')?.dataset.callAnswerPhase==='sent'`);
+  await until(`window.chatAnswerResponse?.status===202 && window.chatAnswerResponse.state==='accepted' && document.querySelector('[data-call-type="chat"]')?.dataset.held==='true'`);
+  await evaluate(`() => { const c=document.querySelector('[data-call-type="chat"]'); if(!c.hidden||c.contains(document.activeElement)||c.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='sending'||document.querySelector('[data-call-stub]'))throw Error('Active-filter source removal preceded response consumption'); if(!c.querySelector('[data-call-held-text]').textContent.includes('resolved'))throw Error('resolution not observed'); window.fetch=window.chatAnswerFetch; window.consumeChatAnswer(); return 'accepted response consumed after protected source resolution'; }`);
+  await until(`window.chatAnswerConsumed && !document.querySelector('[data-call-type="chat"]')`);
+  await evaluate(`() => { if(document.querySelector('[data-call-stub]')||sessionStorage.getItem('fm-quarterdeck-call-draft.v1:'+window.chatAnswerKey))throw Error('accepted chat left an unsent draft or stub'); return 'PASS Active-filter accepted chat resolves with cleared draft and no stub'; }`);
   const chatNote = await readFile(path.join(home, 'answer-note.txt'), 'utf8');
   const chatEnvelope = JSON.parse(/```json fm-bearings-answer\n([\s\S]*?)\n```/.exec(chatNote)[1]);
   assert.deepEqual([chatEnvelope.type, chatEnvelope.selection, chatEnvelope.note], ['chat', '', 'rotated']);
@@ -245,12 +297,12 @@ try {
   const holdReason = "Ship the ledger change only after the captain picks a window.";
   extraBacklog = `- [ ] hold-reason - Choose a window (repo: quarterdeck) (hold: fm-hold-v1:${Buffer.from(holdReason).toString("base64")}) (hold-kind: captain)\n`;
   raw.decisions_open.push({ id: "hold-reason", key: "hold-reason", summary: "Choose", owner: "(main)", verb: "captain-hold" });
-  await appendFile(transcriptPath, chatRecord("synthetic-ask-reason", 'DECISION NEEDED: [task:hold-reason] reply "option A" or "option B".'));
+  await appendFile(transcriptPath, chatRecord("synthetic-ask-reason", 'DECISION NEEDED: [task:hold-reason] reply "Staged rollout" or "Release now".'));
   await change();
-  await until(`(() => { const card=document.querySelector('[data-call-key="decision:hold-reason"]'); if(!card) return false; const title=card.querySelector('h3'); const about=[...card.querySelectorAll('.call-context dd')].map(node=>node.textContent).join(' '); const ask=card.querySelector('.call-context-ask'); return !!(title && title.textContent==='${holdReason}' && about.includes('quarterdeck') && !about.includes('Repository not recorded') && ask && !ask.textContent.includes('[task:') && card.querySelectorAll('[data-call-reply]').length===2 && card.innerHTML.indexOf('data-call-reply')>card.innerHTML.indexOf(title.textContent)); })()`);
+  await until(`(() => { const card=document.querySelector('[data-call-key="decision:hold-reason"]'); if(!card) return false; const title=card.querySelector('h3'); const about=[...card.querySelectorAll('.call-context dd')].map(node=>node.textContent).join(' '); const ask=card.querySelector('.call-context-ask'); return !!(title && title.textContent==='${holdReason}' && about.includes('quarterdeck') && !about.includes('Repository not recorded') && ask && !ask.textContent.includes('[task:') && card.querySelectorAll('input[type=radio]').length===2 && [...card.querySelectorAll('input[type=radio]')].map(input=>input.dataset.callOptionLabel).join('|')==='Staged rollout|Release now' && card.innerHTML.indexOf('data-call-reply')>card.innerHTML.indexOf(title.textContent)); })()`);
   for (const width of [1280, 390]) {
     await browser("resize", String(width), "844");
-    await evaluate(`() => { document.querySelector('[data-call-key="decision:hold-reason"]').scrollIntoView({block:'center'}); return 'reason card ${width}'; }`);
+    await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:hold-reason"]'); card.scrollIntoView({block:'center'}); if(document.documentElement.scrollWidth>innerWidth||card.scrollWidth>card.clientWidth+1)throw Error('named choices overflow'); for(const option of card.querySelectorAll('.call-opt')){const box=option.getBoundingClientRect(); if(box.height<44||box.left<0||box.right>innerWidth+1)throw Error('named choice touch target or containment');} if(card.querySelector('input:checked'))throw Error('named choice was preselected'); return 'named choices ${width}'; }`);
     await browser("screenshot", path.join(proof, `captain-decision-reason-${width}.png`));
   }
   raw.decisions_open = raw.decisions_open.filter((row) => row.id !== "hold-reason");
@@ -269,6 +321,30 @@ try {
       await browser('screenshot', path.join(proof, `captain-lifecycle-active-${width}.png`));
     }
     await evaluate(`() => { const columns=document.querySelector('#overview-columns'); const primary=document.querySelector('#overview-primary'); const secondary=document.querySelector('#overview-secondary'); const summary=document.querySelector('#summary'); const landed=document.querySelector('#just-landed'); if(!columns||!primary||!secondary||!landed||!secondary.contains(landed)||!primary.contains(document.querySelector('#captain-call')))throw Error('overview columns'); if(landed.querySelector('[data-call-procrastinate], [data-call-key]'))throw Error('landed is not a call card'); const cards=[...landed.querySelectorAll('[data-landed-key]')]; if(cards.length!==2)throw Error('landed count '+cards.length); const ship=landed.querySelector('[data-landed-key="landed:ship-window"]'); const local=landed.querySelector('[data-landed-key="landed:local-notes"]'); const link=ship.querySelector('a.call-link'); if(!link||link.textContent!=='https://example.invalid/acme/example-app/pull/42'||link.href!==link.textContent)throw Error('pull request link'); if(!local.textContent.includes('local main')||local.querySelector('a'))throw Error('local main'); if(!ship.textContent.includes('example-app')||!local.textContent.includes('sample-notes')||!ship.textContent.includes('2026-10-01')||!ship.textContent.includes('time unknown'))throw Error('repo or when'); const shipTitle=ship.querySelector('h3'); if(!shipTitle||shipTitle.textContent!=='Ship the example-app release window'||ship.querySelector('[data-call-text-toggle]'))throw Error('ship title was not continued'); const localToggle=local.querySelector('[data-call-text-toggle]'); const localPanel=local.querySelector('[data-call-full]'); if(!localToggle||localToggle.textContent!=='Notes from the other ledger…'||!localPanel)throw Error('local title is not a toggle'); if(localPanel.hidden)localToggle.click(); if(localPanel.hidden||!localPanel.textContent.includes('Backlog title')||!localPanel.textContent.includes('Land the sample notes on local main'))throw Error('local full text'); localToggle.click(); if(!localPanel.hidden)throw Error('local full text stayed open'); const tabs=document.querySelector('#overview-section-tabs'); const callsTab=document.querySelector('#overview-tab-calls'); const landedTab=document.querySelector('#overview-tab-landed'); if(!tabs||!callsTab||!landedTab)throw Error('overview tabs missing'); if(callsTab.textContent!=="Captain's Call (3)"||landedTab.textContent!=='Just landed (2)')throw Error('tab counts '+callsTab.textContent+' / '+landedTab.textContent); const freshCount=document.querySelector('#landed-new-count'); if(!freshCount||freshCount.hidden||freshCount.textContent!=='2'||!freshCount.classList.contains('call-badge')||freshCount.parentElement?.id!=='just-landed-heading')throw Error('new landed count '+(freshCount&&freshCount.textContent)+' hidden='+(freshCount&&freshCount.hidden)); const p=primary.getBoundingClientRect(); const s=secondary.getBoundingClientRect(); if(innerWidth<=720){ if(getComputedStyle(tabs).display==='none'||tabs.getAttribute('role')!=='tablist'||callsTab.getAttribute('role')!=='tab'||callsTab.getAttribute('aria-selected')!=='true')throw Error('phone tab semantics'); if(primary.hidden||!secondary.hidden)throw Error('phone did not show Captain Call'); if(callsTab.getBoundingClientRect().height<44||landedTab.getBoundingClientRect().height<44)throw Error('tab target'); landedTab.click(); if(landedTab.getAttribute('aria-selected')!=='true'||!primary.hidden||secondary.hidden)throw Error('phone did not switch to Just landed'); const shown=secondary.getBoundingClientRect(); if(shown.width<40||shown.left<0||shown.right>innerWidth+1)throw Error('landed tab overflow'); callsTab.click(); if(primary.hidden||!secondary.hidden||callsTab.getAttribute('aria-selected')!=='true')throw Error('phone did not return to Captain Call'); } else { if(getComputedStyle(tabs).display!=='none')throw Error('desktop tabs visible'); if(primary.hidden||secondary.hidden||primary.getAttribute('role')==='tabpanel')throw Error('desktop hid a column'); if(s.width<40||Math.abs(p.width-s.width)>2||s.left<p.right-1)throw Error('secondary is not beside the first column'); if(getComputedStyle(columns).columnGap!=='22px')throw Error('column gap'); if(summary.getBoundingClientRect().bottom>p.top+1)throw Error('summary is not above the columns'); } return {overviewColumns:true,width:innerWidth}; }`);
+    await evaluate(`() => {
+      const underway=document.querySelector('#underway'), charted=document.querySelector('#charted-next');
+      if(!document.querySelector('#overview-secondary').contains(underway)||!document.querySelector('#overview-secondary').contains(charted))throw Error('work section placement');
+      if(underway.querySelectorAll('[data-work-key]').length!==3||charted.querySelectorAll('[data-work-key]').length!==2)throw Error('work row counts '+underway.querySelectorAll('[data-work-key]').length+'/'+charted.querySelectorAll('[data-work-key]').length);
+      if(!underway.textContent.includes('Check the sample layout')||!underway.textContent.includes('Validating sample geometry')||!charted.textContent.includes('Deferred until 2026-12-01')||!charted.textContent.includes('Blocked by: sample-mate/check-layout')||!charted.textContent.includes('Needs repair')||charted.querySelector('[data-work-count]').textContent!=='1')throw Error('work source fields');
+      if(underway.querySelector('form,textarea,[data-call-answer]')||charted.querySelector('form,textarea,[data-call-answer]'))throw Error('work invented actions');
+      const workRows=[...underway.querySelectorAll('[data-work-key]')];
+      if(new Set(workRows.map(n=>n.dataset.workKey)).size!==3||!underway.textContent.includes('Home: Main home')||!underway.textContent.includes('Home: home-alpha')||!underway.textContent.includes('Home: home-beta'))throw Error('home identities or labels');
+      if(!underway.textContent.includes('PR open / awaiting merge')||!underway.textContent.includes('Validating / review')||!underway.textContent.includes('Working · stage unavailable')||!underway.textContent.includes('home-unavailable: work records unavailable'))throw Error('stage or unavailable coverage');
+      if(!underway.textContent.includes(${JSON.stringify(workTitle)})||!underway.textContent.includes(${JSON.stringify(workToken)}))throw Error('full work text missing');
+      for(const name of ['underway','charted']){
+        const section=name==='underway'?underway:charted;
+        if(innerWidth<=720){document.querySelector('[data-overview-tab="'+name+'"]').click();if(document.querySelector('#overview-primary').hidden!==true||document.querySelector('#overview-secondary').hidden||section.hidden||!document.querySelector('#just-landed').hidden)throw Error('work phone tab');}
+        const box=section.getBoundingClientRect();if(box.width<40||box.left<0||box.right>innerWidth+1||section.scrollWidth>section.clientWidth+1)throw Error('work geometry');
+        for(const node of section.querySelectorAll('[data-work-key] h3,[data-work-key] .call-meta,[data-work-key] .state-chip')){const style=getComputedStyle(node);if(node.scrollWidth>node.clientWidth+1||node.scrollHeight>node.clientHeight+1||style.textOverflow==='ellipsis'||(style.webkitLineClamp!=='none'&&style.webkitLineClamp!=='0'))throw Error('work text clipped');}
+      }
+      if(innerWidth<=720)document.querySelector('#overview-tab-calls').click();
+      return {workSections:true,width:innerWidth};
+    }`);
+    if(width===1280||width===390){
+      await evaluate(`() => { if(innerWidth<=720)document.querySelector('#overview-tab-underway').click();document.querySelector('#underway').scrollIntoView({block:'center'});return 'Underway visible'; }`);
+      await browser('screenshot', path.join(proof, `overview-work-${width}.png`));
+      if(width===390){await evaluate(`() => {document.querySelector('#overview-tab-charted').click();document.querySelector('#charted-next').scrollIntoView({block:'center'});return 'Charted Next visible';}`);await browser('screenshot', path.join(proof, 'overview-charted-390.png'));await evaluate(`() => {document.querySelector('#overview-tab-calls').click();return 'calls restored';}`);}
+    }
     if (width === 1280 || width === 390) {
       await evaluate(`() => { if(innerWidth<=720)document.querySelector('#overview-tab-landed').click(); document.querySelector('#just-landed').scrollIntoView({block:'start'}); return 'just landed ${width}'; }`);
       await browser('screenshot', path.join(proof, `just-landed-${width}.png`));
@@ -388,6 +464,7 @@ try {
   await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); const history=card.querySelector('[data-call-thread-history]'); const expand=card.querySelector('[data-call-thread-expand]'); if(!history.hidden||!expand||expand.hidden)throw Error('thread should start collapsed'); expand.click(); if(history.hidden)throw Error('expand did not open the thread'); if(!card.querySelector('[data-call-thread-log]').textContent.includes('Firstmate replied')){ const more=card.querySelector('[data-call-thread-history-toggle]'); if(more&&!more.hidden)more.click(); } const entries=[...card.querySelectorAll('.call-thread-entry')]; if(!entries.some(e=>e.textContent.includes('You asked'))||!entries.some(e=>e.textContent.includes('Firstmate replied')&&e.textContent.includes('synthetic release window')))throw Error('thread reply/order missing'); if(!entries.every(e=>e.querySelector('time[datetime]')&&e.querySelector('button')))throw Error('thread time/copy missing'); const box=card.querySelector('[data-call-answer-text]'); if(!(expand.compareDocumentPosition(box)&Node.DOCUMENT_POSITION_FOLLOWING)||!(history.compareDocumentPosition(box)&Node.DOCUMENT_POSITION_FOLLOWING))throw Error('thread is not above the text box'); if(history.getBoundingClientRect().bottom>box.getBoundingClientRect().top+1)throw Error('open history paints below the text box'); return 'thread history reply ordered'; }`);
   await browser('screenshot', path.join(proof, 'captain-thread-expanded-390.png'));
   await browser('screenshot', path.join(proof, 'captain-thread-replied-390.png'));
+  await captureStaticReplyLinks({ browser, evaluate, base: `http://127.0.0.1:${server.address().port}`, head, proof });
   await browser('resize', '1280', '844');
   // Shared queue: alpha text is a thread note, and the merge option is an answer.
   const queueWakeCount = (await readFile(path.join(home, 'wake-attempts'), 'utf8')).trim().split('\n').length;
@@ -536,7 +613,7 @@ try {
   assert.deepEqual([queuedThread.key, queuedThread.question], ['decision:alpha-call', 'Queue rollout Tuesday']);
   assert.doesNotMatch(queuedThreadNote, /fm-bearings-answer/, 'a queued thread note is not an answer');
   await evaluate(`() => { if(window.reviewPosts)throw Error('answer batch used review delivery'); document.querySelector('#review-close').click(); const merge=document.querySelector('[data-call-key="merge:beta-merge"]'); merge.querySelector('[data-call-answer-again]').click(); const alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); if(alpha.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='compose')throw Error('thread send left alpha queued'); if(merge.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='compose')throw Error('Answer again did not return merge'); document.activeElement?.blur(); document.body.click(); return 'queue uses both paths'; }`);
-  // Active header sends the same queued card answers as Send batch, including at 360 and 390.
+  // Active header sends the same queued card answers as Send, including at 360 and 390.
   const headerAnswersBefore = (await readFile(path.join(home, 'answer-attempts'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length;
   const headerThreadsBefore = (await readFile(path.join(home, 'thread-attempts'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length;
   await evaluate(`() => {
@@ -821,6 +898,18 @@ try {
   await browser('emulate','--color-scheme','dark');
   await phoneShot('decision:alpha-call','dark-preference');
   await browser('emulate','--color-scheme','light');
+  // The refused answer remains an unsent draft. Abandon only that synthetic
+  // text before the separate empty/unengaged immediate-update scenario.
+  await evaluate(`() => {
+    const card=document.querySelector('[data-call-key="decision:alpha-call"]');
+    const field=card.querySelector('[data-call-answer-text]');
+    if(card.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='refused'||field.value!=='A revised synthetic answer')throw Error('refused draft precondition');
+    field.value='';
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+    const saved=JSON.parse(sessionStorage.getItem('fm-quarterdeck-call-draft.v1:decision:alpha-call')||'{}');
+    if(Object.entries(saved).some(([name,value])=>name!=='selection'&&typeof value==='string'&&value.length))throw Error('unengaged update still has saved unsent text');
+    return 'abandoned refused synthetic text before empty/unengaged update';
+  }`);
   await disengage();
   await evaluate(`() => { window.proof={}; proof.alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); proof.beta=document.querySelector('[data-call-key="merge:beta-merge"]'); proof.alphaField=proof.alpha.querySelector('[data-call-answer-text]'); proof.betaField=proof.beta.querySelector('[data-call-answer-text]'); proof.rebuilds=0; new MutationObserver(ms=>proof.rebuilds+=ms.filter(m=>m.target===proof.alpha&&m.type==='childList'&&m.removedNodes.length>1).length).observe(proof.alpha,{childList:true}); return {revision:window.FM_BOOT_REVISION, noTree:!document.querySelector('#projects')}; }`);
   raw.decisions_open[0].summary = 'Changed rollout question'; await change();
@@ -832,7 +921,7 @@ try {
   await until("!!proof.alpha.querySelector('[data-call-held]') && !!document.querySelector('[data-call-key=\"decision:extra-call\"]') && proof.beta.innerText.includes('Unengaged beta updates immediately')");
   for (const width of [1280,390]) {
     await browser('resize', String(width), '844');
-    await evaluate(`() => { const s=document.querySelector('#captain-call'), notice=proof.alpha.querySelector('[data-call-held]'); proof.alpha.scrollIntoView({block:'center'}); if(proof.alphaField!==proof.alpha.querySelector('[data-call-answer-text]')||proof.rebuilds!==0||proof.alphaField.value!=='Unsent synthetic reminder'||s.inert||s.hasAttribute('data-held')||s.hasAttribute('aria-busy')||!document.querySelector('#call-status').hidden||document.querySelector('#call-status [data-call-update-now]')||getComputedStyle(proof.alphaField).pointerEvents==='none'||document.querySelector('#call-badge').textContent!=='2'||!notice.innerText.includes('Call updated')||notice.querySelector('button').getBoundingClientRect().height<44||proof.beta.querySelector('[data-call-held]')||document.documentElement.scrollWidth>innerWidth||proof.alpha.scrollWidth>proof.alpha.clientWidth+1)throw Error('per-card hold/notice/draft/geometry failure '+JSON.stringify({width:innerWidth,sameField:proof.alphaField===proof.alpha.querySelector('[data-call-answer-text]'),rebuilds:proof.rebuilds,draft:proof.alphaField.value,sectionHeld:s.getAttribute('data-held'),sectionBusy:s.getAttribute('aria-busy'),statusHidden:document.querySelector('#call-status').hidden,badge:document.querySelector('#call-badge').textContent,notice:notice.innerText,buttonHeight:notice.querySelector('button').getBoundingClientRect().height,pageWidth:document.documentElement.scrollWidth,cardWidth:proof.alpha.clientWidth,cardScrollWidth:proof.alpha.scrollWidth})); proof.alphaField.select(); if(proof.alphaField.value.slice(proof.alphaField.selectionStart,proof.alphaField.selectionEnd)!=='Unsent synthetic reminder')throw Error('not copyable'); proof.alphaField.setSelectionRange(0,0); document.getSelection().removeAllRanges(); return {heldMessage:notice.innerText,width:innerWidth}; }`);
+    await evaluate(`() => { const s=document.querySelector('#captain-call'), notice=proof.alpha.querySelector('[data-call-held]'); proof.alpha.scrollIntoView({block:'center'}); if(proof.alphaField!==proof.alpha.querySelector('[data-call-answer-text]')||proof.rebuilds!==0||proof.alphaField.value!=='Unsent synthetic reminder'||s.inert||s.hasAttribute('data-held')||s.hasAttribute('aria-busy')||!document.querySelector('#call-status').hidden||document.querySelector('#call-status [data-call-update-now]')||getComputedStyle(proof.alphaField).pointerEvents==='none'||document.querySelector('#call-badge').textContent!=='2'||!notice.innerText.includes('Update incoming — call updated')||notice.querySelector('button').getBoundingClientRect().height<44||proof.beta.querySelector('[data-call-held]')||document.documentElement.scrollWidth>innerWidth||proof.alpha.scrollWidth>proof.alpha.clientWidth+1)throw Error('per-card hold/notice/draft/geometry failure '+JSON.stringify({width:innerWidth,sameField:proof.alphaField===proof.alpha.querySelector('[data-call-answer-text]'),rebuilds:proof.rebuilds,draft:proof.alphaField.value,sectionHeld:s.getAttribute('data-held'),sectionBusy:s.getAttribute('aria-busy'),statusHidden:document.querySelector('#call-status').hidden,badge:document.querySelector('#call-badge').textContent,notice:notice.innerText,buttonHeight:notice.querySelector('button').getBoundingClientRect().height,pageWidth:document.documentElement.scrollWidth,cardWidth:proof.alpha.clientWidth,cardScrollWidth:proof.alpha.scrollWidth})); proof.alphaField.select(); if(proof.alphaField.value.slice(proof.alphaField.selectionStart,proof.alphaField.selectionEnd)!=='Unsent synthetic reminder')throw Error('not copyable'); proof.alphaField.setSelectionRange(0,0); document.getSelection().removeAllRanges(); return {heldMessage:notice.innerText,width:innerWidth}; }`);
     await browser('screenshot', path.join(proof, `captain-call-held-${width}.png`));
   }
   await evaluate(`() => { proof.alpha.querySelector('[data-call-update-now]').click(); return 'local Update now'; }`);
@@ -840,7 +929,7 @@ try {
   await evaluate(`() => { if(proof.rebuilds!==1||proof.alpha.querySelector('[data-call-answer-text]').value!=='Unsent synthetic reminder')throw Error('Update now must rebuild once and restore draft'); proof.alpha.querySelector('[data-call-answer-text]').focus(); return 'PASS per-card notice, copyable draft, local Update now'; }`);
   raw.decisions_open = raw.decisions_open.filter(c=>c.id!=='alpha-call'); raw.contributions.captain = raw.contributions.captain.filter(c=>c.task!=='alpha-call'); await change();
   await until("!!proof.alpha.querySelector('[data-call-held]')");
-  await evaluate(`() => { if(!proof.alpha.isConnected||!proof.alpha.querySelector('[data-call-held]').innerText.includes('Call resolved')||proof.alpha.classList.contains('call-card-leaving')||!document.querySelector('#call-status').hidden)throw Error('resolved card must wait with local notice'); return 'held removal'; }`);
+  await evaluate(`() => { if(!proof.alpha.isConnected||!proof.alpha.querySelector('[data-call-held]').innerText.includes('Update incoming — call resolved')||proof.alpha.classList.contains('call-card-leaving')||!document.querySelector('#call-status').hidden)throw Error('resolved card must wait with local notice'); return 'held removal'; }`);
   await browser('screenshot', path.join(proof, 'captain-call-resolved-held-390.png'));
   await evaluate("() => { proof.alpha.querySelector('[data-call-answer-text]').blur(); document.getSelection().removeAllRanges(); return 'released'; }");
   await until("!!document.querySelector('[data-call-stub]')");
@@ -887,6 +976,7 @@ try {
   const report = { head, results, scheduler: server.bearings.stats(), visibility: 'synthetic visibility events; native phone/background acceptance remains pending' };
   await writeFile(path.join(proof,'captain-call-live.json'), JSON.stringify(report,null,2));
   console.log(`PASS Captain Call exact revision ${head}; proof ${proof}`);
+  }
 } catch (error) {
   const snapshot = await browser('snapshot').catch(e => String(e));
   const consoleLog = await browser('console').catch(e => String(e));

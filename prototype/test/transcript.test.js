@@ -392,7 +392,7 @@ test("Claude Code primary transcript maps dialogue, tools and harness for this h
   await writeFile(path.join(directory, `${primary}.jsonl`), jsonl([
     { type: "last-prompt", leafUuid: "x", sessionId: primary },
     { type: "permission-mode", permissionMode: "auto", sessionId: primary },
-    claudeRecord("user", "Alpha captain asks for status", { ...at(1), origin: { kind: "human" } }),
+    claudeRecord("user", "Alpha captain asks for status", { ...at(1), origin: { kind: "human" }, sessionKind: "bg", sessionId: "different-record-session", session_id: "different-legacy-session" }),
     claudeRecord("assistant", [{ type: "thinking", thinking: "", signature: "redacted" }], at(2)),
     claudeRecord("assistant", [{ type: "thinking", thinking: "Alpha native thought" }], at(3)),
     claudeRecord("assistant", [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } }], at(4)),
@@ -427,6 +427,10 @@ test("Claude Code primary transcript maps dialogue, tools and harness for this h
   for (const text of ["Alpha captain asks for status", "Alpha queued captain prompt", "/quiet Alpha", "Alpha captain with reminder"]) {
     assert.deepEqual([byText(text).author, byText(text).role, byText(text).kind], ["Claude session input", "input", "input"], text);
   }
+  for (const text of ["Alpha captain asks for status", "Alpha queued captain prompt", "Alpha captain with reminder"]) {
+    assert.equal(byText(text).primaryHumanInput, true, "selected human-marked input has display provenance, never Captain authority");
+  }
+  assert.equal(byText("/quiet Alpha").primaryHumanInput, undefined, "unmarked input remains opt-in");
   assert.equal(messages.some((m) => m.role === "captain" || m.author === "Captain"), false);
   assert.equal(byText("Alpha native thought").kind, "thinking");
   assert.equal(messages.filter((m) => m.kind === "thinking").length, 1, "redacted thinking is never shown or invented");
@@ -462,6 +466,7 @@ test("Claude Code primary is inferred from the newest non-wake session and never
   const data = await loadFirstmateHome(home, { claudeConfigDir: config });
   const texts = data.lanes[0].messages.map((m) => m.text);
   assert.deepEqual(texts, ["Alpha inferred primary"]);
+  assert.equal(data.lanes.some((lane) => lane.messages.some((message) => message.primaryHumanInput)), false, "inferred source selection is not explicit primary display provenance");
   assert.match(data.transcript.note, /inferred as the newest non-wake session/);
 
   await writeFile(path.join(home, "state/.lock-session"), "../escape\n");

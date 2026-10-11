@@ -38,17 +38,17 @@ try {
     const accepted=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,receipt:d.sent[0]?.receiptId};})()`);
     console.log(`${width}px initial result: ${JSON.stringify({...accepted, ...(await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {retryId:d.retryBatches[0]?.id,status:document.querySelector('#review-state').textContent,thread:document.querySelector('#review-thread').textContent.slice(-160)}})()`))})}`);
     assert.equal(accepted.sent,1);assert.equal(accepted.retry,0);assert.match(accepted.receipt,/^local:/);
-    // Captain's sequence on Work split: second Send Batch, then Send & End.
+    // Captain's sequence on Work split: second Send, then explicit history clearing.
     await evaluate(`(() => {const e=document.querySelector('#review-message');e.value='Second ordinary Send ${width}';e.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#review-send').click();})()`);
     for(let i=0;i<100;i++){if(await evaluate(`JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent.length===2`))break;await sleep(100);}
     const ordinary=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,text:d.sent.at(-1)?.entries[0]?.prompt};})()`);
     assert.deepEqual(ordinary,{sent:2,retry:0,text:`Second ordinary Send ${width}`});
-    await evaluate(`(() => {const e=document.querySelector('#review-message');e.value='Third Send & End ${width}';e.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#review-end').click();})()`);
-    for(let i=0;i<100;i++){if(await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return !d.sent.length&&!d.retryBatches.length&&!d.queue.length;})()`))break;await sleep(100);}
-    const ended=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,queue:d.queue.length,overflow:document.documentElement.scrollWidth>innerWidth};})()`);
-    assert.deepEqual(ended,{sent:0,retry:0,queue:0,overflow:false});
+    await evaluate(`(() => { if(innerWidth<721) document.querySelector('#review-history-tab').click(); document.querySelector('#review-clear-messages').click(); })()`);
+    const cleared=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,queue:d.queue.length,overflow:document.documentElement.scrollWidth>innerWidth};})()`);
+    assert.deepEqual(cleared,{sent:0,retry:0,queue:0,overflow:false});
+    await evaluate(`document.querySelector('#review-conversation-tab').click()`);
     // A genuine unconfirmed transport still retains the same ID and remains retryable.
-    await evaluate(`(() => {const original=window.fetch;let fail=true;window.fetch=(url,options)=>{if(fail&&options?.method==='POST'&&url==='/api/review'){fail=false;return Promise.resolve(new Response(JSON.stringify({error:'synthetic transport failure'}),{status:502,headers:{'content-type':'application/json'}}));}return original(url,options);};const q=s=>document.querySelector(s);q('#review-panel-toggle').click();const e=q('#review-message');e.value='Retry scenario ${width}';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true}));})()`);
+    await evaluate(`(() => {const original=window.fetch;let fail=true;window.fetch=(url,options)=>{if(fail&&options?.method==='POST'&&url==='/api/review'){fail=false;return Promise.resolve(new Response(JSON.stringify({error:'synthetic transport failure'}),{status:502,headers:{'content-type':'application/json'}}));}return original(url,options);};const q=s=>document.querySelector(s);if(q('#review-panel').hidden)q('#review-panel-toggle').click();const e=q('#review-message');e.value='Retry scenario ${width}';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true}));})()`);
     for(let i=0;i<100;i++){if(await evaluate(`JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).retryBatches.length===1`))break;await sleep(100);}
     const failed=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,id:d.retryBatches[0]?.id,enabled:!document.querySelector('#review-send').disabled};})()`);
     assert.equal(failed.sent,0);assert.ok(failed.id);assert.equal(failed.enabled,true);
@@ -56,6 +56,6 @@ try {
     for(let i=0;i<100;i++){if(await evaluate(`JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1')).sent.length===1`))break;await sleep(100);}
     const retried=await evaluate(`(() => {const d=JSON.parse(sessionStorage.getItem('fm-agentos-review-draft-v1'));return {sent:d.sent.length,retry:d.retryBatches.length,id:d.sent.at(-1)?.id};})()`);
     assert.equal(retried.id,failed.id);assert.equal(retried.retry,0);
-    console.log(`${width}px exact-head ${version}: Work split Ctrl Send, ordinary Send, durable Send & End, and same-ID failed-transport retry`);
+    console.log(`${width}px exact-head ${version}: Work split Ctrl Send, ordinary Send, explicit delivered-history clear, and same-ID failed-transport retry`);
   }
 } finally {ws?.close();chrome.kill();app.close();await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});}

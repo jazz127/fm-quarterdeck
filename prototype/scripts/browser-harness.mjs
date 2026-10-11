@@ -43,6 +43,40 @@ export async function waitForBrowserPort(chrome, profile, {
   throw Error(`Chromium startup timed out after ${timeoutMs}ms${diagnostics() ? `: ${diagnostics()}` : ""}`);
 }
 
+// Hosted runners can create the newpage target yet report "No page is
+// currently selected". Listing and selecting that actual own target is
+// acquisition setup, not a retried attempt: any other newpage error, a missing
+// or ambiguous new target, a failed selection or a wrong document fails with
+// its listing as evidence before the caller interacts with the page.
+export async function acquireFixturePage(browser, url, revision) {
+  const rows = (listing) => listing.split("\n").map((line) => line.trim().split(","))
+    .filter((row) => row.length === 3 && /^\d+$/.test(row[0]));
+  const existing = new Set(rows(await browser("pages")).map(([id]) => id));
+  let unselected = "";
+  try {
+    await browser("newpage", url);
+  } catch (error) {
+    if (!/^error: No page is currently selected$/m.test(error.stdout ?? "")) throw error;
+    unselected = `\nnewpage: ${error.stdout.trim()}`;
+  }
+  const listed = await browser("pages");
+  const own = rows(listed).filter(([id, page]) => !existing.has(id) && page === url);
+  if (own.length !== 1) throw Error(`Expected one new own fixture target for ${url}, found ${own.length}:\n${listed.trim()}${unselected}`);
+  const id = own[0][0];
+  await browser("selectpage", id);
+  const selected = await browser("pages");
+  if (!rows(selected).some((row) => row.join(",") === `${id},${url},true`)) {
+    throw Error(`Own fixture target ${id} for ${url} was not selected:\n${selected.trim()}${unselected}`);
+  }
+  const fresh = await browser("eval", `async () => {
+    for (let i = 0; i < 100 && (document.readyState === 'loading' || window.FM_BOOT_REVISION === undefined); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    const state = { href: location.href, revision: window.FM_BOOT_REVISION ?? null, navigation: performance.getEntriesByType('navigation')[0]?.type ?? null };
+    return state.href === ${JSON.stringify(url)} && state.revision === ${JSON.stringify(revision)} && state.navigation === 'navigate' ? 'own fresh fixture document' : JSON.stringify(state);
+  }`);
+  if (!fresh.includes("own fresh fixture document")) throw Error(`Own fixture target ${id} is not a fresh ${url} document at ${revision}:\n${fresh.trim()}`);
+  return id;
+}
+
 // Opt-in CPU throttling for reproducing slow CI initialization/paint races.
 export function browserCpuRate(value = process.env.FM_BROWSER_CPU_RATE) {
   const rate = Number(value ?? 1);

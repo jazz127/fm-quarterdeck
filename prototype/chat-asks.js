@@ -1,3 +1,5 @@
+import { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
+export { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 import { classifyAnsweredCalls } from "./answered-calls.js";
 import { inboxReceipts } from "./inbox.js";
 import { randomUUID } from "node:crypto";
@@ -15,97 +17,11 @@ import { UNVERIFIED_INPUT } from "./authorship.js";
 // no Firstmate cooperation beyond the marker convention, and no write outside
 // Quarterdeck's own state file. The transcript is read incrementally behind a byte cursor.
 export const CHAT_ASKS_SCHEMA = "fm-quarterdeck-chat-asks.v1";
-const KINDS = { ACTION: "action", APPROVAL: "approval", DECISION: "decision" };
-const MAX_ASK_CHARS = 4000;
-const MAX_REPLIES = 6;
 const MAX_OPEN = 100;
 const MAX_TOMBSTONES = 5000;
 const MATCHING_VERSION = 4;
 
-export function taskMarkers(text) {
-  return [...new Set([...String(text).matchAll(/\[task:([A-Za-z0-9][A-Za-z0-9._-]{0,159})\]/g)].map(match => match[1]))];
-}
 const MiB = 1024 * 1024;
-
-// ---------------------------------------------------------------------------------------
-// Pure extraction
-
-// A marker is recognised only at the start of a line, after optional blockquote, list
-// bullet, heading and emphasis markup, so prose that merely mentions a marker (inside
-// backticks or mid-sentence) never becomes a card. Markers are upper case by convention.
-const LEAD = /^\s*(?:>\s*)*(?:(?:[-*+]|\d{1,3}[.)])\s+)?(?:#{1,6}\s+)?(?:\p{Extended_Pictographic}️?\s*)?(?:[*_]{1,3}\s*)?/u;
-const MARKER = /^(ACTION|APPROVAL|DECISION) NEEDED(?![A-Za-z0-9_])/;
-const AFTER_MARKER = /^\s*[*_]{0,3}\s*(?:[:—–]|-(?!-))?\s*[*_]{0,3}\s*/;
-const FENCE = /^\s*(?:```|~~~)/;
-const LANE_LINE = /^\s*\[(?:fm-lane|end)\s[^\]]*\]\s*$/;
-
-function markerLine(line) {
-  const lead = LEAD.exec(line)[0];
-  const match = MARKER.exec(line.slice(lead.length));
-  if (!match) return null;
-  const rest = line.slice(lead.length + match[0].length);
-  return { kind: KINDS[match[1]], marker: `${match[1]} NEEDED`, rest: rest.replace(AFTER_MARKER, "").trim() };
-}
-
-// Quoted alternatives after the word "reply": Reply **"yes"**, reply `ship` or `hold`,
-// shortest reply: "go". Unquoted replies are ambiguous and are never guessed.
-const REPLY = /\breply(?:\s+(?:with|exactly))?\s*:?\s*/gi;
-const QUOTED = /^[*_]{0,3}\s*(?:"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’)\s*[*_]{0,3}/;
-const SEPARATOR = /^\s*(?:,|\/|\||\bor\b)\s*/i;
-export function extractReplies(text) {
-  const replies = [];
-  for (const match of String(text).matchAll(REPLY)) {
-    let rest = text.slice(match.index + match[0].length);
-    for (;;) {
-      const quoted = QUOTED.exec(rest);
-      if (!quoted) break;
-      const reply = quoted.slice(1).find(value => value !== undefined).trim();
-      if (reply && !replies.includes(reply) && replies.length < MAX_REPLIES) replies.push(reply);
-      rest = rest.slice(quoted[0].length);
-      const separator = SEPARATOR.exec(rest);
-      if (!separator) break;
-      rest = rest.slice(separator[0].length);
-    }
-  }
-  // Explicit option labels at the start of an ask/list line also supply replies:
-  // - "stay here": continue; or "plan A" keeps the current setup.
-  for (const line of String(text).split(/\r?\n/)) {
-    const quoted = QUOTED.exec(line.slice(LEAD.exec(line)[0].length));
-    if (!quoted) continue;
-    const reply = quoted.slice(1).find(value => value !== undefined).trim();
-    if (reply && !replies.includes(reply) && replies.length < MAX_REPLIES) replies.push(reply);
-  }
-  return replies;
-}
-
-const readable = (text) => text.replace(/\*\*|__/g, "").replace(/[ \t]+/g, " ").trim();
-
-// Each marker line opens an ask; following non-blank lines continue it (a DECISION NEEDED
-// line often introduces a list). A blank line, another marker, a code fence or a lane
-// marker ends it. Code fences are skipped entirely: examples are not asks.
-export function extractAsks(text) {
-  const asks = [];
-  let fence = false, current = null;
-  const close = () => {
-    if (!current) return;
-    const raw = current.body.filter(Boolean).join("\n");
-    const clipped = raw.length > MAX_ASK_CHARS ? `${raw.slice(0, MAX_ASK_CHARS - 1)}…` : raw;
-    asks.push({ kind: current.kind, marker: current.marker, line: current.line, taskMarkers: taskMarkers(current.line), text: readable(clipped), replies: extractReplies(raw) });
-    current = null;
-  };
-  for (const line of String(text ?? "").split(/\r?\n/)) {
-    if (FENCE.test(line)) { close(); fence = !fence; continue; }
-    if (fence) continue;
-    const marker = markerLine(line);
-    if (marker) { close(); current = { ...marker, line: line.trim(), body: [marker.rest] }; continue; }
-    if (!current) continue;
-    if (LANE_LINE.test(line)) { close(); continue; }
-    if (!line.trim()) { if (current.body.some(Boolean)) close(); continue; }
-    current.body.push(line.trim());
-  }
-  close();
-  return asks;
-}
 
 // Case-folded words with punctuation/whitespace as separators.
 export const normalizeReply = (text) => String(text).normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, " ").trim();
@@ -495,15 +411,7 @@ const describedHint = (text, reply) => publicText(replyDescription(text, reply),
 export function chatCard(ask) {
   let options = ask.replies.map((reply, index) => ({ value: `reply-${index + 1}`, label: publicText(reply, 200), hint: describedHint(ask.text, reply) || "Firstmate's suggested reply" })).filter((option) => option.label);
   if (!options.length && (ask.kind === "decision" || ask.kind === "approval")) {
-    const fromText = publishOptions(enumeratedLetterOptions(ask.text), publicText);
-    if (fromText.length) {
-      options = fromText;
-    } else {
-      options = [
-        { value: "yes", label: "Yes", hint: "Approve or confirm" },
-        { value: "no", label: "No", hint: "Reject or discard" }
-      ];
-    }
+    options = publishOptions(enumeratedLetterOptions(ask.text), publicText);
   }
   const card = { key: ask.key, type: "chat", kind: ask.kind, marker: ask.marker, summary: publicText(ask.text, Infinity) || `${ask.marker} (no text)`, replies: options.map((option) => option.label),
     source: ask.source.split("/")[0], transcript: { offset: ask.offset, part: ask.part }, clock: { label: "Asked", at: ask.at },
@@ -558,26 +466,8 @@ export function composeCallModel(base, asks, chatView) {
       rest = withLinkedChoices(withoutRev, entries);
       modified = true;
     }
-    
-    // Fallback: derive Yes/No options if the card is a decision and still has no structured options
-    if (rest.type === "decision" && rest.answer && (!rest.answer.options || !rest.answer.options.length) && !/credential|authentication|access|login/i.test(`${rest.verb || ""} ${rest.summary || ""}`)) {
-      if (!modified) {
-        const { rev, ...withoutRev } = rest;
-        rest = withoutRev;
-      }
-      rest = {
-        ...rest,
-        answer: {
-          ...rest.answer,
-          options: [
-            { value: "yes", label: "Yes", hint: "Approve or confirm" },
-            { value: "no", label: "No", hint: "Reject or discard" }
-          ]
-        }
-      };
-      modified = true;
-    }
-    
+    // Missing choices stay text-only. The view already offers explicit linked replies;
+    // a decision/approval marker alone cannot establish a boolean question.
     if (modified) {
       return { ...rest, rev: shortHash(rest) };
     }
@@ -586,7 +476,7 @@ export function composeCallModel(base, asks, chatView) {
   const chatCards = unlinked.slice(0, MAX_OPEN).map(chatCard);
   const chat = { state: chatView.state, error: chatView.error, open: unlinked.length, linked: asks.length - unlinked.length, omitted: Math.max(0, unlinked.length - MAX_OPEN), behind: Boolean(chatView.behind),
     sources: chatView.sources.map(({ source, backfillOmittedBytes }) => ({ source: source.split("/")[0], backfillOmittedBytes })), resolved: chatView.resolved || [] };
-  const content = { cards: [...cards, ...chatCards], coverage: base.coverage, omitted: base.omitted, chat };
+  const content = { ...base, cards: [...cards, ...chatCards], chat };
   return { ...base, cards: content.cards, chat, chatCheckedAt: chatView.checkedAt, rev: shortHash([contentRevision(content), chat]) };
 }
 
@@ -594,6 +484,7 @@ export function composeCallModel(base, asks, chatView) {
 // composed model. Chat scanning runs on each read and every scanEveryMs while streamed.
 export function createCallSource({ hub, chat, home = null, receipts = inboxReceipts, timers = globalThis, scanEveryMs = 3000 } = {}) {
   let answerReceipts = null, receiptsSignature = "", receiptsCheckedAt = 0;
+  let receiptEvidence = { available: false, checkedAt: null };
   let composed = null, composedFrom = null;
   const listeners = new Set();
   let timer = null;
@@ -622,7 +513,10 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   const refresh = () => (refreshing ||= (async () => {
     if (home && Date.now() - receiptsCheckedAt >= 15000) {
       receiptsCheckedAt = Date.now();
-      try { answerReceipts = await receipts(home); receiptsSignature = JSON.stringify(answerReceipts); } catch { /* Keep the last durable evidence on a failed read. */ }
+      try {
+        answerReceipts = await receipts(home); receiptsSignature = JSON.stringify(answerReceipts);
+        receiptEvidence = { available: true, checkedAt: new Date().toISOString() };
+      } catch { receiptEvidence = { available: false, checkedAt: new Date().toISOString() }; /* Preserve UI evidence, fail closed for notification eligibility. */ }
     }
     await chat.scan();
     await applyHolds().catch(() => false);
@@ -639,6 +533,21 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
     current,
     freshness,
     refresh,
+    // Independent of the UI's 15-second receipt cache. This uses the same expanded
+    // per-item adapter and classifier, never a parser of combined batch prose.
+    async notificationEvidence() {
+      try {
+        const data = await receipts(home);
+        if (!Array.isArray(data?.pending) || !Array.isArray(data?.handled) || !Array.isArray(data?.replies) || data.omitted?.length) throw new Error("Incomplete receipts");
+        answerReceipts = data; receiptsSignature = JSON.stringify(data);
+        receiptEvidence = { available: true, checkedAt: new Date().toISOString() };
+        return { ...receiptEvidence, model: current(), receipts: data };
+      } catch {
+        receiptEvidence = { available: false, checkedAt: new Date().toISOString() };
+        return { ...receiptEvidence, model: current(), receipts: null };
+      }
+    },
+    receiptEvidence: () => ({ ...receiptEvidence }),
     chat,
     subscribe(listener) {
       listeners.add(listener);

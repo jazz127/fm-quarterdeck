@@ -164,7 +164,7 @@ window.callLifecycle = (() => {
     }
   }
 
-  // Send queued (N) sits beside the status control. N is the staged-item count Send batch
+  // Send queued (N) sits beside the status control. N is the staged-item count Send
   // would send. The button exists only on Active while that count is positive.
   function sendQueuedControl({ filter = "active", count = 0, sending = false } = {}) {
     const n = Math.max(0, Math.trunc(Number(count) || 0));

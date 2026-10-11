@@ -16,14 +16,14 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 `GET /api/bearings` returns:
 
 ```
-{ schema, rev, state, observedAt, checkedAt, generatedAt, stale, error, cards[], coverage, omitted[], landed[] }
+{ schema, rev, state, observedAt, checkedAt, generatedAt, stale, error, cards[], coverage, omitted[], landed[], underway[], charted[], workCoverage }
 ```
 
 - `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed) or `unavailable`.
 - `observedAt`: when these calls were last produced. `checkedAt`: the latest run attempt. `generatedAt`: the snapshot clock.
 - `cards[]`, in snapshot order:
   - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
-  - `merge:<task>` for each `contributions.captain` row without a live decision for the same task: `{key, type:"merge", task, kind, url, reason, owner, repo, checkedAt, answer, rev}`. `url` is `https:` only, otherwise `null`.
+  - `merge:<task>` for each `contributions.captain` row without a live decision or a structured contribution `hold`. A current selected-home captain hold also excludes a `(main)` Merge by exact task id, including deferred holds omitted from `decisions_open`; other owners never use that home's ledger. Current hold metadata uses the existing `parseBacklogTask` contract, never prose. The producer already excludes unheld draft, closed and merged PR observations from its captain rows; no remote polling or invented PR-state fields are added. Eligible released rows return on the next good snapshot. Merge cards contain: `{key, type:"merge", task, kind, url, reason, owner, repo, checkedAt, answer, rev}`. `url` is `https:` only, otherwise `null`.
   - `landed:<task>` for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
   - `answer` is `null` (answer in chat) or `{question, options[{value,label,hint}], recommend, close, freeform:true}`; see Answers.
   - `rev` is a 16-hex sha256 of the card's canonical JSON; an unchanged card keeps its `rev`.
@@ -32,7 +32,7 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 - Model `rev` hashes `cards`, `coverage`, `omitted`, and `landed` when any landed card is present. It never hashes the snapshot clock, so an unchanged Captain's Call is never pushed again. An empty landed list leaves the hash unchanged.
 - Privacy: `repo` is a basename, report and checkout paths are never served, and absolute paths inside free text are reduced to `…/<last segment>`.
 
-Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `call` and `landed`. Later Underway and Charted Next sections add entries without changing the transport.
+Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `call`, `landed`, `underway` and `charted` on the same snapshot and transport.
 
 ## Card clocks and sorting
 
@@ -65,14 +65,15 @@ The captain is engaged with a Captain's Call card while any of these hold:
 - focus is inside that card (a window blur keeps focus there, so switching apps does not count as finishing);
 - a non-collapsed text selection intersects that card (a selection across cards holds each intersected card);
 - a pointer is pressed inside that card;
-- a card is selected: a click on a card body (not a control) sets `aria-current="true"` until Escape, a second click on it, or a click outside the section.
+- a card is selected: a click on a card body (not a control) sets `aria-current="true"` until Escape, a second click on it, or focus/a click in another card or outside the section.
 
-While engaged, only that card's incoming update or removal waits. All other cards update, appear or disappear immediately. The newest model waits as `pending` only for held changes; later updates replace it. Each held card with a pending change gets `data-held="true"`, `aria-busy="true"` and a small `role="status"` notice inside it: "Call updated — updates when you're done" or "Call resolved — updates when you're done", with its own **Update now**. The card stays at full strength: there is no outdated overlay and no dimmed styling. That button applies only that card's waiting change. There is no section- or page-wide card-change notice. Cards are never `inert`, disabled or `pointer-events:none`: text stays selectable and copyable and fields stay editable. Freshness (`observed`) may refresh the empty state and coverage line, which hold no input. The separate page-level "Quarterdeck updated" notice for a new served revision is unchanged.
+Cards with no focus, engagement signals or unsent text apply incoming changes automatically. A focused card or one with unsent text holds only its own update or removal; independent cards continue updating. A restored draft without focus also holds. The newest model waits as `pending` only for held changes; later updates replace it. Each held card gets `data-held="true"`, `aria-busy="true"`, a muted grey body, and a small `role="status"` notice: "Update incoming — call updated" or "Update incoming — call resolved", with **Show update**. The notice and editable controls remain readable and usable by pointer, touch and keyboard. Show update displays only that card's pending change; it never answers, sends or consents to a merge, and cannot bypass an in-flight send. There is no section- or page-wide card-change notice. Cards are never `inert`, disabled or `pointer-events:none`: text stays selectable and copyable and fields stay editable. Freshness (`observed`) may refresh the empty state and coverage line, which hold no input. The separate page-level "Quarterdeck updated" notice for a new served revision is unchanged.
 
+Focus/engagement departure or Show update releases the current incoming revision while preserving the draft exactly. A later card revision needs its own release if unsent text remains. Moving between fields within one card retains the hold. The separate sort-control **Update now** changes order without acknowledging card content.
 After a card's signals clear, its own 600 ms grace period (so moving between two fields of one card never flickers) precedes one rebuild, even if another card remains engaged:
 
 - an unchanged card `rev` leaves the node untouched; a changed card replaces only its inner content; a new card is inserted with a one-time `call-card-new` highlight; order changes move existing nodes; a gone card fades out (`call-card-leaving`, removed after 320 ms or at once under reduced motion);
-- a gone card with typed text becomes a `call-card-resolved` stub ("Resolved by Firstmate — your unsent text") with **Copy** and **Dismiss**, so no typed text is lost;
+- if a changed card removes a draft field, its text remains in a copyable "Updated call — your unsent text" recovery block; a gone card with typed text becomes a `call-card-resolved` stub ("Resolved by Firstmate — your unsent text") with **Copy** and **Dismiss**, so no typed text is lost;
 - the engaged visible card keeps its viewport position when neighbours are inserted or removed; engaged nodes are never detached to reorder them. Sort-control changes wait during engagement. Otherwise, once the list has scrolled, the first visible card stays at the same viewport position.
 
 Drafts: every `input` on a `[data-call-draft="<field>"]` inside a card is kept per card key in memory and in `sessionStorage` under `fm-quarterdeck-call-draft.v1:<card key>`; every render restores it. Storage failures are ignored.
@@ -149,6 +150,7 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
   A selected Merge now with a typed note is relayed with empty `selection` and `note:"merge - <typed note>"`, so keyed intake reads instruction text.
   The answer endpoint still treats a note-only body as instruction text.
   The card does not send that body: text with no option selected is a thread note.
+- Missing options never default to Yes/No. Explicit named replies from linked chat asks remain radios sent as the selected label in the captain's own words. Explicit boolean options remain Yes/No; unstructured asks keep the text box and full question without guessed alternatives.
 
 **Captain flow** (`public/bearings-answer-form.js`; state per card key in memory and `sessionStorage` under `fm-quarterdeck-call-answer.v1:<key>`):
 
@@ -170,13 +172,14 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
    Nothing has been sent.
    The confirm copy names an answer or a thread note to match the path.
    The queued item also joins the review panel's queue (see "Queue integration" below), so several can go together.
-3. **Send** (this card) or **Send batch** (the review queue) moves to *sending*, then:
+3. **Send** (this card) or **Send** (the review queue) moves to *sending*, then:
    - A thread note uses `POST /api/bearings/thread` with exactly `{requestId, key, text}`.
      `202` clears the draft and returns to *compose*.
      It does not use the answer phase *sent*.
      The receipt is the history entry reloaded immediately, and the card's lifecycle becomes Sent while that note is still pending or only acknowledged (see Lifecycle).
    - An answer uses `POST /api/bearings/answer` with `{requestId, key, cardRev, selection, note}`.
      `202` → *sent*: answer drafts are cleared (so a resolved card shows no "unsent text" stub) and a receipt line follows Firstmate's inbox receipts: waiting → received → replied (polled every 15 s while visible and not yet replied).
+     Incoming source changes for a sending card wait until its response body is consumed, including when the current filter hides that card. Accepted answers clear their drafts before pending removal applies; unconfirmed sends retain their unsent text. Other cards keep updating, and Update now cannot remove a sending form early.
      A reply leaves *sent* for *compose*, unlocks the controls, and the card returns to Active with that reply at the top.
    - unconfirmed (network error or `5xx`) → *failed*: **Retry send** is another explicit click and reuses the same request id, so Firstmate records one note.
      Reloading during *sending* also restores this uncertain retry state; it never resends automatically.
@@ -192,10 +195,10 @@ Only the buttons for the current phase are shown (Queue in *compose*; Send and E
 
 **Queue integration.** `app.js` registers `window.quarterdeckCallQueue` (`list`, `send`, `remove`) over the answer controller's `queued()`, `sendQueued()` and `unqueue(key)`.
 The review panel (`review-client.js`) lists queued items above its queued notes (desktop) or as a "Queued Captain's Call answers" batch (phone), counts them in its queued badge, and offers **Remove**, which returns the item to its card for editing (keeping its request id once a send was attempted).
-**Send batch** and Ctrl+Enter send queued items first, each with its own request id: an answer through `POST /api/bearings/answer` and a thread note through `POST /api/bearings/thread`, then the review notes through review delivery.
+**Send** and Ctrl+Enter send queued items first, each with its own request id: an answer through `POST /api/bearings/answer` and a thread note through `POST /api/bearings/thread`, then the review notes through review delivery.
 On the Active status view, **Send queued (N)** calls that same `sendCallAnswers` sender when N staged items exist.
 It stays hidden on every other status and when N is 0, and it is disabled while a send is in flight.
-A second activation, including a concurrent **Send batch**, does not deliver those items again.
+A second activation, including a concurrent **Send**, does not deliver those items again.
 A card that was Queued only because of that staged item becomes Sent after the item is accepted.
 Batching changes no intake, and review delivery being unavailable does not block the items.
 A queued item survives reload in its *confirm* state; only an explicit click sends it.
@@ -308,10 +311,28 @@ An unknown or closed key is 409 `gone`.
 A successful post returns the same `{schema, until}` map.
 Saving a busy or invalid file is 503.
 
+## Underway and Charted Next
+
+Both read-only sections follow Just landed in the second Overview column. On phones, the existing Overview tab control includes both sections, remembers the selected tab under its existing storage key, and shows one section at a time. Captain's Call and Just landed keep their existing actions and counts.
+
+- `underway[]` uses the stock canonical `fm-fleet-snapshot.sh --json` companion read, bounded/coalesced with the bearings refresh. Main-home workers follow bearings' existing task-role selection; idle persistent `kind=secondmate` agents are excluded. Registered homes contribute their structured `active_children` records through stock registry/ledger collection, never direct Quarterdeck home or endpoint discovery. Every card displays Main home or its registered home id, and home-scoped keys preserve same-named tasks across homes. The companion observation supplies its own membership, titles and current states together; it never joins generations from separate observations. If unavailable, compact bearings rows remain with unknown stages and an explicit unverified inventory disclosure.
+- When a fresh selected local structured home is unavailable solely with typed `child_current_unavailable`, Quarterdeck may supplement its unknown children from that registered home's canonical checkbox backlog and exactly the matching `state/<id>.meta` files. Only in-flight ship/scout work with matching identity, recorded endpoint and stable spawn generation qualifies. Reads reuse confined regular-file checks, cap backlog/metadata at 2 MiB/64 KiB and total bytes at 32 MiB, reject files newer than the summary, and recheck file identity after collection. The summary must be at most five minutes old. Cards say exactly `running (state not readable)` and explain that progress and liveness are unknown. Cached, remote, untrusted, contradictory, missing or unsupported records stay unavailable; queued, held, landed, program and persistent-secondmate rows are withheld. Independent readable stages and source omissions remain visible. This read neither repairs stock current-state readability nor invokes another stock snapshot or runtime endpoint.
+- Every Underway card shows **Worker started** and **Pipeline** independently of its current-state chip. Start time comes only from the producer's `spawn_gen`: `fm-spawn.sh` records `s<Unix seconds>.<BASHPID>.<RANDOM>` for each fresh spawn or relaunch. It denotes the displayed worker incarnation, not the original task's creation or first-ever start. The browser formats the stable ISO instant in the viewer's locale/time zone and retains an accessible `<time datetime>` and exact ISO title. Unsupported, missing, future or generation-invalid records show `Worker started: unknown`; no backlog date, file clock, status line or transcript time substitutes for spawn time.
+- Pipeline position uses the fresh attributed `current_state` result's fixed stock `run-step` vocabulary: validating, checks, validation decision, PR open, ready for review, awaiting merge or merged. Completed check-green evidence is labelled a milestone separately from current position. Stock snapshot output does not expose an executing review/test/docs/lint substep, dispatch/implementation position or the detailed steps ledger: those remain unknown. A parked validation gate can name its exact review/test/docs/lint substep while explicitly waiting for a decision. Pane activity, status prose, delivery/scout mode, recorded PR URLs and historical runs cannot establish pipeline position. Cached/stale, contradictory, unavailable or mismatched-generation workflow evidence remains unknown.
+- Fresh complete registered-local summaries may use the same bounded matching backlog/metadata read for optional start/pipeline details on their existing readable children. Missing enrichment never suppresses those authoritative work rows or their existing stage chips. Remote summaries and unsupported local records show unknown optional details. Original unreadable-state labels/reasons and source coverage remain independent; no recursive collection or runtime/control-plane reads are added.
+- Main-home titles and details retain the complete canonical text. Titles, detail, stage and home labels wrap, including unbroken strings. Registered summaries can still shorten text upstream; the existing shortened-source notice discloses that limitation. No omitted text is invented.
+- Plain stage labels come from stock `current_state` and child `source/state/doing`. Only the fixed run-step vocabulary emitted by `fm-crew-state.sh` establishes validation/review, validation-decision waits or PR-open/awaiting-merge stages. That owner already binds current runs to branch/code identity and reconciles lifecycle events. Blocked, paused, failed and completed retain their factual states; canonical parked status-log decisions show a captain-decision wait. Busy working records cannot distinguish building from another activity and explicitly say stage unavailable. Delivery mode, historical events, terminal quiet and raw historical validation records never establish a stage. Cached child records retain observed work but their current stage is unavailable. An actively worked captain hold may also appear in Captain's Call.
+- `charted[]` projects only snapshot `gates` rows, with `title`, `reason`, `blockedBy`, owner, repository basename and durable `filed` clock. Dated rows sort newest first with stable unknown-date ties; the producer's reserved return-catchup warning stays first. `(main-inventory)` and `(return-catchup)` are action-free repair warnings and do not count as queued work. Explicit `kind: "warning"` is retained if supplied. Quarterdeck does not infer hold placement from prose or reclassify the producer's decision buckets.
+- Rows have stable owner-scoped `key`, content `rev`, `type` and `task`. Their content and coverage participate in the model revision, including chat composition, so work-only changes reach the existing live stream. Snapshot clocks alone do not change content revisions.
+- The existing bounded selected-home backlog read supplements only an already projected `(main)` gate's missing repository, using `parseBacklogTask` from `firstmate-records.js`. Duplicate ids fail closed. No row, hold reason, status or dispatch eligibility is created from the ledger; other homes remain unread.
+- `workCoverage` records whether each source array is available and carries sanitized snapshot work/inventory omission disclosures. Underway-specific disclosures include unavailable registered sources, registry/child bounds, partial inventories and cached records. Missing sources never become a guessed active task or proof of zero work. Malformed canonical identities are withheld with explicit coverage gaps. Missing arrays remain unavailable; malformed present arrays fail the snapshot. Invalid or duplicate rows are withheld with `invalid-underway` / `invalid-charted` omission counts. Failed refreshes retain the last good rows and show stale evidence, including on freshness-only stream events. Empty messages refer to the current snapshot, never assert fleet-wide clearance.
+
+The installed stock readers own lifecycle, registered collection and gate classification. Refresh requests expanded bearings work/home inventory and reads the canonical companion with the same subprocess/output bounds; both disable the stock current-state forge fallback. This adds one canonical observation per coalesced refresh, with no new polling loop, transport, writer, producer schema or board execution. The snapshot does not expose the board's authored `dispatchable` boolean, so these sections have no dispatch or answer controls. Synthetic fixtures in the existing exhaustive test selection and Captain's Call desktop/phone pass cover full text, stage provenance, home counts/identity and unavailable data.
+
 ## Just landed
 
 Overview's second column shows the snapshot's `landed` rows as poster cards in the same visual language as Captain's Call.
-At the phone one-column breakpoint, the Overview body starts with two tabs, Captain's Call (N) and Just landed (N), and shows one section at a time.
+At the phone one-column breakpoint, the Overview body starts with four tabs, Captain's Call (N), Just landed (N), Underway (N) and Charted Next (N), and shows one section at a time.
 Captain's Call N counts every open card, including filtered cards.
 Just landed N counts landings whose current rev is not the acknowledged rev.
 The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
@@ -400,7 +421,7 @@ There is no model call: Quarterdeck relays the captain's note and joins existing
   - `chat-ask`: the chat ask behind a chat card, and asks linked into a filed card;
   - `chat`: Firstmate's own text in the primary transcript (the chat-ask sources, newest 4 MiB each, cached until the file changes) that names the card's task id as a whole token. Chat cards have no task id, so only their notes and ask appear (`transcript.state:"not-applicable"`).
 
-  Text is path-redacted and bounded at 16000 characters per entry. The browser shows each entry's full text, and offers Copy (with a visible fallback if clipboard access fails). Each entry shows relative and absolute time. Replies join by note id from the receipts' separate `replies` collection (legacy inline `reply` and string `text` remain supported). Claude and Pi primary transcripts use their own record parsers; thinking and tool results never join. Unknown times sort last in discovery order. Receipts unavailable is `502`; an unreadable transcript is reported as `transcript.state:"unavailable"` rather than hidden. Fleet Chats are unchanged: the thread is an extra, card-scoped view of the same records.
+  Text is path-redacted and bounded at 16000 characters per entry. The browser shows each entry's full text, and offers Copy (with a visible fallback if clipboard access fails). HTTPS links without userinfo in thread messages and reply banners are underlined, keyboard-focusable anchors opening a separate tab with `noopener noreferrer`. Their targets are at least 44 × 44 CSS pixels, and long addresses wrap within the card. Other schemes and unsafe addresses remain plain text; surrounding prose and punctuation are retained. Each entry shows relative and absolute time. Replies join by note id from the receipts' separate `replies` collection (legacy inline `reply` and string `text` remain supported). Claude and Pi primary transcripts use their own record parsers; thinking and tool results never join. Unknown times sort last in discovery order. Receipts unavailable is `502`; an unreadable transcript is reported as `transcript.state:"unavailable"` rather than hidden. Fleet Chats are unchanged: the thread is an extra, card-scoped view of the same records.
 - **Rejected alternatives:** answering in Quarterdeck with a model (Firstmate owns answers); a new Firstmate endpoint or thread store (the inbox already gives ids, replies and receipts); matching transcript prose loosely or by task-name words (whole task-id tokens only, so a thread never shows another task's chat); posting the question as a Fleet Chat message (it would lose the card key and the reply route).
 
 ## Chat asks
@@ -455,7 +476,7 @@ request IDs and card/task references. Firstmate handles each item; Quarterdeck e
 no decision. One combined note receives one inbox acknowledgement and reply; the reply
 should name each item/task and appears on every affected card.
 
-Pending submissions remain visible on cards and in the review queue. **Send now** in the
+Pending submissions remain visible on cards and in the review queue. **Send** in the
 message composer submits its drafts urgently and flushes already saved pending work.
 Batch queue sends submit card items concurrently so they share the window. A page close
 or reload cannot cancel saved server work; tab storage also keeps uncertain client sends

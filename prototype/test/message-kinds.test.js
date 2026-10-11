@@ -51,3 +51,21 @@ test("message kinds catalog defaults, migrates legacy prefs, and maps type ids",
   assert.equal(migrated.has("supervision"), true);
   assert.equal(migrated.has("thinking"), true);
 });
+
+test("selected primary human-marked input is default-visible without promoting authorship or overriding saved choices", () => {
+  const api = kinds();
+  const input = { role: "input", kind: "input", author: "Claude session input", primaryHumanInput: true };
+  assert.equal(api.typeId(input), "primary-input");
+  assert.equal(api.label("primary-input"), "primary session input (unverified)");
+  assert.equal(api.stored().has("primary-input"), true);
+  assert.equal(api.stored().has("input"), false);
+  assert.equal(api.typeId({ ...input, role: "firstmate", kind: "harness" }), "harness");
+  assert.equal(api.typeId({ ...input, primaryHumanInput: false }), "input");
+  for (const key of [api.KEY, api.PREVIOUS_KEY, api.LEGACY_KEY]) {
+    assert.equal(kinds({ [key]: JSON.stringify(["captain", "conversation"]) }).stored().has("primary-input"), false, "saved omission is conservatively respected");
+    assert.equal(kinds({ [key]: "[]" }).stored().has("primary-input"), false);
+  }
+  assert.equal(kinds({ [api.PREVIOUS_KEY]: JSON.stringify(["input"]) }).stored().has("primary-input"), true, "previous explicit input selection still includes primary input");
+  assert.equal(kinds({ [api.KEY]: JSON.stringify(["input"]) }).stored().has("primary-input"), false, "new primary opt-out is independent of other input");
+  assert.equal(kinds({ [api.PREVIOUS_KEY]: JSON.stringify(["input"]), [api.KEY]: "[]" }).stored().size, 0, "current explicit opt-out wins");
+});

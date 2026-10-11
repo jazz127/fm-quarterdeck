@@ -15,7 +15,7 @@ function quotaMaxAge(value) {
   if (!match) return { value: DEFAULT_MAX_AGE, ms: 300000 };
   const amount = Number(match[1]);
   const ms = amount * ({ s: 1000, m: 60000, h: 3600000 })[match[2]];
-  return Number.isSafeInteger(ms) && ms > 0 && ms <= 3600000 ? { value: `${amount}${match[2]}`, ms } : { value: DEFAULT_MAX_AGE, ms: 300000 };
+  return Number.isSafeInteger(ms) && ms > 0 && ms <= 300000 ? { value: `${amount}${match[2]}`, ms } : { value: DEFAULT_MAX_AGE, ms: 300000 };
 }
 
 // Interpret only known subscription annotation grammar. Never forward arbitrary
@@ -108,7 +108,7 @@ export function createQuotaReader({ run, execute = exec, now = Date.now, ttlMs =
         const capturedAt = date(raw.generatedAt);
         last = { providers, unsupportedProviders: raw.providers.length - providers.length, readAt: capturedAt || new Date(now()).toISOString(), capturedAt, maxAgeMs: age.ms, stale: false, error: null };
         nextReadAt = now() + interval;
-        current = { ...last, ageMs: 0 };
+        current = { ...last, ageMs: Math.max(0, now() - Date.parse(last.readAt)) };
         return current;
       } catch (error) {
         nextReadAt = now() + Math.min(interval, 5000);

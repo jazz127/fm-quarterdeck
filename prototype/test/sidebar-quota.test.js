@@ -83,3 +83,34 @@ test('failed refresh retains last good evidence stale while retrying on short ba
  clock+=4999;assert.equal((await reader()).stale,true);assert.equal(calls,2);
  clock++;assert.equal((await reader()).stale,false);assert.equal(calls,3);
 });
+
+test('quota age ticker supplies five-minute demand, skips hidden tabs and coalesces competing refreshes', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  let clock = 100000, reads = 0, repaints = 0, finish;
+  const document = { visibilityState: 'visible' };
+  const context = { document, Date: class extends Date { static now() { return clock; } },
+    freshness: { quota: { refreshing: false } },
+    renderQuota() { repaints++; }, renderFreshness() {},
+    fetchJson: () => { reads++; return new Promise(resolve => { finish = () => resolve({ providers: [], readAt: new Date(clock).toISOString() }); }); },
+  };
+  vm.createContext(context);
+  const start = app.indexOf('async function refreshEndpoint(key)');
+  vm.runInContext(`let quotaReading = {}; let quotaRefreshDueAt = 0;\n${app.slice(app.indexOf('function tickQuota()'), app.indexOf('let quotaHideInactive'))}\n${app.slice(start, app.indexOf('let healthPreferencesLoaded', start))}`, context);
+  const tick = () => vm.runInContext('tickQuota()', context);
+  tick(); tick();
+  assert.equal(reads, 1, 'endpoint in-flight guard coalesces timer demand');
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  clock += 299999; tick(); assert.equal(reads, 1);
+  clock++; tick(); assert.equal(reads, 2, 'default manual dashboard mode does not suppress quota demand');
+  vm.runInContext('void refreshEndpoint("quota")', context); tick();
+  assert.equal(reads, 2, 'manual and timer refresh share the endpoint guard');
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  const priorPaints = repaints;
+  document.visibilityState = 'hidden'; clock += 600000; tick();
+  assert.equal(reads, 2); assert.equal(repaints, priorPaints);
+  document.visibilityState = 'visible'; tick();
+  assert.equal(reads, 3, 'visibility catch-up requests overdue source data');
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(vm.runInContext('quotaReading.error', context), undefined);
+  tick(); assert.equal(reads, 3, 'catch-up does not double schedule');
+});

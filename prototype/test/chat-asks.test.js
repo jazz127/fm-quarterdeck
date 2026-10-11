@@ -3,6 +3,7 @@ import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "n
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { answerEnvelope, formatAnswerNote, validateAnswer } from "../bearings-answer.js";
 import { createBearingsHub, normalizeSnapshot } from "../bearings.js";
 import { chatAsksPath, chatCard, composeCallModel, createCallSource, createChatAskScanner, extractAsks, extractReplies, mentionsTask } from "../chat-asks.js";
@@ -224,6 +225,46 @@ test("the Pi main session pointer is a source; branch sessions are not", async (
 const snapshot = (decisions) => ({ schema: "fm-bearings.v1", generated: at(0), decisions_open: decisions, omitted: [], contributions: { captain: [], known: 1, checked: 1, proven_clear: false } });
 const base = (decisions, state = "ready") => ({ schema: "fm-quarterdeck-call.v1", rev: `r-${decisions.length}-${state}`, state, observedAt: at(0), checkedAt: at(0), generatedAt: at(0), stale: state !== "ready", error: null, ...normalizeSnapshot(snapshot(decisions)) });
 
+test("named either/or replies reach filed controls without invented Yes/No; unstructured asks stay text-only", async () => {
+  const window = {};
+  vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
+  const view = { state: "ready", sources: [], checkedAt: at(1) };
+  const ask = (text, kind = "decision") => ({
+    ...extractAsks(`${kind.toUpperCase()} NEEDED: ${text}`)[0],
+    key: "chat:samplechoice", linkedTasks: [], source: "synthetic/main", offset: 0, part: 0, at: at(1),
+  });
+  const labels = (card) => [...window.bearingsView.cardHtml(card).matchAll(/data-call-option-label="([^"]*)"/g)].map(match => match[1]);
+  const text = 'Choose the example-app window. Reply "Staged rollout" or "Release now".';
+  const linked = composeCallModel(base([{ id: "sample-choice", verb: "decide", summary: "Choose the example-app window", owner: "(main)" }]), [ask(`[task:sample-choice] ${text}`)], view);
+  assert.equal(linked.cards.length, 1);
+  assert.equal(linked.cards[0].answer.question, "sample-choice");
+  assert.equal(linked.cards[0].chatAsks[0].summary, `[task:sample-choice] ${text}`);
+  assert.deepEqual(labels(linked.cards[0]), ["Staged rollout", "Release now"]);
+  assert.deepEqual(labels(chatCard(ask(text))), ["Staged rollout", "Release now"]);
+
+  for (const kind of ["decision", "approval"]) {
+    for (const text of ["Choose the example-app plan, or suggest another approach.", "Use the small window or the large window?"]) {
+      const card = chatCard(ask(text, kind));
+      assert.deepEqual(card.answer.options, []);
+      assert.deepEqual(labels(card), []);
+      assert.equal(card.summary, text);
+      assert.match(window.bearingsView.cardHtml(card), /data-call-answer-text/);
+    }
+  }
+  const unstructured = composeCallModel(base([{ id: "sample-text", verb: "decide", summary: "Choose a sample approach", owner: "(main)" }]), [], view).cards[0];
+  assert.deepEqual(unstructured.answer.options, []);
+  assert.deepEqual(labels(unstructured), []);
+
+  const boolean = composeCallModel(base([{ id: "sample-boolean", verb: "approve", summary: "Approve the example-app window?", owner: "(main)", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }] }]), [], view).cards[0];
+  assert.deepEqual(labels(boolean), ["Yes", "No"]);
+  const selected = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000012", key: boolean.key, cardRev: boolean.rev, selection: "yes", note: "" }, { state: "ready", cards: [boolean] });
+  assert.equal(answerEnvelope(selected, "model").selection, "yes");
+  const chatBoolean = chatCard(ask('Approve the example-app window? Reply "Yes" or "No".', "approval"));
+  assert.deepEqual(labels(chatBoolean), ["Yes", "No"]);
+  const reply = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000013", key: chatBoolean.key, cardRev: chatBoolean.rev, selection: "reply-1", note: "" }, { chat: { state: "ready" }, cards: [chatBoolean] });
+  assert.deepEqual([answerEnvelope(reply, "model").selection, answerEnvelope(reply, "model").note], ["", "Yes"]);
+});
+
 test("an ask naming a filed hold is shown inside that card, not twice, and resolves when the hold closes", async (context) => {
   const env = await claudeHome(context);
   await writeFile(env.transcript, lines(
@@ -354,8 +395,8 @@ test("a filed decision with no options takes lettered lines from a linked decisi
   assert.equal(model.chat.open, 0);
   assert.deepEqual(card("hold-letters").answer.options.map((option) => [option.value, option.hint]), [["a", "Staged rollout"], ["b", "Wait a week"]]);
   assert.deepEqual(scanner.asks().find((ask) => ask.recordId === "letters").replies, []);
-  assert.deepEqual(card("hold-approval").answer.options, [{ value: "yes", label: "Yes", hint: "Approve or confirm" }, { value: "no", label: "No", hint: "Reject or discard" }]);
-  assert.deepEqual(card("hold-described").answer.options, [{ value: "yes", label: "Yes", hint: "Approve or confirm" }, { value: "no", label: "No", hint: "Reject or discard" }]);
+  assert.deepEqual(card("hold-approval").answer.options, []);
+  assert.deepEqual(card("hold-described").answer.options, []);
   assert.deepEqual(card("hold-described").chatAsks[0].replyHints, { "stay on Lyra": "continue the current setup", "pause work": "wait for the check" });
   assert.deepEqual(card("hold-structured").answer.options.map((option) => option.value), ["later", "now"]);
 });

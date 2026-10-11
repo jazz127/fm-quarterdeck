@@ -139,7 +139,7 @@ test("Lane Chat has no redundant Options button and preserves desktop identity",
   assert.match(js, /moveControl\(document\.querySelector\("\.conversation-head-actions"\), chatTools\)/);
   assert.match(js, /moveControl\(document\.querySelector\("\.feed-pagination"\), chatTools\)/);
   assert.match(css, /\.conversation-head:not\(:has\(#task-filter-chip:not\(\[hidden\]\)\)\) \{ display: none; \}/);
-  assert.match(js, /document\.querySelector\("#review-send"\)\.textContent = "Send batch"/);
+  assert.match(js, /document\.querySelector\("#review-send"\)\.textContent = "Send"/);
 });
 
 test("standalone UAT launch labels its own revision without claiming Main or a gateway", async (context) => {
@@ -232,7 +232,7 @@ test("message kinds are independent, persisted feed filters with crew off by def
   assert.match(kinds, /id: "thinking", label: "thinking"/);
   assert.match(kinds, /id: "crew", label: "crew status"/);
   assert.match(kinds, /return new Set\(DEFAULT_IDS\)/);
-  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "supervision"\]/);
+  assert.match(kinds, /DEFAULT_IDS = \["captain", "conversation", "primary-input", "supervision"\]/);
   assert.match(kinds, /message\.role === "captain" \? "captain"/);
   assert.match(html, /<script src="\/message-kinds\.js"><\/script>/);
   assert.match(html, /<script src="\/filter-view\.js"><\/script>/);

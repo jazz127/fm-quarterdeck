@@ -10,7 +10,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   const file = `${statePath}.inbox-${scope}.json`;
   let state = { schema: "fm-quarterdeck-outbox.v1", batches: [] }, serial = Promise.resolve(), timer, closed = false;
   const waiters = new Map();
-  const readState = async () => {
+  const readState = async (strict = false) => {
     try {
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024 * 1024) throw new Error("Invalid Quarterdeck outbox file");
@@ -19,7 +19,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
         typeof batch.id !== "string" || !Array.isArray(batch.items) || !batch.items.length || batch.items.length > 30 ||
         batch.items.some((item) => typeof item.id !== "string" || typeof item.text !== "string"))) throw new Error("Invalid Quarterdeck outbox");
       return saved;
-    } catch (error) { if (error.code !== "ENOENT") throw error; return { schema: "fm-quarterdeck-outbox.v1", batches: [] }; }
+    } catch (error) { if (strict || error.code !== "ENOENT") throw error; return { schema: "fm-quarterdeck-outbox.v1", batches: [] }; }
   };
   const load = async () => { state = await readState(); };
   // Serialize across gateway processes as well as HTTP requests. Never steal an
@@ -134,13 +134,13 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   }
   // Recovery is independent of the submitting page's lifetime. A restart resumes saved work.
   if (home) void ready.then(schedule).catch(() => {});
-  async function pending() {
+  async function pending({ strict = false } = {}) {
     await ready;
     // Atomic snapshots are readable even when a writer holds an abandoned lock.
-    const snapshot = await readState();
+    const snapshot = await readState(strict);
     return snapshot.batches.filter((batch) => !batch.receipt).flatMap((batch) => batch.items.map((item) => ({
       requestId: item.id, text: item.display || item.record?.display || item.text, key: item.record?.key || null,
     })));
   }
-  return { note, receipts, flush, pending, close() { closed = true; clearTimeout(timer); } };
+  return { note, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); } };
 }

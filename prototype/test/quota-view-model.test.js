@@ -274,3 +274,22 @@ test("stale compact quota eligibility stays bound to measured source limits", ()
   assert.equal(providers[0].scopes[1].percentRemaining, 42);
   assert.equal(providers[0].scopes[1].pace.status, "ahead");
 });
+
+test("quota age is red only beyond fifteen minutes, from successful provider data", () => {
+  const refreshedAt = "2030-01-01T00:00:00Z";
+  const captured = Date.parse(refreshedAt);
+  const provider = { provider: "codex", status: "fresh", reused: true, refreshedAt,
+    windows: [{ id: "session", percentRemaining: 42 }], scopes: [] };
+  const reading = { providers: [provider], readAt: new Date(captured + 900001).toISOString() };
+  for (const [age, overdue] of [[900000, false], [900001, true], [2040000, true]]) {
+    const result = project(reading, { now: captured + age });
+    assert.equal(result.detail[0].overdue, overdue);
+    assert.equal(result.sidebar[0].overdue, overdue);
+    assert.equal(result.detail[0].ageMs, age);
+    assert.match(result.detail[0].staleLabel, /stale/);
+  }
+  const recovered = project({ ...reading, providers: [{ ...provider, refreshedAt: new Date(captured + 2040000).toISOString() }] }, { now: captured + 2040000 });
+  assert.equal(recovered.detail[0].overdue, false);
+  assert.equal(recovered.detail[0].stale, false);
+  assert.equal(project({ providers: [{ ...provider, refreshedAt: null }] }, { now: captured }).detail[0].ageMs, null);
+});

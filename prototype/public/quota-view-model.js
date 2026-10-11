@@ -118,7 +118,8 @@ window.quotaViewModel = (() => {
     const timedReading = { ...reading, now };
     const providers = (reading.providers || []).map((provider) => {
       const ageMs = ageOf(provider, timedReading);
-      const stale = Boolean(reading.stale || provider.stale || provider.status === "stale" || (ageMs !== null && ageMs >= maxAgeMs));
+      const overdue = ageMs !== null && ageMs > 900000;
+      const stale = Boolean(overdue || reading.stale || provider.stale || provider.status === "stale" || (ageMs !== null && ageMs >= maxAgeMs));
       const reusedLabel = provider.reused && !stale ? `reused ${ageLabel(ageMs)}` : null;
       const staleLabel = stale ? `stale · ${ageLabel(ageMs)}` : null;
       const limitingIds = new Set((provider.scopes || []).flatMap((scope) => scope.limitingWindowIds || []));
@@ -132,7 +133,7 @@ window.quotaViewModel = (() => {
       const critical = stale ? { kind: "unknown" } : limiting.length
         ? { kind: "source-limiting", windows: limiting }
         : lowest ? { kind: "lowest-scope-binding-unknown", scope: lowest } : { kind: "unknown" };
-      const projected = { ...provider, stale, ageMs, reusedLabel, staleLabel, windows, scopes, critical };
+      const projected = { ...provider, stale, overdue, ageMs, reusedLabel, staleLabel, windows, scopes, critical };
       const families = windows.length ? groups(projected) : scopes.map((scope) => ({ scope: scope.scope, windows: [{ ...scope, label: scope.scope }] }));
       const metrics = families.map((family) => familyMetrics(projected, family, now));
       projected.sortRemaining = metrics.length && metrics.every((m) => m.sortRemaining !== null) ? Math.min(...metrics.map((m) => m.sortRemaining)) : null;
@@ -149,7 +150,7 @@ window.quotaViewModel = (() => {
       const families = provider.windows.length ? groups(provider) : provider.scopes.filter((_, scopeIndex) => valid(source.scopes[scopeIndex].percentRemaining)).map((scope) => ({ name: provider.provider, provider: provider.provider, scope: scope.scope, windows: [{ ...scope, label: scope.scope }] }));
       return families.map((family) => {
         const { sortRunway: runway, sortRemaining: capacity } = familyMetrics(provider, family, now);
-        return { ...family, status: provider.status, stale: provider.stale, staleLabel: provider.staleLabel, reusedLabel: provider.reusedLabel,
+        return { ...family, status: provider.status, stale: provider.stale, overdue: provider.overdue, staleLabel: provider.staleLabel, reusedLabel: provider.reusedLabel,
           sortRemaining: capacity, sortRunway: runway,
           windows: family.windows.map((window) => ({ ...window, stale: provider.stale })) };
       });

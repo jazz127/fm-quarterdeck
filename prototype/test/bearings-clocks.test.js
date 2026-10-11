@@ -104,3 +104,23 @@ test('sort uses durable clocks in both directions, stable ties and unknowns last
   assert.equal(window.bearingsPatch.sortCards(cards, 'oldest').map(c => c.key).join(','), 'old,tie,new,unknown');
   assert.equal(cards[0].key, 'unknown', 'sort never mutates source');
 });
+
+test('snapshot runner supplements only projected main gates with shared-parser repositories and leaves source bytes intact', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bearings-work-source-'));
+  try {
+    await mkdir(path.join(home, 'bin')); await mkdir(path.join(home, 'data'));
+    const ledger = '- [ ] sample - Prose (repo: ignored) remains prose (repo: sample-repo)\n- [ ] unprojected - Sample backlog only (repo: other-repo)\n';
+    await writeFile(path.join(home, 'data/backlog.md'), ledger);
+    const snapshot = { ...raw, gates: [
+      { id: 'sample', owner: '(main)', title: 'Prepare sample', reason: 'External review' },
+      { id: 'sample', owner: 'sample-mate', title: 'Review sample', reason: 'Dependency' },
+    ], in_flight: [] };
+    await writeFile(path.join(home, 'bin/fm-bearings-snapshot.sh'), `#!/bin/sh\nprintf '%s' '${JSON.stringify(snapshot)}'\n`, { mode: 0o755 });
+    const content = normalizeSnapshot(JSON.parse(await createSnapshotRunner(home)()));
+    assert.equal(content.charted.length, 2, 'same task id in different homes remains separate');
+    assert.equal(content.charted[0].repo, 'sample-repo');
+    assert.equal(content.charted[1].repo, null, 'another home is never supplemented');
+    assert.deepEqual(content.underway, []);
+    assert.equal(await readFile(path.join(home, 'data/backlog.md'), 'utf8'), ledger);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});

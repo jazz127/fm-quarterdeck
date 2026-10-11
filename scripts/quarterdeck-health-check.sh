@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Firstmate custom check: no output on health/skip, one diagnostic on failure.
+# Firstmate custom check: one sanitized wake line for new notes, due reminders or faults.
 set -u
 umask 077
 state=${FM_QUARTERDECK_HEALTH_STATE_DIR:-${FM_HOME:+$FM_HOME/state}}
@@ -23,8 +23,10 @@ from pathlib import Path
 import re
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -141,6 +143,7 @@ def inbox(setting, alarm_minutes):
                     re.fullmatch(r'(?:handled notes|replies) omitted by bound: [0-9]+', surface)
                     or re.fullmatch(r'malformed replies without a valid sequence: [0-9]+ \(.+\)', surface)):
                 raise ValueError()
+        pending = set()
         overdue = []
         now = time.time()
         for note in receipts['pending']:
@@ -148,16 +151,63 @@ def inbox(setting, alarm_minutes):
             match = re.fullmatch(r'([0-9]{1,12})(?:[-_.][A-Za-z0-9_.-]{1,100})?', note_id) if isinstance(note_id, str) else None
             if not match:
                 raise ValueError()
+            pending.add(note_id)
             if now - int(match[1]) > age:
                 overdue.append(note_id)
     except Exception:
         reject('inbox unavailable or invalid receipts')
-    if overdue:
-        ids = ', '.join(sorted(set(overdue))[:20])
-        extra = max(0, len(set(overdue)) - 20)
-        suffix = f' (+{extra} more; list inbox)' if extra else ''
-        return f'inbox notes overdue: {ids}{suffix}; act safely, then bin/fm-inbox.sh reply <id> <text> and bin/fm-inbox.sh drain --ack <id> required'
-    return None
+    return pending, set(overdue)
+
+def note_message(label, ids):
+    extra = max(0, len(ids) - 20)
+    suffix = f' (+{extra} more; list inbox)' if extra else ''
+    return f'{label}: {", ".join(sorted(ids)[:20])}{suffix}; act safely, then bin/fm-inbox.sh reply <id> <text> and bin/fm-inbox.sh drain --ack <id> required'
+
+def new_notes(state, pending):
+    # Notification bookkeeping only: never a receipt or delivery authority.
+    # Retain reported identities after handling so unchanged/reappearing notes
+    # cannot become new again. The shell lock serializes this atomic replacement.
+    marker = state / 'fm-quarterdeck-health.notes.json'
+    try:
+        try:
+            fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            reported = set()
+        else:
+            with os.fdopen(fd) as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise ValueError()
+                value = json.load(handle)
+            if not isinstance(value, dict) or value.get('schema') != 'fm-quarterdeck-health-notes.v1' or not isinstance(value.get('reported'), list):
+                raise ValueError()
+            if any(not isinstance(note_id, str) or not re.fullmatch(r'([0-9]{1,12})(?:[-_.][A-Za-z0-9_.-]{1,100})?', note_id) for note_id in value['reported']):
+                raise ValueError()
+            reported = set(value['reported'])
+    except Exception:
+        return ['new inbox note marker unavailable or invalid; list inbox']
+    fresh = pending - reported
+    if not fresh:
+        return []
+    messages = [note_message('new pending inbox notes', fresh)]
+    temporary = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix='.fm-quarterdeck-health-notes-', dir=state)
+        with os.fdopen(fd, 'w') as handle:
+            json.dump({'schema': 'fm-quarterdeck-health-notes.v1', 'reported': sorted(reported | fresh)}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, marker)
+    except Exception:
+        messages.append('new inbox note marker write failed; notification may repeat; list inbox')
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                messages.append('new inbox note marker temporary cleanup failed; list inbox')
+    return messages
 
 def main():
     state = Path(sys.argv[1])
@@ -168,24 +218,30 @@ def main():
     saved = preferences(setting)  # Read-only, every invocation, including throttled runs.
     stamp = state / 'fm-quarterdeck-health.stamp'
     now = time.time()
+    due = True
     if setting('FM_QUARTERDECK_HEALTH_FORCE') != '1' and stamp.exists():
         elapsed = now - float(stamp.read_text())
         if 0 <= elapsed < saved['awayCheckInMinutes'] * 60:
-            return
-    stamp.write_text(str(now))  # Throttle failed attempts too; watcher wake owns recovery.
+            due = False
     issues = []
     try:
-        message = inbox(setting, saved['openNoteAlarmMinutes'])
-        if message:
-            issues.append(message)
+        pending, overdue = inbox(setting, saved['openNoteAlarmMinutes'])
+        # New-note coverage runs on every stock custom-check sweep, independently
+        # of the saved dashboard/overdue interval. Never lower FM_CHECK_INTERVAL.
+        issues.extend(new_notes(state, pending))
+        if due and overdue:
+            issues.append(note_message('inbox notes overdue', overdue))
     except Unhealthy as error:
-        issues.append(str(error))
-    try:
-        dashboard(setting)
-    except Unhealthy as error:
-        issues.append(str(error))
-    except Exception:
-        issues.append('invalid dashboard configuration or state')
+        if due:
+            issues.append(str(error))
+    if due:
+        try:
+            stamp.write_text(str(now))  # Throttle failed attempts too.
+            dashboard(setting)
+        except Unhealthy as error:
+            issues.append(str(error))
+        except Exception:
+            issues.append('invalid dashboard configuration or state')
     if issues:
         print('Quarterdeck health: ' + '; '.join(issues))
 
