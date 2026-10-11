@@ -702,6 +702,8 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .quota-reused { color: var(--muted); font-weight: 550; }
 .quota-age { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quota-stale-marker { flex-shrink: 0; }
+.quota-staleness.quota-overdue { color: var(--danger); }
+.quota-overdue .quota-stale-marker { border-color: var(--danger); background: linear-gradient(to bottom, var(--danger) 50%, transparent 50%); }
 .quota-accordion-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); cursor: pointer; list-style: none; user-select: none; border-bottom: 1px solid transparent; transition: background .15s ease; }
 .quota-accordion-summary::-webkit-details-marker { display: none; }
 .quota-accordion[open] > .quota-accordion-summary { border-bottom-color: var(--line); background: var(--surface-soft); }

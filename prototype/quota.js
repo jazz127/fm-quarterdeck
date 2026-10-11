@@ -108,7 +108,7 @@ export function createQuotaReader({ run, execute = exec, now = Date.now, ttlMs =
         const capturedAt = date(raw.generatedAt);
         last = { providers, unsupportedProviders: raw.providers.length - providers.length, readAt: capturedAt || new Date(now()).toISOString(), capturedAt, maxAgeMs: age.ms, stale: false, error: null };
         nextReadAt = now() + interval;
-        current = { ...last, ageMs: 0 };
+        current = { ...last, ageMs: Math.max(0, now() - Date.parse(last.readAt)) };
         return current;
       } catch (error) {
         nextReadAt = now() + Math.min(interval, 5000);

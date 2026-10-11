@@ -410,3 +410,17 @@ test("response and per-provider size limits remain bounded", () => {
   raw.providers.push({ provider: "future-provider" });
   assert.throws(() => sanitizeQuota(raw), /schema/);
 });
+
+test("a newly returned old capture never resets successful reading age", async () => {
+  const raw = fixture();
+  raw.generatedAt = "2030-01-01T00:00:00Z";
+  const captured = Date.parse(raw.generatedAt);
+  let clock = captured + 2040000;
+  const reader = createQuotaReader({ run: run(raw), now: () => clock });
+  const first = await reader();
+  assert.equal(first.ageMs, 2040000);
+  clock += 60000;
+  const reread = await reader();
+  assert.equal(reread.ageMs, 2100000);
+  assert.equal(reread.readAt, first.readAt);
+});

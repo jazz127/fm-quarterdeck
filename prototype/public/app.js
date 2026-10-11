@@ -1309,6 +1309,14 @@ function formatQuotaReserve(value) {
 let lastRenderedQuotaJson = "";
 let quotaReading = null;
 let quotaAgeTimer = null;
+let quotaRefreshDueAt = 0;
+// Sidebar and phone quota remain in view on every route. Reuse the existing
+// age ticker and endpoint guard; hidden tabs catch up when visible again.
+function tickQuota() {
+  if (document.visibilityState === "hidden") return;
+  if (quotaReading) renderQuota(quotaReading);
+  if (Date.now() >= quotaRefreshDueAt) void refreshEndpoint("quota");
+}
 let quotaHideInactive = false;
 let quotaAllDetails = false;
 let sidebarQuotaSort = "highest";
@@ -1474,7 +1482,7 @@ function quotaFamilyBox(family, readAt, { compact = false, variant = "compact" }
   const labels = quotaWindowLabels(family);
   const mark = providerLogoHtml(family.provider, { mono: compact, size: compact ? 16 : 20 });
   return `<div data-quota-key="${escapeHtml(JSON.stringify([family.provider, family.scope]))}" class="quota-family${compact ? " quota-family-side" : ""}${windows.some(w => w.isLimiting) ? " quota-summary-window-limiting" : ""}" aria-label="${heading} quota windows">
-    <div class="quota-family-title"><span class="quota-family-identity">${mark}</span><b class="provider-name">${heading}</b>${family.stale ? `<span data-quota-key="freshness" class="quota-staleness" title="${escapeHtml(family.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(family.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((family.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : family.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(family.reusedLabel)}" aria-label="${escapeHtml(family.reusedLabel)}"><span class="quota-age">${escapeHtml(family.reusedLabel)}</span></span>` : family.status && family.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(family.status)}">${escapeHtml(quotaName(family.status))}</span>` : ""}</div>
+    <div class="quota-family-title"><span class="quota-family-identity">${mark}</span><b class="provider-name">${heading}</b>${family.stale ? `<span data-quota-key="freshness" class="quota-staleness${provider.overdue ? " quota-overdue" : ""}" title="${escapeHtml(family.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(family.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((family.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : family.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(family.reusedLabel)}" aria-label="${escapeHtml(family.reusedLabel)}"><span class="quota-age">${escapeHtml(family.reusedLabel)}</span></span>` : family.status && family.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(family.status)}">${escapeHtml(quotaName(family.status))}</span>` : ""}</div>
     ${windows.map((w, index) => {
       const name = escapeHtml(labels[index]);
       const known = validQuotaPercent(w.percentRemaining);
@@ -1556,7 +1564,7 @@ function getCriticalConstraint(provider) {
 }
 
 function quotaFreshnessHtml(provider) {
-  return provider.stale ? `<span data-quota-key="freshness" class="quota-staleness" title="${escapeHtml(provider.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(provider.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((provider.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : provider.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(provider.reusedLabel)}" aria-label="${escapeHtml(provider.reusedLabel)}"><span class="quota-age">${escapeHtml(provider.reusedLabel)}</span></span>` : provider.status && provider.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(provider.status)}">${escapeHtml(quotaName(provider.status))}</span>` : "";
+  return provider.stale ? `<span data-quota-key="freshness" class="quota-staleness${provider.overdue ? " quota-overdue" : ""}" title="${escapeHtml(provider.staleLabel || "stale · age unknown")}" aria-label="${escapeHtml(provider.staleLabel || "stale · age unknown")}"><i class="quota-stale-marker" aria-hidden="true">!</i><span class="quota-age">${escapeHtml((provider.staleLabel || "stale · age unknown").replace(" · ", " "))}</span></span>` : provider.reusedLabel ? `<span data-quota-key="freshness" class="quota-reused" title="${escapeHtml(provider.reusedLabel)}" aria-label="${escapeHtml(provider.reusedLabel)}"><span class="quota-age">${escapeHtml(provider.reusedLabel)}</span></span>` : provider.status && provider.status !== "fresh" ? `<span data-quota-key="freshness" class="quota-status-pill" data-status="${escapeHtml(provider.status)}">${escapeHtml(quotaName(provider.status))}</span>` : "";
 }
 function quotaPageScopeName(scope) {
   return scope === "claude_gpt" ? "Claude/GPT" : quotaName(scope);
@@ -1605,7 +1613,7 @@ function renderQuota(data) {
   renderQuotaHtml(state, escapeHtml(`${data.stale ? "Stale last successful reading. " : ""}${reading} ${counts}${data.error ? `. ${data.error}.` : ""}${data.stale ? " Availability, pace and runway are unknown until a fresh reading." : ""}`));
   quotaReading = data;
   if (!quotaAgeTimer && typeof window !== "undefined" && window.setInterval) {
-    quotaAgeTimer = window.setInterval(() => { if (quotaReading) renderQuota(quotaReading); }, 15000);
+    quotaAgeTimer = window.setInterval(tickQuota, 15000);
   }
   const providers = data.providers || [];
   const projection = { ...allProjection, inactive: quotaHideInactive ? [] : allProjection.inactive };
@@ -1978,6 +1986,7 @@ async function refreshEndpoint(key) {
   if (item.refreshing) return;
   item.refreshing = true;
   item.started = Date.now();
+  if (key === "quota") quotaRefreshDueAt = item.started + 300000;
   if (key === "lanes" && !hasLoadedLanes) {
     lanesLoadError = "";
     renderLanesLoading();
@@ -2019,7 +2028,10 @@ async function refreshEndpoint(key) {
       if (!item.lastSuccess) renderWorkSplit(null);
       $("#overview-state").textContent = `Could not load fleet: ${error.message}`;
       $("#overview-state").classList.remove("hidden");
-    } else if (key === "quota" && !item.lastSuccess) renderQuota({ providers: [], readAt: null, stale: false, error: "Quota unavailable" });
+    } else if (key === "quota") {
+      renderQuota(quotaReading ? { ...quotaReading, stale: true, error: "Quota refresh unavailable" }
+        : { providers: [], readAt: null, stale: false, error: "Quota unavailable" });
+    }
     else if (key === "lanes" && !item.lastSuccess) renderLanesError(error.message);
   } finally {
     item.duration = Date.now() - item.started;
@@ -2577,6 +2589,7 @@ window.addEventListener("blur", () => { captureLastViewed(); });
 window.addEventListener("pagehide", () => { captureLastViewed(); });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") captureLastViewed();
+  else tickQuota();
 });
 $("#jump-to-last-viewed")?.addEventListener("click", () => {
   if (lastViewedIndex < 0) return;
