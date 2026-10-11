@@ -154,7 +154,14 @@ let spawnError, diagnostics = '';
 chrome.on('error', error => { spawnError = error; });
 chrome.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-2000); });
 const exec = promisify(execFile);
-const browser = async (...args) => (await exec('chrome-devtools-axi', args, { env, timeout: 45000, maxBuffer: 1024 * 1024 })).stdout;
+const browser = async (...args) => {
+  const options = { env, timeout: 45000, maxBuffer: 1024 * 1024 };
+  if (args[0] !== 'run') return (await exec('chrome-devtools-axi', args, options)).stdout;
+  return new Promise((resolve, reject) => {
+    const child = execFile('chrome-devtools-axi', ['run'], options, (error, stdout) => error ? reject(error) : resolve(stdout));
+    child.stdin.end(args[1]);
+  });
+};
 const results = [];
 async function evaluate(js) {
   const output = await browser('eval', js);

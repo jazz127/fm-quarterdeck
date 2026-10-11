@@ -9,12 +9,17 @@ export async function capturePendingUpdates({ browser, evaluate, until, base, he
   const selector = `[data-call-key="${key}"]`;
   const reports = [];
   const native = async (action, name, text) => {
-    const snapshot = await browser('snapshot', '--full');
-    const matches = snapshot.split('\n').filter(line => line.includes(`"${name}"`));
-    assert.equal(matches.length, 1, `one fresh native target for ${name}`);
-    const uid = matches[0].match(/uid=(\S+)/)?.[1];
-    assert.ok(uid?.startsWith('g'), 'generation-bound native reference');
-    await browser(action, `@${uid}`, ...(text === undefined ? [] : [text]));
+    // Acquire and act in one invocation; separate CLI calls let live clock
+    // updates invalidate the snapshot before the native action reaches MCP.
+    await browser('run', `
+      const snapshot=await page.snapshot();
+      const matches=snapshot.split('\\n').filter(line=>line.includes(${JSON.stringify(`"${name}"`)}));
+      if(matches.length!==1)throw Error('native target must be unique');
+      const uid=matches[0].match(/uid=(\\S+)/)?.[1];
+      if(!uid?.startsWith('g'))throw Error('generation-bound native reference required');
+      await page.${action}('@'+uid${text === undefined ? '' : ',' + JSON.stringify(text)});
+      console.log('native ${action} complete');
+    `);
   };
   const tagBox = () => evaluate(`() => { const box=document.querySelector('${selector} [data-call-answer-text]'); box.setAttribute('aria-label','Acceptance draft'); return 'tagged own field'; }`);
   for (const [name, width, height, viewport] of [
