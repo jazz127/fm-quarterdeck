@@ -317,7 +317,7 @@ window.bearingsView = (() => {
     if (model.chat?.behind) parts.push("Still reading the Firstmate transcript");
     return parts.join(" · ");
   }
-  const heldText = (change) => `Call ${change} — updates when you're done`;
+  const heldText = (change) => `Update incoming — call ${change}`;
   const stubHtml = () => '<div class="call-chrome"><h3>Resolved by Firstmate — your unsent text</h3><p class="call-meta">This text was not sent. Copy it before dismissing.</p></div><pre data-call-stub-text></pre><div class="call-stub-actions"><button type="button" data-call-stub-copy>Copy</button><button type="button" data-call-stub-dismiss>Dismiss</button></div>';
   return { cardHtml, emptyHtml, coverageText, heldText, stubHtml, age, clockText, idFor, sourceShortened, landedHeadlineHtml, createTextController, messageText };
 })();

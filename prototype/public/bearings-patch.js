@@ -21,7 +21,7 @@ window.bearingsPatch = (() => {
     cardHtml: (card) => `<p><strong>${escapeHtml(card.type === "merge" ? "Merge" : "Decision")}</strong> ${escapeHtml(card.summary || card.reason || card.task)}</p>`,
     emptyHtml: (model) => escapeHtml(model.state === "loading" ? "Checking for captain's calls…" : model.coverage?.provenClear ? "Nothing needs your action right now" : model.error && !model.coverage ? `Captain's Call unavailable: ${model.error}` : "No decision is recorded"),
     coverageText: (model) => model.coverage ? `checked ${model.coverage.checked} of ${model.coverage.known}` : "",
-    heldText: (change) => `Call ${change} — updates when you're done`,
+    heldText: (change) => `Update incoming — call ${change}`,
     stubHtml: () => '<p>Resolved by Firstmate — your unsent text</p><pre data-call-stub-text></pre><button type="button" data-call-stub-copy>Copy</button> <button type="button" data-call-stub-dismiss>Dismiss</button>',
   };
 
@@ -47,7 +47,8 @@ window.bearingsPatch = (() => {
         if (typeof text === "string" && text) next[field] = text; else delete next[field];
         write(key, next);
       },
-      text: (key) => Object.values(read(key)).filter((value) => typeof value === "string" && value.trim()).join("\n\n"),
+      text: (key) => Object.values(read(key)).filter((value) => typeof value === "string" && value.length).join("\n\n"),
+      hasUnsentText: (key) => Object.entries(read(key)).some(([field, value]) => field !== "selection" && typeof value === "string" && value.length),
       clear: (key) => write(key, {}),
     };
   }
@@ -108,7 +109,8 @@ window.bearingsPatch = (() => {
         if (!card || !section.contains(card)) return;
         if (keyOf(card) === state.selected) deselect(); else select(card);
       }],
-      [doc, "click", (event) => { if (state.selected && !section.contains(event.target)) deselect(); }],
+      [doc, "focusin", (event) => { if (state.selected && keyOf(event.target?.closest?.("[data-call-key]")) !== state.selected) deselect(); }],
+      [doc, "click", (event) => { if (state.selected && keyOf(event.target?.closest?.("[data-call-key]")) !== state.selected) deselect(); }],
       [doc, "keydown", (event) => { if (event.key === "Escape") deselect(); }],
     ];
     for (const [target, type, listener] of listeners) target.addEventListener(type, listener);
@@ -143,6 +145,9 @@ window.bearingsPatch = (() => {
     let applied = null;
     let pending = null;
     const releaseTimers = new Map();
+    // A departure/acknowledgement releases only this incoming card revision.
+    // Its draft remains saved; a later source change requires a fresh release.
+    const releasedDraftUpdates = new Map();
     let engagedKeys = new Set();
     let sortReleaseTimer = null;
     let held = false;
@@ -155,7 +160,10 @@ window.bearingsPatch = (() => {
       for (const key of engagedKeys) if (!keys.has(key) && !releaseTimers.has(key)) {
         releaseTimers.set(key, timers.setTimeout(() => {
           releaseTimers.delete(key);
-          if (pending) update(pending);
+          if (pending) {
+            if (!tracker.keys().has(key)) releaseDraftUpdate(pending, key);
+            update(pending);
+          }
         }, holdDelayMs));
       }
       engagedKeys = keys;
@@ -180,7 +188,16 @@ window.bearingsPatch = (() => {
     // Source resolution can precede the POST response. Keep the form until that
     // response is consumed so accepted words are cleared before removing it.
     const sendingKeys = () => new Set([...list.querySelectorAll('[data-call-answer-phase="sending"]')].map(form => keyOf(form.closest("[data-call-key]"))).filter(Boolean));
-    const heldKeys = () => new Set([...tracker.keys(), ...releaseTimers.keys(), ...sendingKeys()]);
+    const updateToken = (model, key) => model.cards.find(card => card.key === key)?.rev ?? null;
+    function releaseDraftUpdate(model, key) { releasedDraftUpdates.set(key, updateToken(model, key)); }
+    const heldKeys = (model = pending || applied) => {
+      const keys = new Set([...tracker.keys(), ...releaseTimers.keys(), ...sendingKeys()]);
+      for (const node of list.querySelectorAll("[data-call-key]")) {
+        const key = keyOf(node);
+        if (drafts.hasUnsentText(key) && (!releasedDraftUpdates.has(key) || releasedDraftUpdates.get(key) !== updateToken(model, key))) keys.add(key);
+      }
+      return keys;
+    };
     function cancelRelease() {
       for (const timer of releaseTimers.values()) timers.clearTimeout(timer);
       releaseTimers.clear();
@@ -203,7 +220,7 @@ window.bearingsPatch = (() => {
           notice.className = "call-card-notice";
           notice.setAttribute("data-call-held", "");
           notice.setAttribute("role", "status");
-          notice.innerHTML = '<span data-call-held-text></span> <button type="button" data-call-update-now>Update now</button>';
+          notice.innerHTML = '<span data-call-held-text></span> <button type="button" data-call-update-now>Show update</button>';
           node.append(notice);
         }
         const text = render.heldText(change);
@@ -232,6 +249,17 @@ window.bearingsPatch = (() => {
       restoreDrafts(node, card.key);
       // Per-card controllers (answer form, overflow) re-apply their own state to fresh markup.
       try { onRender(node, card); } catch {}
+      // A source change can remove the box itself. Keep those words visible and
+      // copyable without turning them into an answer or an invented source field.
+      const names = new Set([...node.querySelectorAll("[data-call-draft]")].map(field => field.getAttribute("data-call-draft")));
+      const missing = Object.entries(drafts.get(card.key)).filter(([name, value]) => name !== "selection" && !names.has(name) && typeof value === "string" && value.length).map(([, value]) => value).join("\n\n");
+      if (missing) {
+        const recovery = doc.createElement("div");
+        recovery.className = "call-draft-recovery";
+        recovery.innerHTML = '<p class="call-meta">Updated call — your unsent text</p><pre data-call-recovery-text></pre><button type="button" data-call-recovery-copy>Copy</button>';
+        recovery.querySelector("[data-call-recovery-text]").textContent = missing;
+        node.append(recovery);
+      }
     }
     function createCard(card) {
       const node = doc.createElement("article");
@@ -382,8 +410,11 @@ window.bearingsPatch = (() => {
       return reconcile(model);
     }
     function reconcile(model, releaseKey = null, forceSort = false) {
-      const protectedKeys = heldKeys();
-      if (releaseKey && !sendingKeys().has(releaseKey)) protectedKeys.delete(releaseKey);
+      const protectedKeys = heldKeys(model);
+      if (releaseKey) {
+        releaseDraftUpdate(model, releaseKey);
+        if (!sendingKeys().has(releaseKey)) protectedKeys.delete(releaseKey);
+      }
       const cards = [...model.cards];
       for (const card of applied?.cards || []) if (protectedKeys.has(card.key)) {
         const index = cards.findIndex((entry) => entry.key === card.key);
@@ -434,12 +465,20 @@ window.bearingsPatch = (() => {
       const card = field?.closest?.("[data-call-key]");
       const radio = field?.getAttribute("type") === "radio";
       if (!field || !card || (radio && !field.checked)) return;
+      releasedDraftUpdates.delete(keyOf(card));
       drafts.set(keyOf(card), field.getAttribute("data-call-draft"), radio ? field.getAttribute("value") : field.value);
     };
     const onClick = (event) => {
       const target = event.target;
       if (target?.closest?.("[data-call-update-now]")) { applyNow(keyOf(target.closest("[data-call-key]"))); return; }
       if (target?.closest?.("[data-call-sort-now]")) { applyNow(); return; }
+      if (target?.closest?.("[data-call-recovery-copy]")) {
+        const holder = target.closest("[data-call-key]")?.querySelector("[data-call-recovery-text]");
+        const selectText = () => { if (holder) doc.getSelection?.()?.selectAllChildren?.(holder); };
+        if (holder && win.navigator?.clipboard?.writeText) win.navigator.clipboard.writeText(holder.textContent).catch(selectText);
+        else selectText();
+        return;
+      }
       const stub = target?.closest?.("[data-call-stub]");
       if (!stub) return;
       const key = stub.getAttribute("data-call-stub");

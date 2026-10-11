@@ -111,6 +111,8 @@ test('Edit after an unconfirmed send and changed-card refusal retain identity, i
   t.part(key, 'edit').click(); t.part(key, 'text').type('Wednesday'); t.submit(key);
   assert.equal(t.answers.state(key).requestId, requestId);
   t.leave(); t.patcher.update(model([decision('a2')]));
+  assert.equal(t.answers.state(key).phase, 'confirm', 'unfocused unsent text waits for acknowledgement');
+  t.node(key).querySelector('[data-call-update-now]').click();
   assert.equal(t.answers.state(key).phase, 'refused');
   assert.equal(t.answers.state(key).requestId, requestId);
   const reload = setup({ storage }); reload.patcher.update(model([decision('a2')]));
@@ -142,7 +144,11 @@ test("Active-filter chat removal waits for accepted body consumption and leaves 
   t.leave(); await flush();
   assert.equal(original.contains(t.document.activeElement), false, "no engagement protects the send");
   t.patcher.update(model([decision("a2", "Updated neighbour")]));
+  assert.equal(original.querySelector('[data-call-update-now]').textContent, 'Show update');
+  original.querySelector('[data-call-update-now]').click();
   t.patcher.applyNow(key);
+  t.part(key, 'send').click();
+  assert.equal(t.fetches.length, 1, 'acknowledgement cannot send or duplicate the in-flight response');
   assert.equal(t.node(key), original, "source removal waits while the accepted body is unread");
   assert.equal(t.answers.state(key).phase, "sending");
   assert.equal(t.list.querySelector("[data-call-stub]"), null);
@@ -179,6 +185,9 @@ test("source removal during an unconfirmed send preserves copyable unsent text",
   const radio = t.node(key).querySelector('input[value="merge"]'); radio.checked = true; radio.dispatchEvent({ type: "change" });
   t.part(key, "text").type("Check the sample migration"); t.submit(key); t.part(key, "send").click(); t.leave();
   t.patcher.update(model([]));
+  t.node(key).querySelector('[data-call-update-now]').click();
+  t.part(key, 'send').click();
+  assert.equal(t.fetches.length, 1, 'Show update leaves the unconfirmed request protected');
   assert.ok(t.node(key), "the request is still awaiting confirmation");
   respond({ status: 502, body: { error: "Unconfirmed" } }); await flush(); t.timers.advance(700);
   const stub = t.list.querySelector("[data-call-stub]");
@@ -442,6 +451,7 @@ test("an empty or oversized answer is refused locally and nothing is sent", asyn
   const opted = decision("a2");
   opted.answer = { ...opted.answer, options: [{ value: "staged", label: "Staged", hint: null }] };
   t.patcher.update(model([opted]));
+  t.node(key).querySelector('[data-call-update-now]').click();
   const radio = t.node(key).querySelector('input[value="staged"]');
   radio.checked = true;
   radio.dispatchEvent({ type: "change" });

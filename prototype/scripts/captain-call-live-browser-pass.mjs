@@ -9,6 +9,7 @@ import { createServer } from '../server.js';
 import { claudeProjectDirectory } from '../claude-transcript.js';
 import { captureKpiGeometry } from './kpi-geometry.mjs';
 import { captureStaticReplyLinks } from './card-reply-links-static-proof.mjs';
+import { capturePendingUpdates } from './call-pending-update-acceptance.mjs';
 import { waitForBrowserPort, cleanupBrowserProfile } from './browser-harness.mjs';
 const root = path.resolve(import.meta.dirname, '../..');
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
@@ -191,6 +192,9 @@ const deadline = setTimeout(() => { console.error('Captain Call browser deadline
 try {
   const port = await waitForBrowserPort(chrome, profile, { spawnError: () => spawnError, diagnostics: () => diagnostics });
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
+  if (process.argv.includes('--pending-update-only')) {
+    await capturePendingUpdates({ browser, evaluate, until, base: `http://127.0.0.1:${server.address().port}`, head, proof, raw, change, server });
+  } else {
   await browser('newpage', `http://127.0.0.1:${server.address().port}/#overview`);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
   // Deterministic transport races in the real page realm, isolated from the UI's feed.
@@ -898,7 +902,7 @@ try {
   await until("!!proof.alpha.querySelector('[data-call-held]') && !!document.querySelector('[data-call-key=\"decision:extra-call\"]') && proof.beta.innerText.includes('Unengaged beta updates immediately')");
   for (const width of [1280,390]) {
     await browser('resize', String(width), '844');
-    await evaluate(`() => { const s=document.querySelector('#captain-call'), notice=proof.alpha.querySelector('[data-call-held]'); proof.alpha.scrollIntoView({block:'center'}); if(proof.alphaField!==proof.alpha.querySelector('[data-call-answer-text]')||proof.rebuilds!==0||proof.alphaField.value!=='Unsent synthetic reminder'||s.inert||s.hasAttribute('data-held')||s.hasAttribute('aria-busy')||!document.querySelector('#call-status').hidden||document.querySelector('#call-status [data-call-update-now]')||getComputedStyle(proof.alphaField).pointerEvents==='none'||document.querySelector('#call-badge').textContent!=='2'||!notice.innerText.includes('Call updated')||notice.querySelector('button').getBoundingClientRect().height<44||proof.beta.querySelector('[data-call-held]')||document.documentElement.scrollWidth>innerWidth||proof.alpha.scrollWidth>proof.alpha.clientWidth+1)throw Error('per-card hold/notice/draft/geometry failure '+JSON.stringify({width:innerWidth,sameField:proof.alphaField===proof.alpha.querySelector('[data-call-answer-text]'),rebuilds:proof.rebuilds,draft:proof.alphaField.value,sectionHeld:s.getAttribute('data-held'),sectionBusy:s.getAttribute('aria-busy'),statusHidden:document.querySelector('#call-status').hidden,badge:document.querySelector('#call-badge').textContent,notice:notice.innerText,buttonHeight:notice.querySelector('button').getBoundingClientRect().height,pageWidth:document.documentElement.scrollWidth,cardWidth:proof.alpha.clientWidth,cardScrollWidth:proof.alpha.scrollWidth})); proof.alphaField.select(); if(proof.alphaField.value.slice(proof.alphaField.selectionStart,proof.alphaField.selectionEnd)!=='Unsent synthetic reminder')throw Error('not copyable'); proof.alphaField.setSelectionRange(0,0); document.getSelection().removeAllRanges(); return {heldMessage:notice.innerText,width:innerWidth}; }`);
+    await evaluate(`() => { const s=document.querySelector('#captain-call'), notice=proof.alpha.querySelector('[data-call-held]'); proof.alpha.scrollIntoView({block:'center'}); if(proof.alphaField!==proof.alpha.querySelector('[data-call-answer-text]')||proof.rebuilds!==0||proof.alphaField.value!=='Unsent synthetic reminder'||s.inert||s.hasAttribute('data-held')||s.hasAttribute('aria-busy')||!document.querySelector('#call-status').hidden||document.querySelector('#call-status [data-call-update-now]')||getComputedStyle(proof.alphaField).pointerEvents==='none'||document.querySelector('#call-badge').textContent!=='2'||!notice.innerText.includes('Update incoming — call updated')||notice.querySelector('button').getBoundingClientRect().height<44||proof.beta.querySelector('[data-call-held]')||document.documentElement.scrollWidth>innerWidth||proof.alpha.scrollWidth>proof.alpha.clientWidth+1)throw Error('per-card hold/notice/draft/geometry failure '+JSON.stringify({width:innerWidth,sameField:proof.alphaField===proof.alpha.querySelector('[data-call-answer-text]'),rebuilds:proof.rebuilds,draft:proof.alphaField.value,sectionHeld:s.getAttribute('data-held'),sectionBusy:s.getAttribute('aria-busy'),statusHidden:document.querySelector('#call-status').hidden,badge:document.querySelector('#call-badge').textContent,notice:notice.innerText,buttonHeight:notice.querySelector('button').getBoundingClientRect().height,pageWidth:document.documentElement.scrollWidth,cardWidth:proof.alpha.clientWidth,cardScrollWidth:proof.alpha.scrollWidth})); proof.alphaField.select(); if(proof.alphaField.value.slice(proof.alphaField.selectionStart,proof.alphaField.selectionEnd)!=='Unsent synthetic reminder')throw Error('not copyable'); proof.alphaField.setSelectionRange(0,0); document.getSelection().removeAllRanges(); return {heldMessage:notice.innerText,width:innerWidth}; }`);
     await browser('screenshot', path.join(proof, `captain-call-held-${width}.png`));
   }
   await evaluate(`() => { proof.alpha.querySelector('[data-call-update-now]').click(); return 'local Update now'; }`);
@@ -906,7 +910,7 @@ try {
   await evaluate(`() => { if(proof.rebuilds!==1||proof.alpha.querySelector('[data-call-answer-text]').value!=='Unsent synthetic reminder')throw Error('Update now must rebuild once and restore draft'); proof.alpha.querySelector('[data-call-answer-text]').focus(); return 'PASS per-card notice, copyable draft, local Update now'; }`);
   raw.decisions_open = raw.decisions_open.filter(c=>c.id!=='alpha-call'); raw.contributions.captain = raw.contributions.captain.filter(c=>c.task!=='alpha-call'); await change();
   await until("!!proof.alpha.querySelector('[data-call-held]')");
-  await evaluate(`() => { if(!proof.alpha.isConnected||!proof.alpha.querySelector('[data-call-held]').innerText.includes('Call resolved')||proof.alpha.classList.contains('call-card-leaving')||!document.querySelector('#call-status').hidden)throw Error('resolved card must wait with local notice'); return 'held removal'; }`);
+  await evaluate(`() => { if(!proof.alpha.isConnected||!proof.alpha.querySelector('[data-call-held]').innerText.includes('Update incoming — call resolved')||proof.alpha.classList.contains('call-card-leaving')||!document.querySelector('#call-status').hidden)throw Error('resolved card must wait with local notice'); return 'held removal'; }`);
   await browser('screenshot', path.join(proof, 'captain-call-resolved-held-390.png'));
   await evaluate("() => { proof.alpha.querySelector('[data-call-answer-text]').blur(); document.getSelection().removeAllRanges(); return 'released'; }");
   await until("!!document.querySelector('[data-call-stub]')");
@@ -953,6 +957,7 @@ try {
   const report = { head, results, scheduler: server.bearings.stats(), visibility: 'synthetic visibility events; native phone/background acceptance remains pending' };
   await writeFile(path.join(proof,'captain-call-live.json'), JSON.stringify(report,null,2));
   console.log(`PASS Captain Call exact revision ${head}; proof ${proof}`);
+  }
 } catch (error) {
   const snapshot = await browser('snapshot').catch(e => String(e));
   const consoleLog = await browser('console').catch(e => String(e));

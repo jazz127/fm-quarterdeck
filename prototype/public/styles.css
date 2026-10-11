@@ -1896,7 +1896,12 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .call-note span { color: var(--muted); }
 .call-note textarea { display: block; box-sizing: border-box; width: 100%; min-height: 64px; margin-top: 6px; padding: 10px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; resize: vertical; }
 .call-empty { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); }
-.call-card-notice { margin: 0; padding: 8px; border: 1px solid var(--amber); border-radius: 6px; color: var(--text); font-size: var(--text-small); }
+.call-card[data-held="true"] > :not(.call-card-notice) { background-color: var(--surface-soft); color: var(--muted); filter: grayscale(1); }
+.call-card[data-held="true"] :is(h3, .call-context dd, .call-link, .call-opt-label) { color: var(--muted); }
+.call-card[data-held="true"] :is(textarea, input, button, select) { color: var(--text); }
+.call-card-notice { margin: 0; padding: 8px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface-soft); color: var(--text); font-size: var(--text-small); }
+.call-draft-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.call-draft-recovery button { min-height: 44px; padding: 6px 12px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface-soft); color: var(--text); cursor: pointer; }
 [data-call-sort-pending][hidden] { display: none; }
 .call-status[hidden], .call-badge[hidden] { display: none; }
 .call-card-notice button, [data-call-sort-pending] button, .call-stub-actions button { min-height: 44px; margin: 4px 4px 0 0; padding: 6px 12px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface-soft); color: var(--text); cursor: pointer; }
