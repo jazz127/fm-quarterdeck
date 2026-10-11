@@ -337,6 +337,50 @@ test("task event windows admit requested, then newest shown sessions within real
   assert.ok(older.data.transcript.warnings.some(warning => warning.includes("state/b.status was not loaded")));
 });
 
+test("outcome activity determines task admission before history spends the real default record budget", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  for (const [id, clock] of Object.entries(clocks)) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const outcomeClock = "2026-01-04T00:00:00.000Z";
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const ledger = path.join(home, source);
+    await writeFile(ledger, jsonl([
+      { ...(source.includes("terminal") ? { created_epoch: Date.parse(outcomeClock) / 1000, task_id: "a" } : { epoch: Date.parse(outcomeClock) / 1000, task: "a" }), summary: "A landed" },
+      { created_epoch: Date.parse("2026-01-05T00:00:00.000Z") / 1000, task_id: "b", summary: "Silent", silent: true },
+      { epoch: Date.parse("2026-01-06T00:00:00.000Z") / 1000, task: "b", summary: "" },
+      { epoch: "invalid", task: "b", summary: "Invalid clock" },
+    ]));
+    for (const query of ["", "?session=a", "?older=1"]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes${query}`);
+      const data = await response.json();
+      assert.equal(response.status, 200, data.error);
+      const lane = data.lanes.find(entry => entry.id === "alpha");
+      assert.deepEqual(lane.sessions.map(session => session.id), ["a", "c", "b"], "the Jan 4 outcome puts A ahead of the Jan 3 and Jan 2 status clocks");
+      assert.equal(lane.sessions[0].updatedAt, outcomeClock);
+      assert.equal(lane.sessions[0].loaded, true);
+      assert.equal(lane.sessions[0].omittedBytes, undefined);
+      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, 3200, "A is admitted first and retains every event");
+      assert.ok(lane.messages.some(message => message.text === "working: a step 0"));
+      assert.ok(lane.messages.some(message => message.text === "done: a completed"));
+      assert.ok(lane.messages.some(message => message.text === "done: c completed"), "C keeps its newest events after A");
+      assert.equal(lane.sessions[2].loaded, false);
+      assert.equal(lane.messages.some(message => message.taskId === "b"), false);
+      assert.equal(data.transcript.outcomeSources.find(entry => entry.source === source).loaded, false, "outcome history uses only the record budget left after task events");
+      assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source} was not loaded`)));
+    }
+    await rm(ledger);
+  }
+});
+
 test("an outcome ledger beyond the record limit keeps /api/lanes online with its newest outcomes", async (t) => {
   const home = await fixture(t);
   await writeFile(path.join(home, "state/alpha-task.meta"), "project=Alpha\n");

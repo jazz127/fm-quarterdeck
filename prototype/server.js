@@ -17,7 +17,7 @@ import { readSecondmateMessages } from "./secondmate-messages.js";
 import { readConversationTranscript } from "./transcript.js";
 import { readFirstmateActivity } from "./firstmate-activity.js";
 import { compactLanes } from "./lane-payload.js";
-import { readSupervisionOutcomes } from "./supervision.js";
+import { readSupervisionActivity, readSupervisionOutcomes } from "./supervision.js";
 import { createQuotaReader } from "./quota.js";
 import { createBearingsHub } from "./bearings.js";
 import { createProcrastinationStore, procrastinationKey } from "./call-procrastination.js";
@@ -833,6 +833,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
     };
     raiseActivity([...captainNotes, ...outboxMessages]);
+    if (includeHistory) for (const [taskId, timestamp] of await readSupervisionActivity(resolvedHome, reader)) {
+      const task = byTask.get(taskId);
+      if (task && (!task.activityAt || timestamp > task.activityAt)) task.activityAt = timestamp;
+    }
     // History loading is independent of live execution and completion attention.
     const requestedTasks = new Set(sessionIds.slice(0, 60));
     const visibleTasks = new Set(requestedTasks);
@@ -884,7 +888,6 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     // The fleet outcome ledgers only grow; read them after task events so a long
     // ledger takes what is left of the record budget rather than starving lanes.
     const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
-    raiseActivity(supervision.messages);
     if (includeHistory) await Promise.all(tasks.filter((task) => visibleTasks.has(task.id)).map(async (task) => {
       task.events.push(...await readTaskSteers(resolvedHome, task.id, reader));
     }));
