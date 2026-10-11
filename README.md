@@ -69,7 +69,7 @@ For a remote host, use a private SSH tunnel on the desktop (`ssh -N -L 4173:127.
 | `FM_REFRESH_MS` | `0` | Manual KPI/dashboard refresh; automatic interval must be at least 5000 ms |
 | `FM_BEARINGS_MIN_GAP_MS` | `30000` | Minimum snapshot start gap while watched; floor 15000 ms |
 | `FM_BEARINGS_MAX_AGE_MS` | `300000` | Snapshot age ceiling while watched; floor 60000 ms |
-| `FM_QUOTA_MAX_AGE` | `5m` | quota-axi reading reuse age: a positive integer with `s`, `m` or `h`, at most 1 hour; unset, invalid, zero or over-limit values fall back to the default |
+| `FM_QUOTA_MAX_AGE` | `5m` | quota-axi reading reuse age: a positive integer with `s`, `m` or `h`, at most 5 minutes; unset, invalid, zero or over-limit values fall back to the default |
 | `FM_STATUS_PATH` | synthetic `prototype/data/fleet.json` | Fallback only without selected home |
 | `FM_QUARTERDECK_STATE_PATH` | ignored checkout `prototype/data/agent-state.json` | Existing atomic taxonomy/acknowledgement owner, currently required outside selected home |
 | `FM_REVIEW_ALLOWED_ORIGIN` | unset | One exact HTTPS DNS origin for optional private proxy writes; no port/path/wildcard/userinfo/trailing slash |

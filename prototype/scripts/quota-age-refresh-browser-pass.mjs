@@ -50,8 +50,8 @@ try {
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
   for (const [width, height, surface] of [[1280, 900, '#sidebar-quota'], [390, 844, '#mobile-quota-sheet']]) {
     mode = 'fresh'; clock += 300000;
-    await browser('resize', String(width), String(height));
     await browser('newpage', `http://127.0.0.1:${server.address().port}/#quota`);
+    await browser('resize', String(width), String(height));
     await until(`document.querySelector('#quota-providers .quota-card') && !document.querySelector('#quota-providers .quota-staleness')`);
     if (width < 720) await evaluate(`() => { document.querySelector('.mobile-dock-quota').click(); return 'opened'; }`);
     await setClock(clock);

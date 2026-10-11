@@ -15,7 +15,7 @@ function quotaMaxAge(value) {
   if (!match) return { value: DEFAULT_MAX_AGE, ms: 300000 };
   const amount = Number(match[1]);
   const ms = amount * ({ s: 1000, m: 60000, h: 3600000 })[match[2]];
-  return Number.isSafeInteger(ms) && ms > 0 && ms <= 3600000 ? { value: `${amount}${match[2]}`, ms } : { value: DEFAULT_MAX_AGE, ms: 300000 };
+  return Number.isSafeInteger(ms) && ms > 0 && ms <= 300000 ? { value: `${amount}${match[2]}`, ms } : { value: DEFAULT_MAX_AGE, ms: 300000 };
 }
 
 // Interpret only known subscription annotation grammar. Never forward arbitrary
