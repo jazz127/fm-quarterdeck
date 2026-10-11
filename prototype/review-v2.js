@@ -6,7 +6,7 @@ export function validRecordId(value) {
   if (!string(value, 1000)) return false;
   const match = value.match(/^((?:main-pi-session|claude-main-session|state)\/[a-zA-Z0-9._/\-]+\.jsonl)(?::([1-9]\d*)|@(0|[1-9]\d*))(?::(0|[1-9]\d*))?(?::block:(0|[1-9]\d*))?$/);
   if (!match || match[1].split("/").some((part) => part === "." || part === "..")) return false;
-  return ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"].includes(match[1]) ? match[2] !== undefined && match[4] === undefined && match[5] === undefined : match[4] !== undefined;
+  return ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"].includes(match[1]) ? match[4] === undefined && match[5] === undefined : match[4] !== undefined;
 }
 const lanes = (value) => Array.isArray(value) && value.length > 0 && value.length <= 30 && value.every((lane) => string(lane, 160) && lane.length > 0);
 function validRecord(record) {

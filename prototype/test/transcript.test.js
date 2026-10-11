@@ -6,6 +6,7 @@ import test from "node:test";
 import { createServer, dashboardData, loadFirstmateHome } from "../server.js";
 import { createHistoryReader, HistoryLimitError } from "../history-reader.js";
 import { claudeProjectDirectory } from "../claude-transcript.js";
+import { readSupervisionOutcomes } from "../supervision.js";
 
 async function fixture(t) {
   const home = await mkdtemp(path.join(os.tmpdir(), "fm-transcript-"));
@@ -239,6 +240,242 @@ test("fleet notes use the durable ledger, real epoch, project routing and no sil
   assert.equal(notes[0].occurredAt, new Date(1700000000000).toISOString());
   assert.ok(notes.every((m) => m.kind === "supervision"));
   assert.equal(data.transcript.outcomeSources.length, 2);
+});
+
+test("outcome IDs address source bytes across whole, byte-windowed and record-windowed reads", async (t) => {
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const home = await fixture(t);
+    const file = path.join(home, source);
+    const rows = [
+      '{"epoch":1700000000,"summary":"é old"}\r\n',
+      '{"epoch":1700000001,"summary":"retained"}\r\n',
+      '{"epoch":1700000002,"summary":"newest"}\r\n',
+    ];
+    const text = rows.join("");
+    await writeFile(file, text);
+    const read = options => readSupervisionOutcomes(home, message => message, createHistoryReader({ windowReserveRecords: 0, windowReserveBytes: 0, ...options }));
+    const whole = await read({ maxRecords: 3 });
+    const expectedId = `${source}@41`;
+    assert.equal(Buffer.byteLength(rows[0]), 41);
+    assert.equal(whole.messages.find(message => message.text === "retained").recordId, expectedId);
+    const byteWindow = await read({ maxFileBytes: Buffer.byteLength(text) - 1, maxLineBytes: 80 });
+    assert.ok(byteWindow.sources[0].omittedBytes > 0);
+    assert.equal(byteWindow.messages.find(message => message.text === "retained").recordId, expectedId);
+    await appendFile(file, '{"epoch":1700000003,"summary":"appended"}\r\n');
+    const recordWindow = await read({ maxRecords: 3 });
+    assert.deepEqual(recordWindow.messages.map(message => message.text), ["retained", "newest", "appended"]);
+    assert.equal(recordWindow.messages[0].recordId, expectedId, "a saved anchor still addresses a retained outcome after append");
+    assert.equal(recordWindow.messages[0].sourceSequence, 41);
+    const expanded = await read({ maxRecords: 4 });
+    assert.equal(expanded.messages.find(message => message.text === "retained").recordId, expectedId, "widening to the whole ledger preserves the anchor");
+  }
+});
+
+test("task sessions keep status activity clocks and report budget-unread history as not loaded", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  await writeFile(path.join(home, "data/backlog.md"), "## Done\n- [x] a - Old work (repo: Alpha)\n- [x] b - Recent work (repo: Alpha)\n- [x] c - Newest work (repo: Alpha)\n- [x] d - Empty log (repo: Alpha)\n");
+  for (const [id, clock] of Object.entries(clocks)) {
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, "working: underway\ndone: completed\n");
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  // A genuinely empty log is a successfully read source, not unread history.
+  const empty = path.join(home, "state/d.status");
+  await writeFile(empty, "");
+  await utimes(empty, new Date("2025-12-31T00:00:00.000Z"), new Date("2025-12-31T00:00:00.000Z"));
+  const sessions = (data) => Object.fromEntries(data.lanes[0].sessions.map(({ id, updatedAt, loaded, eventCount }) => [id, { updatedAt, loaded, eventCount }]));
+  const exhausted = await loadFirstmateHome(home, { sessionIds: ["d"], reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: 40 }) });
+  assert.deepEqual(sessions(exhausted), {
+    c: { updatedAt: clocks.c, loaded: false, eventCount: 0 },
+    b: { updatedAt: clocks.b, loaded: false, eventCount: 0 },
+    a: { updatedAt: clocks.a, loaded: false, eventCount: 0 },
+    d: { updatedAt: "2025-12-31T00:00:00.000Z", loaded: true, eventCount: 0 },
+  }, "unread nonempty history keeps its clock but is not loaded; an empty log is loaded");
+  assert.deepEqual(exhausted.lanes[0].messages, []);
+  for (const id of ["b", "c"]) assert.ok(exhausted.transcript.warnings.some(warning => warning.includes(`state/${id}.status was not loaded`)));
+  assert.equal(exhausted.transcript.warnings.some(warning => /state\/[ad]\.status/.test(warning)), false, "unshown and empty logs are not budget gaps");
+  const whole = await loadFirstmateHome(home, { reader: createHistoryReader({ maxRecords: 40, windowReserveRecords: 0 }) });
+  assert.deepEqual(Object.fromEntries(Object.entries(sessions(whole)).map(([id, { loaded }]) => [id, loaded])), { c: true, b: true, a: false, d: false });
+  assert.deepEqual(whole.lanes[0].messages.map(message => message.taskId), ["b", "b", "c", "c"], "only the shown sessions' events are read");
+  assert.equal(whole.transcript.warnings.some(warning => warning.includes(".status")), false);
+});
+
+test("task event windows admit requested, then newest shown sessions within real default limits", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  for (const [id, clock] of Object.entries(clocks)) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const read = async (query = "") => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes${query}`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    const lane = data.lanes.find(entry => entry.sessions.length);
+    return { data, sessions: Object.fromEntries(lane.sessions.map(session => [session.id, session])), texts: new Set(lane.messages.map(message => message.text)) };
+  };
+  for (const query of ["", "?session=c"]) {
+    const { sessions, texts } = await read(query);
+    assert.ok(texts.has("done: c completed") && texts.has("working: c step 0"), `the newest task keeps all its events (${query || "default"})`);
+    assert.equal(sessions.c.loaded, true);
+    assert.equal(sessions.c.omittedBytes, undefined);
+    assert.ok(texts.has("done: b completed"), "the next shown task keeps its newest events");
+    assert.equal([...texts].some(text => text.startsWith("working: a ")), false, "an unshown older task spends no event budget");
+    assert.equal(sessions.a.loaded, false);
+  }
+  const older = await read("?session=a");
+  assert.ok(older.texts.has("done: a completed") && older.texts.has("working: a step 0"), "an explicitly requested older task is read first");
+  assert.equal(older.sessions.a.loaded, true);
+  assert.ok(older.texts.has("done: c completed"), "the newest shown task follows the request");
+  assert.equal(older.sessions.b.loaded, false, "a shown task the budget cannot reach is reported unloaded");
+  assert.ok(older.data.transcript.warnings.some(warning => warning.includes("state/b.status was not loaded")));
+});
+
+test("requested task windows precede large outcome ledgers within real default byte limits", async (t) => {
+  const home = await fixture(t);
+  const rowBytes = Math.floor(6 * 1024 * 1024 / 3200);
+  const extraBytes = 6 * 1024 * 1024 % 3200;
+  for (const [id, day] of [["a", 1], ["b", 2], ["c", 3]]) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    const rows = Array.from({ length: 3199 }, (_, i) => `working: ${id} step ${i}`.padEnd(rowBytes - 1 + (i < extraBytes ? 1 : 0), "x") + "\n");
+    rows.push(`done: ${id} completed`.padEnd(rowBytes - 1, "x") + "\n");
+    await writeFile(file, rows.join(""));
+    const clock = new Date(`2026-01-0${day}T00:00:00.000Z`);
+    await utimes(file, clock, clock);
+  }
+  const outcomes = Array.from({ length: 5000 }, (_, i) => JSON.stringify({ epoch: 1700000000 + i, task: "a", summary: `Outcome ${i} ${"x".repeat(2048)}` }) + "\n").join("");
+  assert.ok(Buffer.byteLength(outcomes) > 8 * 1024 * 1024);
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) await writeFile(path.join(home, source), outcomes);
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes?session=a`);
+  const data = await response.json();
+  assert.equal(response.status, 200, data.error);
+  const lane = data.lanes.find(entry => entry.id === "alpha");
+  const requested = lane.sessions.find(session => session.id === "a");
+  assert.equal(requested.loaded, true, "the explicitly requested older task gets the remaining byte allowance before either outcome ledger");
+  assert.equal(requested.updatedAt, "2026-01-01T00:00:00.000Z");
+  assert.ok(requested.omittedBytes > 0, "the task's oldest partial record is omitted at the remaining byte boundary");
+  const events = lane.messages.filter(message => message.kind === "crew" && message.taskId === "a");
+  assert.ok(events.some(message => message.text.startsWith("working: a step 3198")));
+  assert.ok(events.some(message => message.text.startsWith("done: a completed")), "the newest completion survives the byte limit");
+  assert.equal(lane.messages.some(message => ["b", "c"].includes(message.taskId)), false, "later windows cannot displace the requested history");
+  assert.deepEqual(data.transcript.outcomeSources.map(({ loaded }) => loaded), [false, false]);
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source} was not loaded`)));
+});
+
+test("later outcome activity keeps its real clock without changing admission order or claiming unread task history", async (t) => {
+  const home = await fixture(t);
+  const clocks = { a: "2026-01-01T00:00:00.000Z", b: "2026-01-02T00:00:00.000Z", c: "2026-01-03T00:00:00.000Z" };
+  for (const [id, clock] of Object.entries(clocks)) {
+    await writeFile(path.join(home, "state", `${id}.meta`), "project=Alpha\n");
+    const file = path.join(home, "state", `${id}.status`);
+    await writeFile(file, Array.from({ length: 1999 }, (_, i) => `working: ${id} step ${i}`).join("\n") + `\ndone: ${id} completed\n`);
+    await utimes(file, new Date(clock), new Date(clock));
+  }
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const outcomeClock = "2026-01-04T00:00:00.000Z";
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const ledger = path.join(home, source);
+    await writeFile(ledger, jsonl([
+      { ...(source.includes("terminal") ? { created_epoch: Date.parse(outcomeClock) / 1000, task_id: "a" } : { epoch: Date.parse(outcomeClock) / 1000, task: "a" }), summary: "A landed" },
+      { created_epoch: Date.parse("2026-01-05T00:00:00.000Z") / 1000, task_id: "b", summary: "Silent", silent: true },
+      { epoch: Date.parse("2026-01-06T00:00:00.000Z") / 1000, task: "b", summary: "" },
+      { epoch: "invalid", task: "b", summary: "Invalid clock" },
+    ]));
+    for (const query of ["", "?session=a", "?older=1"]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes${query}`);
+      const data = await response.json();
+      assert.equal(response.status, 200, data.error);
+      const lane = data.lanes.find(entry => entry.id === "alpha");
+      assert.deepEqual(lane.sessions.map(session => session.id), ["c", "b", "a"], "session order uses the Jan 3/2/1 clocks available at admission");
+      const updated = lane.sessions.find(session => session.id === "a");
+      const selected = query !== "";
+      assert.equal(updated.updatedAt, outcomeClock, "A still reports the later Jan 4 outcome's real time");
+      assert.equal(updated.loaded, selected, "a newer outcome does not claim A's unread status history was loaded");
+      assert.equal(updated.eventCount, selected ? 2000 : 0);
+      assert.equal(lane.messages.filter(message => message.kind === "crew" && message.taskId === "a").length, selected ? 2000 : 0);
+      assert.equal(lane.sessions[0].loaded, true);
+      assert.equal(lane.sessions[1].loaded, true);
+      assert.ok(lane.messages.some(message => message.text === "done: c completed"));
+      assert.ok(lane.messages.some(message => message.text === "done: b completed"));
+      const inventory = data.transcript.outcomeSources.find(entry => entry.source === source);
+      assert.equal(inventory.loaded, true, "outcomes use the allowance left after task events");
+      assert.equal(inventory.messageCount, 1, "silent, empty and invalid outcomes do not advance session activity");
+    }
+    await rm(ledger);
+  }
+});
+
+test("an outcome ledger beyond the record limit keeps /api/lanes online with its newest outcomes", async (t) => {
+  const home = await fixture(t);
+  await writeFile(path.join(home, "state/alpha-task.meta"), "project=Alpha\n");
+  await writeFile(path.join(home, "state/alpha-task.status"), "working: underway\n");
+  const outcome = (i) => JSON.stringify({ epoch: 1700000000 + i, task: "alpha-task", summary: `Outcome ${i}` }) + "\n";
+  const ledger = path.join(home, "state/branch-outcomes.jsonl");
+  await writeFile(ledger, Array.from({ length: 20001 }, (_, i) => outcome(i)).join(""));
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const read = async () => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lanes`);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    return { data, messages: data.lanes.flatMap(lane => lane.messages) };
+  };
+  const { data, messages } = await read();
+  const notes = messages.filter(m => m.kind === "supervision");
+  assert.ok(notes.some(m => m.text === "alpha-task: Outcome 20000"), "the newest outcome is shown");
+  assert.equal(notes.some(m => m.text === "alpha-task: Outcome 0"), false, "older outcomes are not loaded");
+  assert.ok(messages.some(m => m.text === "working: underway"), "task status events still load");
+  const [source] = data.transcript.outcomeSources;
+  assert.ok(source.loaded && source.omittedBytes > 0 && source.messageCount < 20001);
+  assert.ok(data.transcript.warnings.some(w => /branch-outcomes\.jsonl: only its newest whole records loaded.*older outcomes are not shown/.test(w)));
+  // Windowed outcomes are identified by byte offset, so appending keeps their identity.
+  const id = notes.find(m => m.text === "alpha-task: Outcome 20000").recordId;
+  await appendFile(ledger, outcome(20001));
+  const later = await read();
+  assert.equal(later.messages.find(m => m.text === "alpha-task: Outcome 20000").recordId, id);
+  assert.ok(later.messages.some(m => m.text === "alpha-task: Outcome 20001"));
+});
+
+test("oversized outcome records still fail /api/lanes when record trimming would omit them", async (t) => {
+  const home = await fixture(t);
+  const revision = "a".repeat(40);
+  const server = createServer({ FM_HOME: home }, { revisionResolver: { initial: revision, snapshot: async () => revision } });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/lanes`;
+  const newer = Array.from({ length: 16000 }, (_, i) => JSON.stringify({ epoch: 1700000001 + i, summary: `Outcome ${i}` }) + "\n").join("");
+  for (const source of ["state/branch-outcomes.jsonl", "state/terminal-outcomes.jsonl"]) {
+    const file = path.join(home, source);
+    await writeFile(file, JSON.stringify({ epoch: 1700000000, summary: "x".repeat(1024 * 1024 + 1) }) + "\n" + newer);
+    let response = await fetch(url);
+    assert.equal(response.status, 503, source);
+    assert.equal((await response.json()).error, "Fleet Chats offline: History exceeds safe read limits; source files are unchanged.");
+    await writeFile(file, newer);
+    response = await fetch(url);
+    const data = await response.json();
+    assert.equal(response.status, 200, data.error);
+    assert.ok(data.lanes.flatMap(lane => lane.messages).some(message => message.text === "Outcome 15999"));
+    assert.ok(data.transcript.outcomeSources.some(entry => entry.source === source && entry.loaded && entry.omittedBytes > 0));
+    assert.ok(data.transcript.warnings.some(warning => warning.startsWith(`${source}: only its newest whole records loaded`)));
+    await rm(file);
+  }
 });
 
 test("oversized sources share the request budget: newest active windows load, a starved source is reported unloaded", async (t) => {
@@ -487,7 +724,11 @@ test("actual 8 MiB reader boundary retains newest whole records within byte and 
   await writeFile(file, largeTurn("x".repeat(MiB)));
   await assert.rejects(createHistoryReader().recent(file), HistoryLimitError, "retained oversized single records still fail");
   await writeFile(file, "{}\n".repeat(20001));
-  await assert.rejects(createHistoryReader().recent(file), HistoryLimitError, "retained records still obey the request bound");
+  const capped = await createHistoryReader().recent(file);
+  const kept = await largeEntries(capped);
+  assert.equal(kept.length, 15000, "a window keeps only the newest records its record budget holds");
+  assert.equal(capped.omittedBytes, 5001 * 3);
+  assert.equal(kept.at(-1).offset, 20000 * 3, "the newest record is retained");
 });
 
 test("actual Claude /api/lanes stays fresh at and above 8 MiB, including append and partial-tail rereads", async (t) => {
@@ -534,7 +775,7 @@ test("actual Claude /api/lanes stays fresh at and above 8 MiB, including append 
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /History exceeds safe read limits/);
   await writeFile(file, "{}\n".repeat(20001));
-  response = await fetch(base);
-  assert.equal(response.status, 503);
-  assert.match((await response.json()).error, /History exceeds safe read limits/);
+  const capped = await read();
+  assert.ok(capped.data.transcript.sessions[0].loaded && capped.data.transcript.sessions[0].omittedBytes > 0, "a record-capped window stays online");
+  assert.ok(capped.data.transcript.warnings.some(w => /older history in this source is not shown/.test(w)));
 });

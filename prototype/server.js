@@ -422,7 +422,7 @@ function publicSessions(tasks) {
       startedAt: timestamps[0]?.toISOString() || null,
       updatedAt: task.activityAt?.toISOString() || timestamps.at(-1)?.toISOString() || null,
     };
-  }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  });
 }
 
 // `identify(headers, body)` returns the record's author/role/state/kind.
@@ -767,14 +767,13 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
   if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
   try {
-    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, supervision, inboxReplies, secondmates] = await Promise.all([
+    const [registry, stateNames, backlogTasks, captainNotes, transcript, outboxMessages, inboxReplies, secondmates] = await Promise.all([
       readFile(path.join(resolvedHome, "data", "projects.md"), "utf8"),
       readdir(path.join(resolvedHome, "state")),
       readBacklog(resolvedHome, reader),
       includeHistory ? readCaptainNotes(resolvedHome, reader) : [],
       includeHistory ? readConversationTranscript(resolvedHome, publicMessage, { selectedIds: diskIds, older: diskOlder, reader, claudeConfigDir, windowBytes }) : { messages: [], coverage: {} },
       includeHistory ? readOutboxMessages(resolvedHome, reader) : [],
-      includeHistory ? readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [] },
       includeHistory ? readInboxReplies(resolvedHome, reader) : [],
       includeHistory ? readSecondmateMessages(resolvedHome, publicMessage, { reader, windowBytes }) : { messages: [], sources: [], warnings: [] },
     ]);
@@ -791,6 +790,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
 
     const metaNames = stateNames.filter((name) => name.endsWith(".meta") && !name.startsWith(".")).sort();
     const metaTaskIds = new Set(metaNames.map((name) => name.slice(0, -5)));
+    const statusWarnings = [];
     const taskIdsToLoad = new Set(metaTaskIds);
     for (const [taskId, task] of backlogTasks) {
       if (task.inFlight || stateNames.includes(`${taskId}.status`)) taskIdsToLoad.add(taskId);
@@ -806,32 +806,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       }
       if (!projectName) return null;
 
-      let statusEvents = [];
+      const statusStat = stateNames.includes(statusName) ? await stat(path.join(resolvedHome, "state", statusName)) : null;
+      const statusActivity = statusStat ? new Date(statusStat.mtimeMs) : null;
       // Registered parent-channel files are projected once by the mate adapter.
-      if (stateNames.includes(statusName) && !secondmates.sources.some(({ id }) => id === taskId)) {
-        const statusPath = path.join(resolvedHome, "state", statusName);
-        const [statusText, statusStat] = await Promise.all([readFile(statusPath, "utf8"), stat(statusPath)]);
-        const lines = statusText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        statusEvents = lines.map((line, index) => {
-          reader.takeMessage();
-          const event = parseStatusLine(line);
-          // A status file only supplies one clock. Keep its lines on that real mtime
-          // and use file order solely as a stable tie-break, never fake milliseconds.
-          const timestamp = new Date(statusStat.mtimeMs);
-          return publicMessage({
-            ...event,
-            timestamp,
-            timestampSource: "mtime",
-            sourceSequence: index,
-            author: taskId,
-            role: "crew",
-            source: `state/${statusName}`,
-            taskId,
-            text: `${event.state}: ${event.text}`,
-            kind: "crew",
-          });
-        });
-      }
+      const eventSource = statusStat && !secondmates.sources.some(({ id }) => id === taskId) ? { statusName, size: statusStat.size, mtime: statusActivity } : null;
       const [briefIntent, lastSteer] = await Promise.all([readBriefIntent(resolvedHome, taskId), includeHistory ? steerActivity(resolvedHome, taskId) : null]);
       return {
         id: taskId,
@@ -841,23 +819,73 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         state: currentWork.get(taskId)?.sourceState || "unknown",
         classification: currentWork.get(taskId),
         taskIntent: currentTaskIntent(backlogTask, briefIntent),
-        events: statusEvents,
-        activityAt: lastSteer && (!statusEvents.length || lastSteer > statusEvents[0].timestamp) ? lastSteer : statusEvents[0]?.timestamp || null,
+        events: [],
+        eventSource,
+        activityAt: lastSteer && (!statusActivity || lastSteer > statusActivity) ? lastSteer : statusActivity,
       };
     }));
     const tasks = taskResults.filter(Boolean);
     const byTask = new Map(tasks.map((task) => [task.id, task]));
-    for (const event of [...captainNotes, ...outboxMessages, ...supervision.messages]) {
-      const task = byTask.get(event.taskId);
-      if (task && event.timestamp && (!task.activityAt || event.timestamp > task.activityAt)) task.activityAt = event.timestamp;
-    }
+    const raiseActivity = (messages) => {
+      for (const event of messages) {
+        const task = byTask.get(event.taskId);
+        if (task && event.timestamp && (!task.activityAt || event.timestamp > task.activityAt)) task.activityAt = event.timestamp;
+      }
+    };
+    raiseActivity([...captainNotes, ...outboxMessages]);
+    const orderedTasks = [...tasks].sort((a, b) => String(b.activityAt?.toISOString() || null).localeCompare(String(a.activityAt?.toISOString() || null)));
     // History loading is independent of live execution and completion attention.
-    const visibleTasks = new Set(sessionIds.slice(0, 60));
+    const requestedTasks = new Set(sessionIds.slice(0, 60));
+    const visibleTasks = new Set(requestedTasks);
     for (const project of projects) {
-      const ordered = publicSessions(tasks.filter((task) => task.projectName === project.name));
+      const ordered = publicSessions(orderedTasks.filter((task) => task.projectName === project.name));
       for (const session of ordered.slice(0, 2 + Math.min(older, 20) * 10)) visibleTasks.add(session.id);
       for (const session of ordered) if (!["done", "failed"].includes(session.state)) visibleTasks.add(session.id);
     }
+    // Task events are history: a long status log shows its newest whole lines, and
+    // work classification above still folds the whole file. Only tasks this response
+    // shows are read, requested first, then open work, then newest, so an unshown or
+    // older task cannot spend the event budget the shown ones need.
+    const admission = (session) => requestedTasks.has(session.id) ? 0 : ["done", "failed"].includes(session.state) ? 2 : 1;
+    if (includeHistory) for (const { id } of publicSessions(orderedTasks.filter((task) => visibleTasks.has(task.id) && task.eventSource)).sort((a, b) => admission(a) - admission(b))) {
+      const task = byTask.get(id);
+      const { statusName, size, mtime } = task.eventSource;
+      // An empty log is fully read; nonempty history the budget cannot reach is not loaded.
+      const window = size ? await reader.recent(path.join(resolvedHome, "state", statusName)) : null;
+      task.eventsLoaded = !size || Boolean(window);
+      if (!task.eventsLoaded) {
+        statusWarnings.push(`state/${statusName} was not loaded: this request's read budget went to other sources.`);
+        continue;
+      }
+      if (!window) continue;
+      task.eventsOmittedBytes = window.omittedBytes;
+      if (window.omittedBytes) statusWarnings.push(`state/${statusName}: only its newest whole lines loaded within this request's read budget; older task events are not shown.`);
+      let index = 0;
+      for await (const { line: raw } of window.lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        reader.takeMessage();
+        const event = parseStatusLine(line);
+        // A status file only supplies one clock. Keep its lines on that real mtime
+        // and use file order solely as a stable tie-break, never fake milliseconds.
+        task.events.push(publicMessage({
+          ...event,
+          timestamp: mtime,
+          timestampSource: "mtime",
+          sourceSequence: index++,
+          author: task.id,
+          role: "crew",
+          source: `state/${statusName}`,
+          taskId: task.id,
+          text: `${event.state}: ${event.text}`,
+          kind: "crew",
+        }));
+      }
+    }
+    // The fleet outcome ledgers only grow; read them after task events so a long
+    // ledger takes what is left of the record budget rather than starving lanes.
+    const supervision = includeHistory ? await readSupervisionOutcomes(resolvedHome, publicMessage, reader) : { messages: [], sources: [], warnings: [] };
+    raiseActivity(supervision.messages);
     if (includeHistory) await Promise.all(tasks.filter((task) => visibleTasks.has(task.id)).map(async (task) => {
       task.events.push(...await readTaskSteers(resolvedHome, task.id, reader));
     }));
@@ -939,7 +967,10 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         crew: liveTasks.length,
         progress,
         items,
-        sessions: publicSessions(projectTasks).map((session) => ({ ...session, loaded: visibleTasks.has(session.id) })),
+        sessions: publicSessions(orderedTasks.filter((task) => task.projectName === project.name)).map((session) => {
+          const task = byTask.get(session.id);
+          return { ...session, loaded: visibleTasks.has(session.id) && task.eventsLoaded !== false, ...(task.eventsOmittedBytes ? { omittedBytes: task.eventsOmittedBytes } : {}) };
+        }),
         messages: includeHistory ? messages : [],
       };
     });
@@ -964,7 +995,7 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
       lanes,
       source: "Firstmate home",
       transcript: { ...transcript.coverage, outcomeSources: supervision.sources, secondmateSources: secondmates.sources,
-        warnings: [...(transcript.coverage.warnings || []), ...secondmates.warnings],
+        warnings: [...(transcript.coverage.warnings || []), ...secondmates.warnings, ...supervision.warnings, ...statusWarnings.sort()],
         expandable: transcript.coverage.expandable || (windowBytes !== null && windowBytes < 8 * 1024 * 1024 && secondmates.sources.some((source) => source.omittedBytes > 0)) },
       workSplit: split,
       summary: {
