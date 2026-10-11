@@ -1,6 +1,7 @@
 import { parseBacklogTask } from "./firstmate-records.js";
 import { enumeratedLetterOptions, publishOptions } from "./enumerated-options.js";
 import { projectUnderwayRecords } from "./underway-records.js";
+import { readUnreadableChildren } from "./unreadable-child-records.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, watch as fsWatch } from "node:fs";
@@ -678,7 +679,8 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
     try {
       // This stock reader owns registry selection and permitted home-ledger reads.
       // Its Underway observation stands alone; never join two task generations.
-      const work = projectUnderwayRecords(JSON.parse(await once("fm-fleet-snapshot.sh", ["--json"])));
+      const snapshot = JSON.parse(await once("fm-fleet-snapshot.sh", ["--json"]));
+      const work = projectUnderwayRecords(snapshot, await readUnreadableChildren(snapshot));
       raw.in_flight = work.rows.map(({ stage, ...row }) => ({ ...row, quarterdeckStage: stage }));
       raw.quarterdeckWorkDisclosures = work.disclosures;
     } catch {

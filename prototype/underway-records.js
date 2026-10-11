@@ -24,10 +24,10 @@ export function currentStage(current, { cached = false } = {}) {
   return 'Stage unavailable';
 }
 
-export function projectUnderwayRecords(snapshot) {
+export function projectUnderwayRecords(snapshot, fallback = { children: new Map(), disclosures: [] }) {
   if (!object(snapshot) || snapshot.schema !== 'fm-fleet-snapshot.v1' || !Array.isArray(snapshot.tasks)
       || !object(snapshot.secondmate_current) || !Array.isArray(snapshot.secondmate_current.records)) throw Error('Canonical work records unavailable');
-  const rows = [], disclosures = [];
+  const rows = [], disclosures = [...fallback.disclosures];
   for (const task of snapshot.tasks) {
     if (!object(task) || !validId(task.id)) { disclosures.push('Main-home work record unavailable: invalid identity'); continue; }
     if (task.kind === 'secondmate' || task.backlog?.current_role === 'program'
@@ -56,6 +56,10 @@ export function projectUnderwayRecords(snapshot) {
       rows.push({ id: `${home.id}/${task.id}`, owner: home.id, home: home.id, name: task.name || task.id,
         repo: task.repo, kind: task.kind, state: task.state, doing: task.doing,
         stage: currentStage({ state: task.state, source: task.source, detail: task.doing }, { cached }) });
+    }
+    for (const task of fallback.children.get(home.id) || []) {
+      if (home.active_children.some(child => child?.id === task.id)) continue;
+      rows.push({ ...task, id: `${home.id}/${task.id}`, owner: home.id, home: home.id });
     }
   }
   return { rows, disclosures };
