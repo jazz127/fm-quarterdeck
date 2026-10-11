@@ -177,7 +177,10 @@ window.bearingsPatch = (() => {
       sortNotice.hidden = true;
       sortControl.parentNode.append(sortNotice);
     }
-    const heldKeys = () => new Set([...tracker.keys(), ...releaseTimers.keys()]);
+    // Source resolution can precede the POST response. Keep the form until that
+    // response is consumed so accepted words are cleared before removing it.
+    const sendingKeys = () => new Set([...list.querySelectorAll('[data-call-answer-phase="sending"]')].map(form => keyOf(form.closest("[data-call-key]"))).filter(Boolean));
+    const heldKeys = () => new Set([...tracker.keys(), ...releaseTimers.keys(), ...sendingKeys()]);
     function cancelRelease() {
       for (const timer of releaseTimers.values()) timers.clearTimeout(timer);
       releaseTimers.clear();
@@ -380,7 +383,7 @@ window.bearingsPatch = (() => {
     }
     function reconcile(model, releaseKey = null, forceSort = false) {
       const protectedKeys = heldKeys();
-      if (releaseKey) protectedKeys.delete(releaseKey);
+      if (releaseKey && !sendingKeys().has(releaseKey)) protectedKeys.delete(releaseKey);
       const cards = [...model.cards];
       for (const card of applied?.cards || []) if (protectedKeys.has(card.key)) {
         const index = cards.findIndex((entry) => entry.key === card.key);
@@ -460,6 +463,7 @@ window.bearingsPatch = (() => {
 
     return {
       update,
+      refreshPending() { if (pending) update(pending); },
       observe,
       applyNow,
       setSort,

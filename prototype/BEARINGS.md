@@ -178,6 +178,7 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
      The receipt is the history entry reloaded immediately, and the card's lifecycle becomes Sent while that note is still pending or only acknowledged (see Lifecycle).
    - An answer uses `POST /api/bearings/answer` with `{requestId, key, cardRev, selection, note}`.
      `202` → *sent*: answer drafts are cleared (so a resolved card shows no "unsent text" stub) and a receipt line follows Firstmate's inbox receipts: waiting → received → replied (polled every 15 s while visible and not yet replied).
+     Incoming source changes for a sending card wait until its response body is consumed, including when the current filter hides that card. Accepted answers clear their drafts before pending removal applies; unconfirmed sends retain their unsent text. Other cards keep updating, and Update now cannot remove a sending form early.
      A reply leaves *sent* for *compose*, unlocks the controls, and the card returns to Active with that reply at the top.
    - unconfirmed (network error or `5xx`) → *failed*: **Retry send** is another explicit click and reuses the same request id, so Firstmate records one note.
      Reloading during *sending* also restores this uncertain retry state; it never resends automatically.

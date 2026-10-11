@@ -255,8 +255,26 @@ try {
   assert.equal(await readFile(path.join(home, 'answer-note.txt'), 'utf8').catch(() => null), null, 'Dismiss never sends an inbox note');
   await appendFile(transcriptPath, chatRecord('synthetic-ask-two', 'ACTION NEEDED: Rotate the sample token. Reply "rotated".'));
   await until(`!!document.querySelector('[data-call-type="chat"]')`);
+  // Chat answers legitimately resolve their source before POST 202 reaches the
+  // client. Delay only that response's consumption to exercise the earliest race.
+  await evaluate(`() => {
+    window.chatAnswerFetch=window.fetch;
+    window.chatAnswerKey=document.querySelector('[data-call-type="chat"]').dataset.callKey;
+    window.fetch=async (...args) => {
+      const response=await window.chatAnswerFetch(...args);
+      if(args[0]==='/api/bearings/answer'){
+        const json=response.json.bind(response);
+        response.json=async () => { const body=await json(); window.chatAnswerResponse={status:response.status,state:body.state}; await new Promise(resolve=>{window.consumeChatAnswer=resolve;}); window.chatAnswerConsumed=true; return body; };
+      }
+      return response;
+    };
+    return 'observe accepted chat before response consumption';
+  }`);
   await evaluate(`() => { const c=document.querySelector('[data-call-type="chat"]'); if(!c.innerText.includes('Rotate the sample token'))throw Error('appended transcript ask missed'); const radio=c.querySelector('input[value="reply-1"]'); radio.checked=true; radio.dispatchEvent(new Event('change',{bubbles:true})); c.querySelector('.call-answer-queue').click(); if(c.querySelector('[data-call-answer-confirm]').hidden||c.querySelector('[data-call-answer-preview]').textContent!=='rotated')throw Error('suggested reply review'); c.querySelector('[data-call-answer-send]').click(); return 'chat reply sent'; }`);
-  await until(`document.querySelector('[data-call-type="chat"] [data-call-answer]')?.dataset.callAnswerPhase==='sent'`);
+  await until(`window.chatAnswerResponse?.status===202 && window.chatAnswerResponse.state==='accepted' && document.querySelector('[data-call-type="chat"]')?.dataset.held==='true'`);
+  await evaluate(`() => { const c=document.querySelector('[data-call-type="chat"]'); if(!c.hidden||c.contains(document.activeElement)||c.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='sending'||document.querySelector('[data-call-stub]'))throw Error('Active-filter source removal preceded response consumption'); if(!c.querySelector('[data-call-held-text]').textContent.includes('resolved'))throw Error('resolution not observed'); window.fetch=window.chatAnswerFetch; window.consumeChatAnswer(); return 'accepted response consumed after protected source resolution'; }`);
+  await until(`window.chatAnswerConsumed && !document.querySelector('[data-call-type="chat"]')`);
+  await evaluate(`() => { if(document.querySelector('[data-call-stub]')||sessionStorage.getItem('fm-quarterdeck-call-draft.v1:'+window.chatAnswerKey))throw Error('accepted chat left an unsent draft or stub'); return 'PASS Active-filter accepted chat resolves with cleared draft and no stub'; }`);
   const chatNote = await readFile(path.join(home, 'answer-note.txt'), 'utf8');
   const chatEnvelope = JSON.parse(/```json fm-bearings-answer\n([\s\S]*?)\n```/.exec(chatNote)[1]);
   assert.deepEqual([chatEnvelope.type, chatEnvelope.selection, chatEnvelope.note], ['chat', '', 'rotated']);
