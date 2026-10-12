@@ -1,4 +1,4 @@
-import { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
+import { extractAskSections, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 export { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 import { classifyAnsweredCalls } from "./answered-calls.js";
 import { inboxReceipts } from "./inbox.js";
@@ -251,11 +251,17 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
     let changed = false;
     for (const turn of recordTurns(record, origin, toolNames)) {
       if (turn.role === "firstmate") {
-        for (const found of extractAsks(turn.text)) {
+        let precedingEnd = 0;
+        for (const { ask: found, start, end } of extractAskSections(turn.text)) {
+          // Display-only evidence: never another text part or an earlier marker's ask.
+          // Sanitize before clipping so a cut cannot expose a partial absolute path.
+          const preceding = publicText(turn.text.slice(precedingEnd, start), Infinity);
+          precedingEnd = end;
+          const sourceContext = { text: preceding?.slice(-4000) || null, limited: Boolean(preceding && preceding.length > 4000) };
           const key = `chat:${shortHash([recordId, turn.part, found.line])}`;
           if (target.tombstones[key] || (target.asks[key] && target.asks[key].status !== "open")) continue;
           const existing = target.asks[key];
-          const ask = existing || { key, kind: found.kind, marker: found.marker, text: found.text, taskMarkers: found.taskMarkers, replies: found.replies, source, offset, part: turn.part, recordId, at, status: "open", linkedTasks: [] };
+          const ask = existing || { key, kind: found.kind, marker: found.marker, text: found.text, taskMarkers: found.taskMarkers, replies: found.replies, source, offset, part: turn.part, recordId, at, status: "open", linkedTasks: [], sourceContext };
           // Replay refreshes extraction on existing open cards, not just their cursors.
           if (existing && (JSON.stringify(existing.replies) !== JSON.stringify(found.replies) || JSON.stringify(existing.taskMarkers) !== JSON.stringify(found.taskMarkers))) {
             existing.taskMarkers = found.taskMarkers;
@@ -416,7 +422,12 @@ export function chatCard(ask) {
   const card = { key: ask.key, type: "chat", kind: ask.kind, marker: ask.marker, summary: publicText(ask.text, Infinity) || `${ask.marker} (no text)`, replies: options.map((option) => option.label),
     source: ask.source.split("/")[0], transcript: { offset: ask.offset, part: ask.part }, clock: { label: "Asked", at: ask.at },
     answer: { question: chatQuestion(ask.key), options, recommend: null, close: null, freeform: true } };
-  return { ...card, rev: shortHash(card) };
+  // Context is not answer/review identity. Existing summaries, options and revs stay exact.
+  return { ...card, rev: shortHash(card), sourceContext: contextEvidence(ask) };
+}
+function contextEvidence(ask) {
+  return { text: ask.sourceContext?.text || null, limited: Boolean(ask.sourceContext?.limited),
+    captured: Boolean(ask.sourceContext), source: ask.source.split("/")[0], offset: ask.offset, part: ask.part };
 }
 const linkedEntry = (ask) => {
   const replies = ask.replies.map((reply) => publicText(reply, 200)).filter(Boolean);
@@ -425,7 +436,7 @@ const linkedEntry = (ask) => {
     const hint = describedHint(ask.text, reply);
     if (hint) replyHints[reply] = hint;
   }
-  return { key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies, ...(Object.keys(replyHints).length ? { replyHints } : {}), clock: { label: "Asked", at: ask.at } };
+  return { key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies, ...(Object.keys(replyHints).length ? { replyHints } : {}), clock: { label: "Asked", at: ask.at }, sourceContext: contextEvidence(ask) };
 };
 // A filed decision with no structured choices offers lettered lines from a linked decision ask.
 function withLinkedChoices(card, entries) {
@@ -469,7 +480,8 @@ export function composeCallModel(base, asks, chatView) {
     // Missing choices stay text-only. The view already offers explicit linked replies;
     // a decision/approval marker alone cannot establish a boolean question.
     if (modified) {
-      return { ...rest, rev: shortHash(rest) };
+      const identity = { ...rest, chatAsks: rest.chatAsks.map(({ sourceContext, ...entry }) => entry) };
+      return { ...rest, rev: shortHash(identity) };
     }
     return card;
   });

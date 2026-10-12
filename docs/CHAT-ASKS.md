@@ -32,6 +32,14 @@ Inside a source, only the model's own text parts count as Firstmate text: Claude
   Those letters are not suggested-reply phrases, so a later chat message that contains the letter does not resolve the ask.
   A quoted reply line that continues with a description shows that description under the radio.
 
+### Read-only same-part context
+
+Marker-derived questions also display `sourceContext`: the preceding text in the **exact original assistant text part**, from the end of the previous extracted ask (or the start of the part) to this marker. It is literal source evidence, not a semantic association, summary extension, option, or instruction. Nothing from another part or message is used; earlier sibling asks are excluded. Text after this marker is not additional context.
+
+The existing public-text sanitizer normalizes whitespace and reduces absolute paths before keeping at most the **last 4000 characters**. A limited excerpt is explicitly labeled; an empty interval says no preceding text is available. Source category, record byte offset and one-based text-part number attribute each excerpt, including asks linked inside a filed card. Existing stored asks without captured context disclose that absence; this change does not reset cursors or replay lifecycle matching just to populate them.
+
+Context lives additively on the existing ask record, not in a new store. Canonical marker extraction, summary, key, card `rev`, answer question/options/routing, sibling asks and all closure rules remain unchanged. The composed model revision includes display evidence as usual, but context is excluded from individual card identity hashes. A previously stored ask remains without context until separately rediscovered as a new ask; no cross-message reconstruction is attempted.
+
 ### Card identity and deduplication
 
 - Key: `chat:` + 16-hex sha256 of `[transcript record id, text part index, marker line]`. The record id is Claude's `uuid` or Pi's `id`, with a source byte offset as the fallback. A session resumed into a new file keeps its record ids, so its asks keep the same keys.
