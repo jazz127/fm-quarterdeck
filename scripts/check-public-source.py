@@ -40,6 +40,70 @@ REVIEWED_BINARY_DIGESTS = {
     "prototype/public/icons/quarterdeck-512.png": "6070348a55ca3964651908c09d0627bea8d4cb4f07c93cc7bcdcdeb1e7cce403",
 }
 
+# A public source identity, not an owner inferred from Git configuration or audit input.
+OWN_PUBLIC_REPOSITORY = b"sthi-1005/fm-quarterdeck"
+CONSERVATIVE_RUNS = re.compile(rb"[A-Za-z0-9_.:/@-]+")
+# Keep query/fragment and escape context for embedded markers and public recognition.
+CONTENT_RUNS = re.compile(rb"[A-Za-z0-9_.:/@%\\?#&=+~-]+")
+IDENTITY_DELIMITERS = b" \t\r\n\"'`<>(){},;!"
+
+
+def public_owner_spans(data):
+    """Recognise only exact public coordinates and literal/slash-escaped HTTPS URLs."""
+    spans = set()
+    owner = OWN_PUBLIC_REPOSITORY.split(b"/")[0]
+    prefix = b"https://github.com/"
+    root = prefix + OWN_PUBLIC_REPOSITORY
+    for match in CONTENT_RUNS.finditer(data):
+        # Do not accept a canonical-looking ASCII prefix/suffix of a Unicode or
+        # control-character lookalike. Delimiters are lexical, not URL decoding.
+        if ((match.start() and data[match.start() - 1] not in IDENTITY_DELIMITERS) or
+                (match.end() < len(data) and data[match.end()] not in IDENTITY_DELIMITERS)):
+            continue
+        raw = match.group()
+        # Punctuation may separate prose but may also extend a repository path
+        # segment. A root/coordinate needs an unambiguous textual terminator.
+        terminal = match.end() == len(data) or data[match.end()] in b" \t\r\n\"'`<>"
+        if raw == OWN_PUBLIC_REPOSITORY:
+            if terminal:
+                spans.add((match.start(), match.start() + len(owner)))
+            continue
+        token = raw.replace(b"\\/", b"/")
+        # No percent decoding, alternate escaping, authority normalisation or mixed spelling.
+        if b"%" in raw or (b"\\" in raw and raw != token.replace(b"/", b"\\/")):
+            continue
+        if not token.startswith(root):
+            continue
+        tail = token[len(root):]
+        if (not tail and not terminal) or (tail and tail[:1] not in (b"/", b"?", b"#")):
+            continue
+        path = tail.split(b"?", 1)[0].split(b"#", 1)[0]
+        if any(part in (b".", b"..") for part in path.split(b"/")):
+            continue
+        owner_start = match.start() + len(prefix.replace(b"/", b"\\/") if b"\\" in raw else prefix)
+        spans.add((owner_start, owner_start + len(owner)))
+    return spans
+
+
+def marker_findings(data, markers, *, text_content=False):
+    """Whole bare text tokens; conservative substrings for names, binaries and structure."""
+    public_spans = public_owner_spans(data) if text_content else set()
+    findings = set()
+    runs = CONTENT_RUNS if text_content else CONSERVATIVE_RUNS
+    for match in runs.finditer(data):
+        token = match.group().lower()
+        bare = text_content and re.fullmatch(rb"[a-z0-9]+", token) is not None
+        for length, hashes in markers.items():
+            if bare and len(token) != length:
+                continue
+            starts = (0,) if bare else range(len(token) - length + 1)
+            for start in starts:
+                category = hashes.get(hashlib.sha256(token[start:start + length]).hexdigest())
+                if category and not (category == "github-owner" and
+                                     (match.start() + start, match.start() + start + length) in public_spans):
+                    findings.add("private marker: " + category)
+    return findings
+
 
 def reviewed_findings(name, data):
     """Filter only reviewed findings; semantic detectors remain independently usable."""
@@ -132,15 +196,15 @@ def scan(blobs, markers, blocked):
             found.add("F01/F05/F06/F10: original private/evidence blob")
         if any(digest.encode() in data.lower() for group in markers.values() for digest in group) or any(digest.encode() in data.lower() for digest in blocked):
             found.add("private audit fingerprint copied into source")
-        # Include filenames and ASCII runs in binary assets; substrings catch
-        # encoded paths, mixed case, userinfo and deceptive host suffixes.
-        for match in re.finditer(rb"[A-Za-z0-9_.:/@-]+", name.encode() + b"\n" + data):
-            text = match.group().lower()
-            for length, hashes in markers.items():
-                for start in range(len(text) - length + 1):
-                    category = hashes.get(hashlib.sha256(text[start:start + length]).hexdigest())
-                    if category:
-                        found.add("private marker: " + category)
+        # Names and binary ASCII keep conservative matching; only UTF-8 text
+        # identifiers and the exact public owner occurrence get discrimination.
+        try:
+            data.decode("utf-8")
+            text_content = True
+        except UnicodeDecodeError:
+            text_content = False
+        found.update(marker_findings(name.encode(), markers))
+        found.update(marker_findings(data, markers, text_content=text_content))
         # Only ordinals/categories: a filename itself could contain private values.
         failures.extend((index, category) for category in sorted(found))
     return failures
