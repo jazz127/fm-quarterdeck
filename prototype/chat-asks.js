@@ -2,7 +2,7 @@ import { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extr
 export { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 import { classifyAnsweredCalls } from "./answered-calls.js";
 import { inboxReceipts } from "./inbox.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { contentRevision, publicText, shortHash } from "./bearings.js";
@@ -10,6 +10,7 @@ import { enumeratedLetterOptions, publishOptions, replyDescription } from "./enu
 import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
 import { createHistoryReader } from "./history-reader.js";
 import { UNVERIFIED_INPUT } from "./authorship.js";
+import { parseBacklogTask, parseStatusLine } from "./firstmate-records.js";
 
 // Chat asks (BEARINGS.md "Chat asks"). Firstmate's captain-facing asks carry marker lines
 // (ACTION NEEDED / APPROVAL NEEDED / DECISION NEEDED). This module turns every such line in
@@ -219,11 +220,112 @@ async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillByte
   } finally { await handle.close(); }
 }
 
+// Explicit MAIN-owned historical-answer selection, never transcript/receipt inference.
+// The callback supplies exact file ranges; this boundary reads and validates the actual
+// monitored Pi records and native owner ledger/archive/parent events. No callback means
+// no reads, no added authority, and no change to ordinary user-record authorship.
+const historicalRefused = (code) => { throw new Error(code); };
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const historicalTime = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : historicalRefused("clock");
+const historicalId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(value);
+async function historicalRange(ref, expectedFile, { line = false, item = false, limit = 64 * 1024 } = {}) {
+  if (!ref || ref.file !== expectedFile || !path.isAbsolute(expectedFile) || !Number.isSafeInteger(ref.offset) || ref.offset < 0 ||
+      !Number.isSafeInteger(ref.length) || ref.length < 1 || ref.length > limit || !/^[a-f0-9]{64}$/.test(ref.sha256 || "") ||
+      !Number.isSafeInteger(ref.identity?.dev) || !Number.isSafeInteger(ref.identity?.ino)) historicalRefused("file-reference");
+  if (!await regularFile(expectedFile)) historicalRefused("file-identity");
+  const handle = await open(expectedFile, "r");
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== ref.identity.dev || before.ino !== ref.identity.ino || ref.offset + ref.length > before.size || await realpath(expectedFile) !== expectedFile) historicalRefused("file-identity");
+    if (ref.offset) {
+      const previous = Buffer.alloc(1);
+      if ((await handle.read(previous, 0, 1, ref.offset - 1)).bytesRead !== 1 || previous[0] !== 10) historicalRefused("record-boundary");
+    }
+    const bytes = Buffer.alloc(ref.length);
+    let read = 0;
+    while (read < bytes.length) {
+      const next = await handle.read(bytes, read, bytes.length - read, ref.offset + read);
+      if (!next.bytesRead) historicalRefused("record-boundary");
+      read += next.bytesRead;
+    }
+    if (bytes.at(-1) !== 10 || (line && bytes.subarray(0, -1).includes(10))) historicalRefused("record-boundary");
+    // A canonical item range must include its whole body, not a selectively projected
+    // answer hiding a later hold/context. Inspect only the next item/heading delimiter.
+    if (item && ref.offset + ref.length < before.size) {
+      const next = Buffer.alloc(8);
+      const tail = await handle.read(next, 0, next.length, ref.offset + ref.length);
+      if (!/^(?:- \[[ xX]\] |## )/.test(next.subarray(0, tail.bytesRead).toString("utf8"))) historicalRefused("item-boundary");
+    }
+    const after = await handle.stat();
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || sha256(bytes) !== ref.sha256) historicalRefused("record-digest");
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } finally { await handle.close(); }
+}
+function historicalItem(text, task) {
+  const lines = text.split("\n");
+  const match = /^- \[([ xX])\] (\S+) - (.+)$/.exec(lines[0]);
+  if (!match || match[2] !== task || lines.slice(1).some(line => /^\s*- \[[ xX]\] \S+ - |^## /.test(line))) historicalRefused("owner-item");
+  return { parsed: parseBacklogTask(match[3], match[1] !== " "), body: lines.slice(1).join("\n") };
+}
+function historicalTarget(ask, record, claim, source) {
+  if (!ask || ask.status !== "open" || ask.linkedTasks.length || ask.source !== source.source || ask.recordId !== claim.request.eventId ||
+      ask.offset !== claim.request.ref.offset || ask.part !== claim.request.part || chatCard(ask).rev !== claim.request.rev ||
+      (ask.holdVersion ?? null) !== (claim.request.holdVersion ?? null)) historicalRefused("current-target");
+  if (record.type !== "message" || record.id !== ask.recordId || record.message?.role !== "assistant") historicalRefused("request-event");
+  const turn = recordTurns(record, "pi").find(turn => turn.part === ask.part && turn.role === "firstmate");
+  const at = new Date(historicalTime(record.timestamp)).toISOString();
+  const found = turn && extractAsks(turn.text).find(found => `chat:${shortHash([record.id, turn.part, found.line])}` === ask.key);
+  if (!found || ask.key !== claim.request.key || ask.at !== at || ["kind", "marker", "text", "taskMarkers", "replies"].some(name => JSON.stringify(ask[name]) !== JSON.stringify(found[name]))) historicalRefused("request-identity");
+}
+async function validateHistoricalAnswer(claim, { home, sources, ask, now, maxLineBytes }) {
+  if (!claim?.request || !claim?.answer || !claim?.owner || !historicalId(claim.request.eventId) || !historicalId(claim.answer.eventId)) historicalRefused("association");
+  const source = sources.find(source => source.source === claim.request.source && source.file === claim.request.ref?.file && source.origin === "pi");
+  if (!source || claim.answer.ref?.file !== source.file) historicalRefused("monitored-source");
+  if (!Number.isSafeInteger(claim.request.part) || claim.request.part < 0 || !Number.isSafeInteger(claim.answer.part) || claim.answer.part < 0) historicalRefused("part");
+  const request = JSON.parse(await historicalRange(claim.request.ref, source.file, { line: true, limit: maxLineBytes }));
+  historicalTarget(ask, request, claim, source);
+  const answer = JSON.parse(await historicalRange(claim.answer.ref, source.file, { line: true, limit: maxLineBytes }));
+  const answerTurn = recordTurns(answer, "pi").find(turn => turn.part === claim.answer.part && turn.role === UNVERIFIED_INPUT.role);
+  if (answer.type !== "message" || answer.id !== claim.answer.eventId || answer.message?.role !== "user" || !answerTurn || MACHINE_TEXT.test(answerTurn.text)) historicalRefused("answer-event");
+  if (!/^[a-f0-9]{64}$/.test(claim.answer.digest || "") || sha256(answerTurn.text) !== claim.answer.digest) historicalRefused("answer-digest");
+  const owner = claim.owner;
+  if (!historicalId(owner.task) || !historicalId(owner.fleet) || !path.isAbsolute(owner.home || "") || await realpath(owner.home) !== owner.home ||
+      !Number.isSafeInteger(owner.occurrence) || owner.occurrence < 1 || owner.parentKey !== `captain-hold-${owner.task}-${owner.occurrence}` ||
+      ask.taskMarkers.length !== 1 || ask.taskMarkers[0] !== owner.task) historicalRefused("owner");
+  const held = historicalItem(await historicalRange(owner.held, path.join(owner.home, "data", "note-archive.md"), { item: true }), owner.task);
+  const resolution = historicalItem(await historicalRange(owner.resolution, path.join(owner.home, "data", "backlog.md"), { item: true }), owner.task);
+  const prior = [...held.body.matchAll(/^  Resolution recorded by fm-captain-hold\.$/gm)].length;
+  const stamp = /^  Captain hold set: (\S+)$/gm;
+  const stamps = [...held.body.matchAll(stamp)].map(match => match[1]);
+  if (held.parsed.holdKind !== "captain" || !held.parsed.holdActive || !held.parsed.holdReason?.trim() || stamps.length !== 1 || stamps[0] !== owner.heldAt || owner.occurrence !== prior + 1 ||
+      resolution.parsed.holdActive || !["released", "answered"].includes(owner.mode)) historicalRefused("owner-occurrence");
+  const prefix = `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${claim.answer.digest}\n  Resolution mode: ${owner.mode}\n\n  Captain decision:\n`;
+  const decision = answerTurn.text.split("\n").map(line => line ? `  ${line}` : "").join("\n");
+  const previous = held.body.replace(/^  Captain hold set: \S+\n\n/, "");
+  // Native release prepends the new exact answer and preserves the prior body. This
+  // checks the recorded occurrence, actual bytes and retained history, not task Done.
+  if (resolution.body !== `${prefix}${decision}\n\n${previous}`) historicalRefused("owner-resolution");
+  const parentFile = path.join(home, "state", `${owner.fleet}.status`);
+  const event = async ref => parseStatusLine((await historicalRange(ref, parentFile, { line: true, limit: 16 * 1024 })).replace(/\n$/, ""));
+  const raised = await event(owner.raised), resolved = await event(owner.resolved);
+  const epoch = event => {
+    const values = event.fields.filter(field => field.name === "at");
+    if (!event.transitionAllowed || event.key !== owner.parentKey || event.fields.filter(field => field.name === "key").length !== 1 || values.length !== 1 || !/^\d+$/.test(values[0].value)) historicalRefused("parent-event");
+    return Number(values[0].value) * 1000;
+  };
+  const heldAt = historicalTime(owner.heldAt), askAt = historicalTime(request.timestamp), answerAt = historicalTime(answer.timestamp), resolvedAt = historicalTime(owner.resolvedAt);
+  if (raised.state !== "needs-decision" || !raised.text.startsWith(`captain hold ${owner.task}: `) || resolved.state !== "resolved" || resolved.text !== `captain hold ${owner.task}: ${owner.mode}` ||
+      epoch(raised) < heldAt || epoch(raised) > askAt || epoch(resolved) !== resolvedAt || heldAt > askAt || askAt > answerAt || answerAt > resolvedAt || resolvedAt > now ||
+      claim.request.ref.offset + claim.request.ref.length > claim.answer.ref.offset || owner.raised.offset >= owner.resolved.offset) historicalRefused("occurrence-clock");
+  return { request, source, task: owner.task, mode: owner.mode };
+}
+
 // ---------------------------------------------------------------------------------------
 // The scanner owns the chat-ask state. scan() is cheap when nothing grew (stat only).
 export function createChatAskScanner({ home, claudeConfigDir = null, historyLimits = {}, statePath = null, store = statePath ? createStateFile(statePath) : memoryStateFile(),
   now = Date.now, discover = discoverPrimarySources, discoverEveryMs = 30000, backfillBytes = 4 * MiB, backfillMaxAgeMs = 24 * 3600 * 1000,
-  maxScanBytes = 4 * MiB, maxLineBytes = 2 * MiB } = {}) {
+  maxScanBytes = 4 * MiB, maxLineBytes = 2 * MiB, historicalAnswer = null } = {}) {
+  if (historicalAnswer !== null && typeof historicalAnswer !== "function") throw new TypeError("Historical answer producer must be an explicitly configured function");
   let state = null;
   let view = { state: home ? "loading" : "unavailable", error: home ? null : "FM_HOME is not configured", checkedAt: null, sources: [], warnings: [] };
   let sources = null, discoveredAt = -Infinity, scanning = null;
@@ -287,6 +389,39 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
     return sources;
   }
 
+  async function admitHistorical(active) {
+    if (!historicalAnswer) return false;
+    let deadline;
+    try {
+      const validated = await Promise.race([
+        (async () => {
+          // Freeze selection before any await; re-check the actual target inside the
+          // same existing state-file transaction before resolution. Never expose this
+          // callback as an HTTP/environment/audit-file intake.
+          const claim = structuredClone(await historicalAnswer());
+          if (claim === null || state.tombstones[claim?.request?.key]) return null;
+          const proof = await validateHistoricalAnswer(claim, { home, sources: active, ask: state.asks[claim?.request?.key], now: now(), maxLineBytes });
+          return { claim, proof };
+        })(),
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("producer-timeout")), 1500); }),
+      ]);
+      if (!validated) return false;
+      const { claim, proof } = validated;
+      const result = await mutate(target => {
+        historicalTarget(target.asks[claim.request.key], proof.request, claim, proof.source);
+        const dirty = resolveAsk(target, target.asks[claim.request.key], "answered", { resolutionSource: "verified historical answer", resolvedTasks: [proof.task], holdResolutions: [{ task: proof.task, resolution: proof.mode }] });
+        prune(target);
+        return { dirty, write: dirty };
+      });
+      return result.dirty;
+    } catch (error) {
+      const safeCodes = new Set(["association", "file-reference", "file-identity", "record-boundary", "item-boundary", "record-digest", "owner-item", "current-target", "request-event", "request-identity", "monitored-source", "part", "answer-event", "answer-digest", "owner", "owner-occurrence", "owner-resolution", "parent-event", "occurrence-clock", "clock", "producer-timeout"]);
+      const code = safeCodes.has(error.message) ? error.message : "unavailable";
+      view.warnings = [...view.warnings, `Historical answer not admitted: ${code}`].filter((value, index, values) => values.indexOf(value) === index);
+      return false;
+    } finally { clearTimeout(deadline); }
+  }
+
   async function scanOnce() {
     if (!home) return false;
     try {
@@ -344,7 +479,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
       const behind = [...sourceStatus.values()].some((entry) => entry.behind);
       view = { ...view, state: "ready", error: null, checkedAt: new Date(now()).toISOString(), behind,
         sources: active.map((entry) => sourceStatus.get(entry.source) || { source: entry.source, behind: false, backfillOmittedBytes: 0 }) };
-      return changed;
+      return await admitHistorical(active) || changed;
     } catch (error) {
       view = { ...view, state: state ? "stale" : "unavailable", error: `Chat asks unavailable: ${error.code || error.message}`, checkedAt: new Date(now()).toISOString() };
       return false;

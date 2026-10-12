@@ -59,6 +59,7 @@
     "test/captains-call-clarity.test.js",
     "test/bearings.test.js",
     "test/browser-harness.test.mjs",
+    "test/chat-asks-historical-answer.test.js",
     "test/chat-asks-repair.test.js",
     "test/chat-asks.test.js",
     "test/chat-feed-min-width.test.js",
