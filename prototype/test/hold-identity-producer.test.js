@@ -111,6 +111,43 @@ test('generated re-hold keeps exact old note/reply as contextual provenance, cur
   assert.equal(JSON.stringify(receipts), original);
 });
 
+test('a real current-cycle thread submission isolates the held-card count without importing earlier Sent', async () => {
+  const original = card({ reason: undefined, summary: 'Original rollout question' });
+  const current = card({ reason: undefined, summary: 'Changed rollout question', hold_set_at: later });
+  const oldNote = { id: 'earlier', at: sent, request_id: threadRequestId(original.key, uuid),
+    body: formatThreadNote({ key: original.key, card: original, text: 'Earlier pending question', requestId: uuid }) };
+  const oldBytes = JSON.stringify(oldNote);
+  const receipts = { pending: [oldNote], handled: [], replies: [] };
+  const otherCards = [{ key: 'decision:credential' }, { key: 'decision:extra' }, { key: 'merge:example', sentReceipt: 'pending' }];
+  const activeCount = (c) => [c, ...otherCards].filter(card => win.callLifecycle.cardState({ card }) === 'active').length;
+  assert.equal(activeCount(classifyAnsweredCalls([current], receipts)[0]), 3, 'an earlier pending note cannot establish current Sent');
+  const relay = createThreadRelay({ home: '/synthetic/home', now: () => Date.parse('2026-01-02T13:00:00Z'),
+    transcript: async () => ({ turns: [], omitted: false }), receipts: async () => receipts,
+    note: async (_home, requestId, body, { record }) => {
+      receipts.pending.push({ id: 'current', request_id: requestId, body, at: record.at });
+      return { id: 'current', outcome: 'created' };
+    } });
+  const question = 'Clarify the current rollout question before proceeding';
+  const requestId = uuid.replace(/1$/, '2');
+  const submitted = await relay.submit({ key: current.key, requestId, text: question }, { cards: [current] });
+  assert.equal(submitted.state, 'accepted');
+  assert.equal(submitted.replay, false);
+  assert.doesNotMatch(receipts.pending[1].body, /fm-bearings-answer/, 'this path records a real question, not an invented answer');
+  const sentCurrent = classifyAnsweredCalls([current], receipts)[0];
+  assert.equal(sentCurrent.sentReceipt, 'pending');
+  assert.equal(activeCount(sentCurrent), 2, 'the unchanged two-count precondition now has current-cycle evidence');
+  const history = await relay.history(current.key, { cards: [current] });
+  assert.deepEqual(history.entries.map(e => e.text), [question]);
+  assert.equal(history.entries[0].holdVersion, current.holdVersion);
+  assert.deepEqual(history.provenance.map(e => e.text), ['Earlier pending question']);
+  const next = card({ reason: undefined, summary: 'Latest question after typing', hold_set_at: later });
+  assert.notEqual(next.holdVersion, current.holdVersion);
+  assert.equal(activeCount(classifyAnsweredCalls([next], receipts)[0]), 3, 'the next real reason change remains Active');
+  assert.equal(win.callLifecycle.cardState({ card: sentCurrent, thread: history }), 'sent', 'an engaged view retaining the applied cycle still shows its authentic Sent');
+  assert.equal(win.callLifecycle.cardState({ card: next, thread: history }), 'active', 'cached history cannot make the next cycle Sent');
+  assert.equal(JSON.stringify(oldNote), oldBytes);
+});
+
 test('generated new cycle stays Active while cached thread and local sent state still belong to the old cycle', () => {
   const old = card(), current = card({ hold_set_at: later });
   const entry = { kind: 'ask', from: 'captain', state: 'waiting', holdVersion: old.holdVersion, at: sent };

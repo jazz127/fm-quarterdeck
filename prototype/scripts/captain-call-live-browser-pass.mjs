@@ -944,6 +944,27 @@ try {
   await evaluate(`() => { window.proof={}; proof.alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); proof.beta=document.querySelector('[data-call-key="merge:beta-merge"]'); proof.alphaField=proof.alpha.querySelector('[data-call-answer-text]'); proof.betaField=proof.beta.querySelector('[data-call-answer-text]'); proof.rebuilds=0; new MutationObserver(ms=>proof.rebuilds+=ms.filter(m=>m.target===proof.alpha&&m.type==='childList'&&m.removedNodes.length>1).length).observe(proof.alpha,{childList:true}); return {revision:window.FM_BOOT_REVISION, noTree:!document.querySelector('#projects')}; }`);
   raw.decisions_open[0].summary = 'Changed rollout question'; await change();
   await until("proof.alpha.innerText.includes('Changed rollout question')");
+  // Isolate the engaged-card scenario from the earlier re-hold: only a real
+  // current-cycle thread send may establish Sent, never its prior pending notes.
+  const engagedCycle = server.bearings.current().cards.find(card => card.key === 'decision:alpha-call');
+  const currentQuestion = 'Clarify the current rollout question before proceeding';
+  const threadsBeforeIsolation = (await readFile(path.join(home, 'thread-attempts'), 'utf8')).trim().split('\n').filter(Boolean);
+  await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); for(const radio of card.querySelectorAll('input[type=radio]')){radio.checked=false;radio.dispatchEvent(new Event('change',{bubbles:true}));} return 'current-cycle thread, no answer selected'; }`);
+  await answer('decision:alpha-call', currentQuestion);
+  await review('decision:alpha-call'); await action('decision:alpha-call', 'send');
+  await phase('decision:alpha-call', 'compose');
+  await until(`document.querySelector('[data-call-key="decision:alpha-call"]').dataset.callLifecycle==='sent'`);
+  // Wait for the actual durable receipt projection before staging the next update.
+  await until(`(await fetch('/api/bearings').then(r=>r.json())).cards.some(c=>c.key==='decision:alpha-call' && c.holdVersion===${JSON.stringify(engagedCycle.holdVersion)} && c.sentReceipt==='pending')`);
+  const isolationThreads = (await readFile(path.join(home, 'thread-attempts'), 'utf8')).trim().split('\n').filter(Boolean);
+  assert.equal(isolationThreads.length, threadsBeforeIsolation.length + 1);
+  const isolationId = isolationThreads.at(-1);
+  const isolationBody = await readFile(path.join(home, `thread-${isolationId}.txt`), 'utf8');
+  const isolationEnvelope = JSON.parse(/```json fm-quarterdeck-thread\n([\s\S]*?)\n```/.exec(isolationBody)[1]);
+  assert.deepEqual([isolationEnvelope.key, isolationEnvelope.holdVersion, isolationEnvelope.question], ['decision:alpha-call', engagedCycle.holdVersion, currentQuestion]);
+  assert.ok(Date.parse(await readFile(path.join(home, `thread-${isolationId}.at`), 'utf8')) >= Date.parse(engagedCycle.clock.at));
+  assert.doesNotMatch(isolationBody, /fm-bearings-answer/, 'scenario isolation asks a question; it fabricates no answer');
+  await evaluate(`() => { if(document.querySelector('[data-call-key="decision:alpha-call"]').dataset.callLifecycle!=='sent')throw Error('current-cycle Sent precondition missing'); return 'durable current-cycle Sent before held update'; }`);
   await evaluate(`() => { if(proof.alpha!==document.querySelector('[data-call-key="decision:alpha-call"]')||proof.beta!==document.querySelector('[data-call-key="merge:beta-merge"]')||proof.betaField!==proof.beta.querySelector('[data-call-answer-text]')||proof.alphaField===proof.alpha.querySelector('[data-call-answer-text]')||proof.rebuilds!==1)throw Error('keyed identity/rebuild failure'); proof.alphaField=proof.alpha.querySelector('[data-call-answer-text]'); proof.rebuilds=0; proof.alphaField.focus(); proof.alphaField.value='Unsent synthetic reminder'; proof.alphaField.dispatchEvent(new Event('input',{bubbles:true})); return 'PASS unengaged keyed inner patch; unchanged node identity'; }`);
   raw.decisions_open[0].summary = 'Latest question after typing'; raw.decisions_open.push({ id: 'extra-call', key: 'extra-call', summary: 'New synthetic call', owner: '(main)', verb: 'captain-hold' });
   raw.contributions.captain.find(c=>c.task==='beta-merge').reason = 'Unengaged beta updates immediately';
@@ -955,7 +976,7 @@ try {
     await browser('screenshot', path.join(proof, `captain-call-held-${width}.png`));
   }
   await evaluate(`() => { proof.alpha.querySelector('[data-call-update-now]').click(); return 'local Update now'; }`);
-  await until("!proof.alpha.querySelector('[data-call-held]')");
+  await until("!proof.alpha.querySelector('[data-call-held]') && proof.alpha.dataset.callLifecycle==='active'");
   await evaluate(`() => { if(proof.rebuilds!==1||proof.alpha.querySelector('[data-call-answer-text]').value!=='Unsent synthetic reminder')throw Error('Update now must rebuild once and restore draft'); proof.alpha.querySelector('[data-call-answer-text]').focus(); return 'PASS per-card notice, copyable draft, local Update now'; }`);
   raw.decisions_open = raw.decisions_open.filter(c=>c.id!=='alpha-call'); raw.contributions.captain = raw.contributions.captain.filter(c=>c.task!=='alpha-call'); await change();
   await until("!!proof.alpha.querySelector('[data-call-held]')");
