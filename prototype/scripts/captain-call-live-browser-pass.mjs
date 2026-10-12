@@ -49,7 +49,8 @@ const landedBacklog = `- [ ] sample-queue - Prepare the sample follow-up (repo: 
 - [x] ship-window - Ship the example-app release window (repo: example-app) (done 2026-10-01)
 - [x] local-notes - Land the sample notes on local main (repo: sample-notes) (merged 2026-10-02)
 `;
-const alphaBacklog = () => `# Synthetic backlog ${raw.generated}\n- [ ] alpha-call - ${alphaFull} (repo: example-app)\n${landedBacklog}${extraBacklog}`;
+let alphaRepo = 'example-app';
+const alphaBacklog = () => `# Synthetic backlog ${raw.generated}\n- [ ] alpha-call - ${alphaFull} (repo: ${alphaRepo})\n${landedBacklog}${extraBacklog}`;
 await writeFile(path.join(home, 'data/backlog.md'), alphaBacklog());
 await writeFile(path.join(home, 'data/projects.md'), '- synthetic-repository - Offline fixture\n');
 const script = path.join(home, 'bin/fm-bearings-snapshot.sh');
@@ -849,7 +850,8 @@ try {
   const heldVersion = structured.holdVersion;
   assert.match(heldVersion, /^[0-9a-f]{16}$/);
   await disengage();
-  raw.in_flight.find(row => row.id === 'alpha-call').repo = 'example-app-display';
+  // The canonical work companion replaces in_flight; this decision's repo comes from the selected ledger.
+  alphaRepo = 'example-app-display';
   await change();
   await until(`document.querySelector('[data-call-key="decision:alpha-call"] .call-repo').textContent.includes('example-app-display')`);
   await phase('decision:alpha-call', 'sent');
