@@ -1916,7 +1916,8 @@ const overviewTabs = window.overviewTabs?.createController?.({
   secondary: $("#overview-secondary"),
   counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0, underway: () => workBoard?.count("underway") || 0, charted: () => workBoard?.count("charted") || 0 },
   storage: localStorage,
-  media: window.matchMedia?.("(max-width: 720.005px)"),
+  // Phone and tablet share one column and the section tabs. Two columns start at 1100px.
+  media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
   onModel(model) { callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },

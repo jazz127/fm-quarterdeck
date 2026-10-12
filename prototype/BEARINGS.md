@@ -340,13 +340,15 @@ The installed stock readers own lifecycle, registered collection and gate classi
 ## Just landed
 
 Overview's second column shows the snapshot's `landed` rows as poster cards in the same visual language as Captain's Call.
-At the phone one-column breakpoint, the Overview body starts with four tabs, Captain's Call (N), Just landed (N), Underway (N) and Charted Next (N), and shows one section at a time.
+Through 1099px, Overview shows one section at a time behind four tabs, Captain's Call (N), Just landed (N), Underway (N) and Charted Next (N).
+On a phone, through 720px, those tabs are a fixed bar at the bottom of the viewport, above the navigation dock, and the cards scroll clear of that bar.
+From 721px through 1099px the tabs stay in the page under the summary.
 Captain's Call N counts every open card, including filtered cards.
 Just landed N counts landings whose current rev is not the acknowledged rev.
 The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
 The phone tab still shows Just landed (0) when none are new, the same way Captain's Call (0) stays visible.
 The chosen tab is remembered for that viewer in localStorage under `fm-quarterdeck-overview-tab.v1`.
-A desktop width keeps both columns, with the same 22px gap, and does not show the tabs.
+From 1100px wide, Overview keeps both columns, with the same 22px gap, and does not show the tabs.
 The source is the same guarded snapshot.
 There is no board builder and no read of another home.
 Each row supplies `id`, `what`, `artifact` and `owner`.
