@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
+import { normalizeSnapshot } from "../bearings.js";
 
 const sources = await Promise.all(["bearings-patch.js", "bearings-view.js", "bearings-answer-form.js", "bearings-overflow.js", "call-lifecycle.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
 const flush = async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
@@ -69,6 +70,50 @@ test('optional cycle identity retains an accepted answer across presentation cha
   t.patcher.update(model([{...c,rev:'b3',holdVersion:'new'}]));t.leave();
   assert.equal(t.answers.state(key),null,'new hold excludes the old local lock');
   assert.equal(t.part(key,'text').readOnly,false);
+});
+
+const generatedDecision = (hold = '2026-01-02T10:00:00Z', extra = {}) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: [{ id: 'alpha-call', owner: '(main)', summary: 'Pick a window', reason: 'Choose staged or now', hold_set_at: hold, options: [{ value: 'staged', label: 'Staged' }, { value: 'now', label: 'Now' }], ...extra }], contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }).cards[0];
+
+test('generated hold upgrades unversioned legacy sent state only with current durable classification and forgets a re-hold on reload', () => {
+  const key = 'decision:alpha-call', storageKey = 'fm-quarterdeck-call-answer.v1:' + key;
+  const legacy = { phase: 'sent', requestId: uuid(9), note: 'Use staged', selection: 'staged', sentAt: '2026-01-02T11:00:00Z', receipt: { state: 'accepted' } };
+  for (const answered of [false, true]) {
+    const storage = tabStorage(); storage.setItem(storageKey, JSON.stringify(legacy));
+    const t = setup({ storage }); const c = generatedDecision();
+    t.patcher.update(model([{ ...c, answered }]));
+    if (answered) {
+      assert.equal(t.answers.state(key).holdVersion, c.holdVersion);
+      assert.equal(t.part(key, 'text').readOnly, true);
+      const reload = setup({ storage }); reload.patcher.update(model([generatedDecision('2026-01-02T12:00:00Z')]));
+      assert.equal(reload.answers.state(key), null);
+      assert.equal(reload.part(key, 'text').value, '');
+      assert.equal(reload.part(key, 'text').readOnly, false);
+      assert.equal(reload.node(key).querySelectorAll('input[type="radio"]').some(input => input.checked), false);
+    } else {
+      assert.equal(t.answers.state(key), null, 'missing current durable receipt cannot upgrade legacy local words');
+      assert.equal(t.part(key, 'text').value, '');
+    }
+    assert.equal(t.fetches.length, 0, 'upgrade/reset never resends');
+  }
+});
+
+test('actual generated cycle retains sent echo for cosmetic update but clears local lock between history polls', async () => {
+  const t = setup({ responses: [{ status: 202, body: { state: 'accepted', sentAt: '2026-01-02T11:00:00Z' } }] });
+  const key = 'decision:alpha-call', c = generatedDecision();
+  t.patcher.update(model([c]));
+  const radio = t.node(key).querySelector('input[value="staged"]'); radio.checked = true; radio.dispatchEvent({ type: 'change' });
+  t.part(key, 'text').type('Use the staged window'); t.submit(key); t.part(key, 'send').click(); await flush(); t.leave();
+  assert.equal(t.answers.state(key).holdVersion, c.holdVersion);
+  t.patcher.update(model([generatedDecision(undefined, { repo: 'example-app' })])); t.leave();
+  assert.equal(t.answers.state(key).phase, 'sent');
+  assert.equal(t.part(key, 'text').value, 'Use the staged window');
+  t.patcher.update(model([generatedDecision('2026-01-02T12:00:00Z')])); t.leave();
+  assert.equal(t.answers.state(key), null);
+  assert.equal(t.part(key, 'summary').hidden, true);
+  assert.equal(t.part(key, 'text').readOnly, false);
+  assert.equal(t.part(key, 'text').value, '');
+  assert.equal(t.node(key).querySelectorAll('input[type="radio"]').some(input => input.checked), false);
+  assert.equal(t.fetches.length, 1, 're-hold never replays the accepted answer');
 });
 
 test('protected sorting preserves typing, confirmation and viewer preference across reload', () => {

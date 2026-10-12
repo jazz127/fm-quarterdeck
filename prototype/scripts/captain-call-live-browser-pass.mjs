@@ -110,6 +110,9 @@ for (const item of items) {
   await appendFile(home + '/' + kind + '-attempts', item.requestId + '\\n');
   await writeFile(home + '/' + kind + '-note.txt', item.text);
   await writeFile(home + '/' + kind + '-' + item.requestId + '.txt', item.text);
+  // Seal a comparable receipt time once; polling must not rejuvenate an old note.
+  const atFile = home + '/' + kind + '-' + item.requestId + '.at';
+  await writeFile(atFile, new Date().toISOString(), { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
   if (!thread) {
     if (await readFile(home + '/fail-answer').then(() => true, () => false)) process.exit(1);
     if (await readFile(home + '/delay-answer').then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 5000));
@@ -124,8 +127,8 @@ import { readFile } from 'node:fs/promises';
 const read = async name => readFile(process.env.FM_HOME + '/' + name, 'utf8').catch(() => '');
 const id = await read('answer-request-id');
 const state = await read('receipt-state');
-const note = { id: 'note-1', request_id: id };
-const data = { schema: 'fm-inbox-receipts.v1', pending: state === 'received' || state === 'replied' ? [] : [note], handled: state === 'received' || state === 'replied' ? [note] : [], replies: state === 'replied' ? [{ id: 'note-1', body: 'Synthetic answer recorded' }] : [] };
+const note = { id: 'note-1', request_id: id, at: await read('answer-' + id + '.at'), body: await read('answer-' + id + '.txt') };
+const data = { schema: 'fm-inbox-receipts.v1', pending: state === 'received' || state === 'replied' ? [] : [note], handled: state === 'received' || state === 'replied' ? [note] : [], replies: state === 'replied' ? [{ id: 'note-1', at: new Date(Date.parse(note.at) + 1).toISOString(), body: 'Synthetic answer recorded' }] : [] };
 const lines = async (name) => (await read(name)).split('\\n').map((line) => line.trim()).filter(Boolean);
 const threadIds = await lines('thread-attempts');
 const acked = new Set(await lines('thread-acked'));
@@ -134,12 +137,11 @@ for (let i = 0; i < threadIds.length; i++) {
   const requestId = threadIds[i];
   const body = await read('thread-' + requestId + '.txt');
   if (!body) continue;
-  const minute = String(i).padStart(2, '0');
-  const note = { id: 'thread-' + (i + 1), request_id: requestId, at: '2026-01-02T10:' + minute + ':00.000Z', body };
+  const note = { id: 'thread-' + (i + 1), request_id: requestId, at: await read('thread-' + requestId + '.at'), body };
   const answered = repliedIds.has(requestId);
   if (answered || acked.has(requestId)) data.handled.push(note);
   else data.pending.push(note);
-  if (answered) data.replies.push({ id: note.id, at: '2026-01-02T11:' + minute + ':00.000Z', body: 'This call chooses the synthetic release window. Read https://example.invalid/acme/example-app/guide. Then https://example.invalid/acme/example-app/details?mode=phone&section=notes (keep this note).' });
+  if (answered) data.replies.push({ id: note.id, at: new Date(Date.parse(note.at) + 1).toISOString(), body: 'This call chooses the synthetic release window. Read https://example.invalid/acme/example-app/guide. Then https://example.invalid/acme/example-app/details?mode=phone&section=notes (keep this note).' });
 }
 console.log(JSON.stringify(data));
 `);
@@ -843,6 +845,32 @@ try {
     await browser('screenshot', path.join(proof, `captain-lifecycle-all-${width}.png`));
   }
   await phoneShot('decision:alpha-call','sent');
+  // Real generated hold identity survives a cosmetic repo change and reload, not a new hold.
+  const heldVersion = structured.holdVersion;
+  assert.match(heldVersion, /^[0-9a-f]{16}$/);
+  await disengage();
+  raw.in_flight.find(row => row.id === 'alpha-call').repo = 'example-app-display';
+  await change();
+  await until(`document.querySelector('[data-call-key="decision:alpha-call"] .call-repo').textContent.includes('example-app-display')`);
+  await phase('decision:alpha-call', 'sent');
+  await evaluate(`() => { document.documentElement.dataset.reloadProof='waiting'; location.reload(); return 'reload generated sent cycle'; }`);
+  await settleReload(); await phase('decision:alpha-call', 'sent');
+  await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); if(!card.querySelector('[data-call-answer-text]').readOnly||card.querySelector('[data-call-answer-text]').value!=='After the synthetic demo')throw Error('cosmetic reload lost sent echo'); return 'generated sent echo retained'; }`);
+  const cycleAttempts = (await attempts()).length;
+  const cycleSentId = (await attempts()).at(-1);
+  raw.decisions_open[0].hold_set_at = new Date().toISOString();
+  await change();
+  await until(`(() => { const c=document.querySelector('[data-call-key="decision:alpha-call"]'); return c.dataset.callLifecycle==='active' && c.querySelector('[data-call-answer]').dataset.callAnswerPhase==='compose' && !c.querySelector('[data-call-answer-text]').readOnly && !c.querySelector('[data-call-answer-text]').value && !c.querySelector('input:checked') && c.querySelector('[data-call-answer-summary]').hidden && c.querySelector('[data-fm-reply]').hidden; })()`);
+  assert.equal((await attempts()).length, cycleAttempts, 'new same-key hold never replays an answer');
+  await evaluate(`() => { document.documentElement.dataset.reloadProof='waiting'; location.reload(); return 'reload re-held cycle'; }`);
+  await settleReload(); await phase('decision:alpha-call', 'compose');
+  await evaluate(`() => { const c=document.querySelector('[data-call-key="decision:alpha-call"]'); if(c.dataset.callLifecycle!=='active'||c.querySelector('[data-call-answer-text]').readOnly||c.querySelector('[data-call-answer-text]').value||c.querySelector('input:checked'))throw Error('reload resurrected old cycle'); return 'generated re-hold active on reload'; }`);
+  await answer('decision:alpha-call','After the synthetic demo','staged');
+  await review('decision:alpha-call'); await action('decision:alpha-call','send');
+  await phase('decision:alpha-call','sent');
+  const reheldAnswer = await envelopeNow();
+  assert.notEqual(reheldAnswer.holdVersion, heldVersion);
+  assert.notEqual((await attempts()).at(-1), cycleSentId, 'new reviewed answer has its own durable intake identity');
   await writeFile(path.join(home,'receipt-state'),'received');
   await until(`document.querySelector('[data-call-key="decision:alpha-call"] [data-call-answer-receipt-text]').textContent.includes('received by Firstmate')`);
   await phoneShot('decision:alpha-call','received');

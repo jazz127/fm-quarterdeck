@@ -53,6 +53,7 @@
     "test/bearings-answer.test.js",
     "test/bearings-board-options.test.js",
     "test/bearings-clocks.test.js",
+    "test/hold-identity-producer.test.js",
     "test/bearings-landed.test.js",
     "test/bearings-procrastination.test.js",
     "test/bearings-thread.test.js",
