@@ -195,6 +195,13 @@ window.bearingsView = (() => {
     </section><p class="call-meta" data-call-thread-notice role="status" hidden></p>`;
   const CHAT_LABELS = { approval: "Approval", action: "Action", decision: "Decision" };
   const repliesText = (replies) => (Array.isArray(replies) && replies.length ? replies.map((reply) => `“${reply}”`).join(" or ") : "No quoted reply");
+  // Read-only source prose, never choices or an extension of the canonical ask.
+  function sourceContextHtml(context) {
+    const text = context?.text;
+    const missing = context?.captured ? "No preceding text before this marker in the available same-part interval." : "Same-part context was not captured for this stored ask.";
+    const source = context ? `${context.source || "Transcript"} · record byte ${context.offset ?? "unknown"} · text part ${Number.isSafeInteger(context.part) ? context.part + 1 : "unknown"}` : "Transcript location unavailable";
+    return `<div data-call-source-context><p class="call-meta">Preceding text · same assistant part · ${escape(source)}</p><p>${escape(text || missing)}</p><p class="call-meta">${context?.limited ? "Limited excerpt: only the last 4000 characters of preceding text are shown. " : ""}Stops at the previous ask, if any; no other text parts or messages are used. Source whitespace is normalized and absolute paths reduced. Context is not an answer option.</p></div>`;
+  }
   // A chat ask is one Firstmate made in conversation without filing a hold (BEARINGS.md "Chat asks").
   function chatCardHtml(card) {
     const label = CHAT_LABELS[card.kind] || "Ask";
@@ -206,6 +213,7 @@ window.bearingsView = (() => {
       ${sentLabelHtml()}
       ${yourAnswerHtml()}
       ${headlineHtml(id, summary, card)}
+      ${sourceContextHtml(card.sourceContext)}
       <dl class="call-context">${row("About", "Firstmate asked in chat; no captain hold is filed")}${row("Reply", repliesText(card.replies))}</dl>
       <p class="call-meta">Found by its <code>${escape(card.marker || "")}</code> line in the Firstmate transcript.</p>
       <p class="call-meta">Answering here, dismissing, or replying in chat with the quoted reply closes this card.</p>
@@ -214,7 +222,7 @@ window.bearingsView = (() => {
       ${answerHtml(card, summary, threadHistoryHtml(id))}`;
   }
   const linkedAsksHtml = (card) => Array.isArray(card.chatAsks) && card.chatAsks.length
-    ? `<div class="call-context-row call-context-ask"><dt>Also asked in chat</dt><dd>${card.chatAsks.map((ask) => `${escape(visibleChatText(ask.summary) || "Asked in chat")} · reply ${escape(repliesText(ask.replies))}`).join("<br>")}</dd></div>` : "";
+    ? `<div class="call-context-row call-context-ask"><dt>Also asked in chat</dt><dd>${card.chatAsks.map((ask) => `<p>${escape(visibleChatText(ask.summary) || "Asked in chat")} · reply ${escape(repliesText(ask.replies))}</p>${sourceContextHtml(ask.sourceContext)}`).join("")}</dd></div>` : "";
   function cardHtml(card) {
     if (card.type === "chat") return chatCardHtml(card);
     const merge = card.type === "merge";
