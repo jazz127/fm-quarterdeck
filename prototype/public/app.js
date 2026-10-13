@@ -1844,7 +1844,7 @@ function renderCallLifecycle() {
       const showReply = state === "active" && posture.posture === "replied";
       banner.hidden = !showReply;
       if (showReply && api.replyBanner) {
-        const text = api.replyBanner(posture.reply);
+        const text = api.replyBanner(posture.reply, posture.replyScope);
         if (banner.textContent !== text) window.bearingsView.messageText(banner, text);
       }
     }
@@ -1891,11 +1891,11 @@ $("#call-send-queued")?.addEventListener("click", () => {
 const callPatcher = window.bearingsPatch?.createCallPatcher({
   section: $("#captain-call"), list: $("#call-cards"), status: $("#call-status"), coverage: $("#call-coverage"),
   view: window.bearingsView, scroller: $("#overview-view"), sortControl: $("#call-sort"),
-  onRender(node, card) { callAnswers?.render(node, card); callOverflow?.render(node, card); callDismiss?.render(node); callThreads?.render(node); callText?.render(node); callProcrastinate?.render(node); },
+  onRender(node, card) { callAnswers?.render(node, card); callOverflow?.render(node, card); callDismiss?.render(node); callThreads?.render(node, card); callText?.render(node); callProcrastinate?.render(node); },
   onApply(model) { const keys = model.cards.map((card) => card.key); callAnswers?.prune(keys); callOverflow?.prune(keys); callDismiss?.prune(keys); callThreads?.prune(keys); callText?.prune(keys); renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); },
 });
 // Queued answers join the review panel's queue; its Send sends them with the notes.
-callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key) => { callThreads?.noteSent(key); renderCallLifecycle(); } });
+callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, holdVersion) => { callThreads?.noteSent(key, holdVersion); renderCallLifecycle(); } });
 if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: (options) => callAnswers.sendQueued(options), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
 callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
 callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });

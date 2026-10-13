@@ -1,6 +1,6 @@
 # Chat asks: decision record
 
-**Status:** adopted (framework and presentation). **Owner:** Quarterdeck. **Code:** `prototype/chat-asks.js`. **Wire contract:** [Captain's Call, "Chat asks"](../prototype/BEARINGS.md#chat-asks).
+**Status:** adopted (framework and presentation; historical admission is default-off). **Owner:** Quarterdeck. **Code:** `prototype/chat-asks.js`. **Wire contract:** [Captain's Call, "Chat asks"](../prototype/BEARINGS.md#chat-asks).
 
 ## Problem
 
@@ -55,10 +55,36 @@ Context lives additively on the existing ask record, not in a new store. Canonic
 | Dismissed in Quarterdeck | Review dismissal → Dismiss this ask posts `POST /api/bearings/dismiss {key, cardRev}` (host-only, same-origin, revision-guarded). Cancel and review are local; no inbox note is sent. |
 | Hold answered/released/closed | On fresh selected-home ledger evidence, all linked holds have closed/answered/released lifecycle records. The ask resolves as `answered`, with `resolutionSource` (`data/backlog.md`), task ids and recorded modes retained. Missing or stale ledger evidence and snapshot disappearance never prove closure; snapshot omissions do not invalidate fresh closed-ledger evidence. |
 | Superseded | A later Firstmate ask repeats the same marker and normalized reply, or identical normalized ask text. |
+| Verified historical answer (explicit opt-in) | A MAIN-owned in-process selector identifies one exact original Pi request, actual answer and existing historical owner resolution. The native boundary independently validates full file ranges/identities/bytes and current-target guards before using the existing answered/tombstone transaction. Unconfigured means no added authority. |
 
 **Later** is proven by later byte/part order in the same source, provided known timestamps do not run backwards. Across sources, a strictly newer timestamp is required; equal or absent clocks alone do not prove order.
 
-A reply typed in chat does not resolve an ask. A transcript `role=user` entry (including a human-flagged Claude prompt or queued prompt) is unverified input, not proof that the captain wrote it ([authorship](../prototype/TRANSCRIPTS.md#authorship)), so it never counts as the captain's reply. Answer, dismiss or supersede the card instead.
+A reply typed in chat does not resolve an ask. A transcript `role=user` entry (including a human-flagged Claude prompt or queued prompt) is unverified input, not proof that the captain wrote it ([authorship](../prototype/TRANSCRIPTS.md#authorship)), so ordinary scanning never counts it as the captain's reply. The opt-in below is a separately configured authority channel, not a change to user-record authorship.
+
+### Explicit historical-answer admission (default off)
+
+`createServer(env, { historicalAnswer })` threads an optional in-process MAIN-owned callback to `createChatAskScanner({ historicalAnswer })`. The shipped CLI supplies none. No environment/audit-file loader, HTTP input, producer installation, automatic activation, note replay or new persistence owner exists. Merely returning matching prose or a receipt is insufficient. MAIN must explicitly approve the original association, supply/configure the selector at startup, and separately authorize integration/rebuild/serving. Any Firstmate-side installation must follow the existing owned integration transaction; this change installs nothing.
+
+The callback returns `null` (nothing selected) or one deliberate selector:
+
+```js
+{
+  request: { source, key, rev, eventId, part, ref, holdVersion /* optional */ },
+  answer: { eventId, part, digest, ref },
+  owner: {
+    home, task, fleet, heldAt, occurrence, parentKey, mode, resolvedAt,
+    held, resolution, raised, resolved
+  }
+}
+```
+
+Every `ref` (including the four owner evidence references) is `{ file, offset, length, sha256, identity: { dev, ino } }`. These are selectors/checksums, **not independently sufficient authentication**. The explicitly trusted callback owns association selection and human-source provenance; the native consumer reads the actual files, never accepts projected JSON/messages or an asserted checksum as the evidence itself. Hashes cover the exact bytes including final LF. Record references cover exactly one complete physical JSONL/status line. Ledger references cover a complete native item including retained body, ending at the next item/heading or EOF. Real paths/regular-file identity, line/item boundaries, byte limits, full checksums and within-read stability are required. A configured callback and validation have a 1.5-second budget; failures leave calls unchanged and are available as sanitized `chat.view().warnings` for the operator.
+
+The source must be the exact currently monitored Pi source/file. The request is reconstructed from its actual full assistant record/part and must match the persisted open unlinked request's source/event/offset/part, extraction, key, revision and optional holdVersion. The actual full user record/part must match its explicitly selected event and exact UTF-8 answer digest. It remains unverified input outside this opt-in. No task/topic/receipt/age/Done matcher selects an answer.
+
+Owner evidence uses the existing `owner.home/data/note-archive.md` held item and `owner.home/data/backlog.md` resolution item, plus two exact events in selected PRIMARY `home/state/<fleet>.status`. Canonical paths/task, captain-held stamp, previous-resolution count + 1, `captain-hold-<task>-<occurrence>` identity, recorded `released|answered` mode, full literal answer/digest and verbatim preserved previous body must agree. The parent raised/resolved key, mode and timestamps must corroborate that occurrence; hold→ask→actual answer→recorded resolution must be ordered, not in the future. This deliberately supports the native prepend-and-retain resolution format; ambiguous/missing/changed evidence fails closed. It does not infer global ledger uniqueness or certify every other owner inventory: the MAIN-owned producer must select the genuine canonical owner occurrence, not a lookalike artifact. Claude, linked calls, Done-only evidence, or a later different canonical resolution are not admitted by this narrow path.
+
+After validation, the current target is checked **again inside the existing state transaction**, including its optional version. Only that original key becomes answered with the existing resolution provenance and tombstone fields; accepted/superseded keys are idempotent no-ops. Independent/newer/re-held calls, canonical sources, original notes/answer bytes and later prospective directions are not rewritten or executed. Historical source-only approval is not native/device/merge/release/SQL permission. There is no live removal until MAIN activates a concrete trusted producer and the exact candidate is actually deployed and observed.
 
 Resolved keys become tombstones (up to 5000), so re-reading a rewritten transcript never revives them. The latest 50 hold-based resolutions are exposed as `chat.resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]` in `/api/bearings` and retained alongside dismissal/answer provenance in Quarterdeck state; automatic closure is not silent deletion. Card visuals are unchanged.
 
@@ -79,7 +105,7 @@ The state lives in one JSON file, `<FM_QUARTERDECK_STATE_PATH>.chat-asks.json` (
 
 - An ask Firstmate phrases **without** a marker line is not detected. The marker convention is the one contract with Firstmate.
 - A letter on a decision line is an answer radio, not a suggested reply. A later message that merely contains that letter does not resolve the ask.
-- A card answered only in chat stays open until it is answered or dismissed in Quarterdeck, its hold closes, or Firstmate supersedes it.
+- Without a separately configured and fully validated historical selector, a card answered only in chat stays open until it is answered or dismissed in Quarterdeck, its hold closes, or Firstmate supersedes it.
 - A later same-marker ask offering the same reply supersedes older asks even if their prose differs; generic replies can therefore conflate distinct same-marker asks.
 - Linking needs a structured task marker, whole-token task-id mention, matching quoted reply or exact normalized reason. Otherwise an ask about a filed hold shows as its own card. If a linked ledger hold is omitted by bearings, its chat card remains visible rather than inventing a filed card.
 - Asks in a source's history beyond the 4 MiB backfill window, or older than 24 hours at first discovery, are not shown.

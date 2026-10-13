@@ -92,6 +92,7 @@ window.bearingsAnswerForm = (() => {
   function createAnswerController({ list, drafts, doc = window.document, win = window, storage = (() => { try { return win.sessionStorage; } catch { return null; } })(),
     fetchImpl = (...args) => win.fetch(...args), timers = win, pollMs = 15000, uuid = () => win.crypto.randomUUID(), onChange = () => {}, onAsked = () => {} } = {}) {
     const states = createStateStore(storage);
+    const holdVersions = new Map();
     let pollTimer = null;
     let destroyed = false;
     const cardNode = (key) => [...list.querySelectorAll("[data-call-key]")].find((node) => keyOf(node) === key) || null;
@@ -129,13 +130,28 @@ window.bearingsAnswerForm = (() => {
       const key = keyOf(node);
       if (!form || !key) return;
       let state = states.get(key);
+      const rev = card?.rev || node.getAttribute("data-call-rev");
+      if (card) holdVersions.set(key, card.holdVersion || null);
+      const holdVersion = holdVersions.get(key);
+      // Consume optional existing cycle identity, never create one from presentation.
+      if (holdVersion && state?.phase === "sent" && !state.holdVersion && !state.cardRev && card?.answered) {
+        state = { ...state, holdVersion, cardRev: rev };
+        states.set(key, state);
+      }
+      if (holdVersion && (state?.phase === "sent" || state?.heldReply != null)
+        && (state.holdVersion ? state.holdVersion !== holdVersion : state.cardRev !== rev)) {
+        clearDraft(key);
+        state = null;
+        states.set(key, state);
+      }
       // A reply returns the answer to compose. The lifecycle banner shows the reply.
       if (state?.phase === "sent" && state.receipt?.state === "replied") {
         clearDraft(key);
-        state = { phase: "compose", heldReply: typeof state.receipt.reply === "string" ? state.receipt.reply : "", heldAt: state.sentAt || new Date().toISOString() };
+        state = { phase: "compose", holdVersion: state.holdVersion, cardRev: state.cardRev,
+          heldReply: state.receipt.replyScope === "individual" && typeof state.receipt.reply === "string" ? state.receipt.reply : "",
+          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString() };
         states.set(key, state);
       }
-      const rev = card?.rev || node.getAttribute("data-call-rev");
       // The captain reviewed a different version of this call: never send it as-is.
       if (state && ["confirm", "failed"].includes(state.phase) && state.cardRev !== rev) {
         state = { ...state, attempted: state.attempted || state.phase === "failed", phase: "refused", error: "This call changed while you were reviewing; check it and review your answer again." };
@@ -233,7 +249,7 @@ window.bearingsAnswerForm = (() => {
       const cap = thread ? MAX_QUESTION_BYTES : MAX_ANSWER_BYTES;
       const measured = thread ? answer.note : display(answer.selection, answer.note);
       if (bytes(measured) > cap) { update(key, { ...previous, phase: "refused", error: `The ${thread ? "note" : "answer"} is longer than ${cap} bytes; shorten it.` }, "text"); return; }
-      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: previous.requestId || uuid(), attempted: previous.attempted === true }, "send");
+      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion: holdVersions.get(key) || null, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: previous.requestId || uuid(), attempted: previous.attempted === true }, "send");
     }
 
     function clearDraft(key) {
@@ -269,10 +285,10 @@ window.bearingsAnswerForm = (() => {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
           // which keeps the card Sent until that note is acknowledged or Firstmate replies.
           update(key, null, focus ? "text" : null);
-          onAsked(key);
+          onAsked(key, state.holdVersion);
           return true;
         }
-        update(key, { phase: "sent", path, requestId: state.requestId, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
+        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: state.holdVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
         return true;
       }
       const noun = thread ? "note" : "answer";
@@ -360,6 +376,7 @@ window.bearingsAnswerForm = (() => {
       // Forget answers for calls Firstmate no longer shows, so a re-held task starts fresh.
       prune(openKeys) {
         const open = new Set(openKeys);
+        for (const key of holdVersions.keys()) if (!open.has(key)) holdVersions.delete(key);
         for (const key of states.keys()) if (!open.has(key) && states.get(key)?.phase !== "sending") states.set(key, null);
       },
       state: (key) => states.get(key),

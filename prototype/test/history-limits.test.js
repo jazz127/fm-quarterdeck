@@ -144,7 +144,9 @@ test("server-created thread and chat-ask readers inherit startup overrides", asy
     if (limits.FM_HISTORY_MAX_RECORDS) {
       assert.equal(thread.transcript.state, "ready");
       assert.equal(thread.transcript.windowed, true);
-      assert.deepEqual(thread.entries.map(entry => entry.text), ["synthetic-task turn 3", "synthetic-task turn 4", "synthetic-task turn 5"]);
+      assert.deepEqual(thread.entries, [], "task-only turns are not exact card/cycle entries");
+      assert.deepEqual(thread.provenance.map(entry => entry.kind), ["context", "context", "context"]);
+      assert.deepEqual(thread.provenance.map(entry => entry.text), ["synthetic-task turn 3", "synthetic-task turn 4", "synthetic-task turn 5"]);
     } else {
       assert.equal(thread.transcript.state, "unavailable");
       const bearings = await (await fetch(`${base}/api/bearings`)).json();

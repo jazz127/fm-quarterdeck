@@ -5,7 +5,9 @@ window.bearingsThread = (() => {
   const STATE_PREFIX = "fm-quarterdeck-call-thread.v1:";
   const MAX_QUESTION_BYTES = 2000;
   const keyOf = (node) => node?.getAttribute?.("data-call-key") || null;
-  const LABELS = { ask: "You asked", answer: "Your answer", reply: "Firstmate replied", chat: "Firstmate in chat", "chat-ask": "Firstmate asked in chat" };
+  const LABELS = { ask: "You asked", answer: "Your answer", reply: "Firstmate replied", chat: "Firstmate in chat", "chat-ask": "Firstmate asked in chat",
+    "combined-submission": "Original combined submission", "combined-reply": "Reply to the combined submission · not card-specific",
+    "earlier-note": "Earlier or unverified-cycle note", "earlier-reply": "Reply to an earlier or unverified cycle", context: "Task-mentioned chat · attribution unverified", "linked-ask": "Source-linked chat ask · cycle attribution unverified" };
 
   function createThreadController({ list, drafts, doc = window.document, win = window, storage = (() => { try { return win.sessionStorage; } catch { return null; } })(),
     fetchImpl = (...args) => win.fetch(...args), timers = win, pollMs = 15000, uuid = () => win.crypto.randomUUID(), onChange = () => {} } = {}) {
@@ -56,6 +58,12 @@ window.bearingsThread = (() => {
       const text = entry.text || "";
       window.bearingsView.messageText(body, text, doc);
       item.append(head, body);
+      if (entry.sourceLimited) {
+        const limitation = doc.createElement("p");
+        limitation.className = "call-meta";
+        limitation.textContent = "Source text shortened or unavailable in this bounded receipt view.";
+        item.append(limitation);
+      }
       const copy = doc.createElement("button");
       copy.type = "button";
       copy.textContent = "Copy";
@@ -86,14 +94,21 @@ window.bearingsThread = (() => {
     }
 
     // Re-applies thread state to a card's (possibly fresh) markup after every fill.
-    function render(node) {
+    function render(node, card = null) {
       const key = keyOf(node);
       const history = node?.querySelector?.("[data-call-thread-history]");
       if (!key || !history) return;
       const state = stateOf(key);
       state.key = key;
-      const newReplies = unread(state);
-      const loaded = Array.isArray(state.entries) ? state.entries.length : null;
+      if (card) state.card = card;
+      const current = entry => window.callLifecycle?.currentHoldNote?.(state.card, entry) !== false;
+      const stale = (state.entries || []).filter(entry => entry.from === "captain" && !current(entry));
+      const staleIds = new Set(stale.map(entry => entry.noteId).filter(Boolean));
+      const entries = (state.entries || []).filter(entry => entry.kind !== "chat" && (entry.from !== "captain" || current(entry)) && !staleIds.has(entry.noteId));
+      const provenance = [...(state.provenance || []), ...(state.entries || []).filter(entry => entry.kind === "chat" || stale.includes(entry) || staleIds.has(entry.noteId))
+        .map(entry => ({ ...entry, kind: entry.kind === "chat" ? "context" : entry.from === "captain" ? "earlier-note" : "earlier-reply" }))];
+      const newReplies = unread({ ...state, entries });
+      const loaded = Array.isArray(state.entries) ? entries.length : null;
       const replyPart = newReplies ? ` · ${newReplies} new ${newReplies === 1 ? "reply" : "replies"}` : "";
       const count = part(node, "count");
       if (count) {
@@ -105,7 +120,6 @@ window.bearingsThread = (() => {
         const message = newReplies ? `${newReplies} new ${newReplies === 1 ? "reply" : "replies"} from Firstmate for this call` : "";
         if (replyStatus.textContent !== message) replyStatus.textContent = message;
       }
-      const entries = state.entries || [];
       const exchange = latestExchange(entries);
       const expandable = entries.length >= 2;
       const open = expandable && state.threadOpen === true;
@@ -140,6 +154,23 @@ window.bearingsThread = (() => {
         const label = state.historyOpen ? "Show latest only" : `Show ${earlier} earlier ${earlier === 1 ? "message" : "messages"}`;
         if (historyToggle.textContent !== label) historyToggle.textContent = label;
       }
+      const provenanceToggle = part(node, "provenance-toggle"), provenancePanel = part(node, "provenance"), provenanceLog = part(node, "provenance-log");
+      if (provenanceToggle) {
+        provenanceToggle.hidden = provenance.length === 0;
+        provenanceToggle.setAttribute("aria-expanded", String(Boolean(state.provenanceOpen)));
+        provenanceToggle.textContent = `Original / contextual provenance · ${provenance.length}`;
+      }
+      if (provenancePanel) provenancePanel.hidden = !provenance.length || !state.provenanceOpen;
+      if (provenanceLog) {
+        const signature = JSON.stringify(provenance);
+        if (provenanceLog.getAttribute("data-history") !== signature) {
+          provenanceLog.textContent = "";
+          provenanceLog.append(...provenance.map(entry => entryNode(entry, state)));
+          provenanceLog.setAttribute("data-history", signature);
+        }
+      }
+      const provenanceStatus = part(node, "provenance-status");
+      if (provenanceStatus) provenanceStatus.textContent = `Combined replies, earlier cycles and task-only chat are not attributed answers to this call. Source text retains existing path redaction and size limits; original durable records are unchanged.${state.provenanceOmitted ? ` ${state.provenanceOmitted} older provenance records not shown.` : ""}`;
       const notice = part(node, "notice");
       if (notice) {
         if (notice.textContent !== (state.notice || "")) notice.textContent = state.notice || "";
@@ -170,7 +201,7 @@ window.bearingsThread = (() => {
       if (destroyed) return;
       state.loading = false;
       if (response?.ok && body && Array.isArray(body.entries)) {
-        Object.assign(state, { entries: body.entries, omitted: body.omitted || 0, transcript: body.transcript || null, checkedAt: body.checkedAt || null });
+        Object.assign(state, { entries: body.entries, provenance: body.provenance || [], provenanceOmitted: body.provenanceOmitted || 0, omitted: body.omitted || 0, transcript: body.transcript || null, checkedAt: body.checkedAt || null });
         // History is the durable signal. Keep the local receipt until that history includes the ask.
         if (body.entries.some((entry) => entry?.kind === "ask" && entry?.from === "captain")) state.captainAsked = false;
         // The first read marks replies already on the card as seen. Later replies count as new.
@@ -185,9 +216,10 @@ window.bearingsThread = (() => {
 
     // The answer controller calls this after a confirmed thread note so the receipt shows at once.
     // captainAsked keeps the card Sent until the reloaded history includes that note.
-    function noteSent(key) {
+    function noteSent(key, holdVersion = null) {
       const state = stateOf(key);
       state.captainAsked = true;
+      state.holdVersion = holdVersion;
       state.notice = "Question sent to Firstmate; the reply appears here";
       state.error = null;
       rerender(key);
@@ -213,6 +245,13 @@ window.bearingsThread = (() => {
       const target = event.target;
       const key = keyOf(target?.closest?.("[data-call-key]"));
       if (!key) return;
+      if (target.closest("[data-call-thread-provenance-toggle]")) {
+        event.preventDefault?.();
+        const state = stateOf(key);
+        state.provenanceOpen = !state.provenanceOpen;
+        rerender(key);
+        return;
+      }
       if (target.closest("[data-call-thread-expand]")) {
         event.preventDefault?.();
         const state = stateOf(key);
