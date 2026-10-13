@@ -371,13 +371,12 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
       const evidence = fresh ? holds : [];
       cards = cards.map(card => typeof card === "string" ? { task: card } : card);
       cards = [...cards, ...evidence];
-      const tasks = cards.filter(card => !card.closed).map(card => card.task).filter(Boolean);
       const closed = new Map(evidence.filter(row => row.closed).map(row => [row.task, row]));
       const closure = ask => {
         const rows = ask.linkedTasks.map(task => closed.get(task));
         if (rows.length && rows.every(Boolean)) return { resolvedTasks: ask.linkedTasks, resolutionSource: "data/backlog.md", holdResolutions: rows.map(row => ({ task: row.task, resolution: row.resolution })) };
-        // Missing calls can be bucketed/aged/bounded rather than answered.
-        if (fresh && !omitted.length && ask.linkedTasks.length && !ask.linkedTasks.some(task => tasks.includes(task))) return { resolvedTasks: ask.linkedTasks, resolutionSource: "bearings snapshot" };
+        // Snapshot disappearance is not resolution evidence; only fresh closed-ledger
+        // rows for every linked task can automatically answer an ask.
         return null;
       };
       const work = openAsks().some((ask) => cards.some(card => !ask.linkedTasks.includes(card.task) && matchesHold(ask, card)))
