@@ -344,13 +344,15 @@ The installed stock readers own lifecycle, registered collection and gate classi
 ## Just landed
 
 Overview's second column shows the snapshot's `landed` rows as poster cards in the same visual language as Captain's Call.
-At the phone one-column breakpoint, the Overview body starts with four tabs, Captain's Call (N), Just landed (N), Underway (N) and Charted Next (N), and shows one section at a time.
+Through 1099px, Overview shows one section at a time behind four tabs, Captain's Call (N), Just landed (N), Underway (N) and Charted Next (N).
+On a phone, through 720px, those tabs are a fixed bar at the bottom of the viewport, above the navigation dock, and the cards scroll clear of that bar.
+From 721px through 1099px the tabs stay in the page under the summary.
 Captain's Call N counts every open card, including filtered cards.
 Just landed N counts landings whose current rev is not the acknowledged rev.
 The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
 The phone tab still shows Just landed (0) when none are new, the same way Captain's Call (0) stays visible.
 The chosen tab is remembered for that viewer in localStorage under `fm-quarterdeck-overview-tab.v1`.
-A desktop width keeps both columns, with the same 22px gap, and does not show the tabs.
+From 1100px wide, Overview keeps both columns, with the same 22px gap, and does not show the tabs.
 The source is the same guarded snapshot.
 There is no board builder and no read of another home.
 Each row supplies `id`, `what`, `artifact` and `owner`.
@@ -451,10 +453,10 @@ Firstmate also asks the captain things in chat without filing a captain hold, so
 - **Resolution** (state `<FM_QUARTERDECK_STATE_PATH>.chat-asks.json`, outside `FM_HOME`) happens in any of these ways:
   - a confirmed answer (`202`);
   - `POST /api/bearings/dismiss`;
-  - fresh selected-home ledger evidence that every linked hold is answered/released/closed, or a fresh snapshot with no omission disclosures and no contrary open ledger hold without any linked task;
+  - fresh selected-home ledger evidence that every linked hold is answered/released/closed;
   - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes).
 
-  Hold closure records `resolvedBy:"answered"`, `resolutionSource:"data/backlog.md"|"bearings snapshot"`, task ids and recorded resolution modes. Unchecked captain holds override historical resolution prose; stale/omitted snapshots never prove disappearance. Resolved keys are tombstoned and never revived. On upgrading the matching rules, the scanner resets only cursors once and replays the bounded newest 4 MiB window to repair existing open cards; existing open reply extraction is refreshed, while dismissals and answer tombstones are preserved.
+  Hold closure records `resolvedBy:"answered"`, `resolutionSource:"data/backlog.md"`, task ids and recorded resolution modes. Unchecked captain holds override historical resolution prose; snapshot disappearance never proves closure, even when fresh and complete. Missing or stale ledger evidence cannot close an ask; snapshot omissions do not invalidate fresh closed-ledger evidence. Resolved keys are tombstoned and never revived. On upgrading the matching rules, the scanner resets only cursors once and replays the bounded newest 4 MiB window to repair existing open cards; existing open reply extraction is refreshed, while dismissals and answer tombstones are preserved.
 - **Model:** `chat:{state, error, open, linked, omitted, behind, sources[{source, backfillOmittedBytes}], resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]}` is part of the content revision. `chatCheckedAt` is freshness only. The model `rev` hashes the composed cards, coverage, omissions, chat coverage, and landed cards when any are present.
 - **Answers:** these use the same `POST /api/bearings/answer` checks. A chat card needs `chat.state` to be `ready`, not the snapshot. A chosen reply is relayed as the captain's own words (`selection:""`, `note:"<reply>[ - <note>]"`). The envelope has `type:"chat"` and `ask` (marker and text, at most 1 KiB) instead of `task`. The note's human line tells Firstmate that no hold was filed. Quarterdeck resolves the card once the note is accepted.
 - **`POST /api/bearings/dismiss`** (host only; 404 through a preview path) is same-origin JSON with no query and a body of at most 1 KiB. The body is exactly `{key, cardRev}` with a `chat:` key (otherwise 400), and the served revision must still match (409 `revision`). It returns `409 gone` when the key is not an open chat card, `409 changed` when the card rev differs, `503 unrecorded` when the state could not be saved, and otherwise `200 {state:"dismissed", key}`. Snapshot cards cannot be dismissed, because Firstmate owns holds.

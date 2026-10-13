@@ -11,6 +11,7 @@
     "test/bearings-view.test.js",
     "test/bearings-work.test.js",
     "test/call-lifecycle.test.js",
+    "test/chat-asks-context.test.js",
     "test/chat-asks-hold-lifecycle.test.js",
     "test/chat-asks-source.test.js",
     "test/cost-view-model.test.js",
