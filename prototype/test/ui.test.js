@@ -3241,3 +3241,38 @@ test("older-history disclosure persists at the maximum window without offering a
   render([{ ...source, omittedBytes: 0 }], [], 8, false);
   assert.equal(app.node("#transcript-window-status").hidden, true, "complete history has no truncation warning");
 });
+
+test("Captain's Call badge and pill distinguish missing and stale bearings from an empty fleet", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.node('.workspace').dataset.view = 'overview';
+  app.run("window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Bearings snapshot timed out'})");
+  assert.equal(app.node('#call-badge').textContent, '?');
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#call-badge').getAttribute('aria-label'), "Captain's Calls unavailable");
+  assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
+  assert.equal(app.node('#fleet-state').classList.contains('offline'), true);
+  app.run("window.callHooks.onModel({rev:'first',state:'ready',cards:[{key:'decision:a'}],stale:false,error:null,observedAt:new Date().toISOString()}); callPatcher.applied = {rev:'first',state:'ready',cards:[{key:'decision:a'}]}");
+  assert.equal(app.node('#call-badge').textContent, '1');
+  assert.equal(app.node('#fleet-state b').textContent, 'fresh');
+  app.run("window.callHooks.onObserved({rev:'first',state:'stale',stale:true,error:null,observedAt:new Date(Date.now() - 300000).toISOString()})");
+  assert.equal(app.node('#call-badge').textContent, '1 · stale', 'a freshness-only event relabels the held count');
+  assert.equal(app.node('#call-badge').getAttribute('aria-label'), "1 Captain's Calls · stale");
+  assert.equal(app.node('#fleet-state b').textContent, 'stale');
+  app.run("window.callHooks.onObserved({rev:'first',state:'ready',stale:false,error:null,observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()}); callPatcher.applied = {rev:'empty',state:'ready',cards:[]}");
+  assert.equal(app.node('#call-badge').hidden, true, 'only a current empty reading hides the badge');
+  app.run("window.callHooks.onObserved({rev:'empty',state:'stale',stale:true,error:'Bearings snapshot timed out',observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#call-badge').textContent, '0 · stale');
+});
+
+test("Captain's Call badge uses the rendered card's lifecycle and ignores cards no longer in the source", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.run("callPatcher.applied = {cards:[{key:'decision:held',answered:true},{key:'decision:removed'}]}; renderCallBadge({state:'ready',cards:[{key:'decision:held'},{key:'decision:fresh'}]})");
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run("renderCallBadge({state:'stale',stale:true,cards:[{key:'decision:held'},{key:'decision:fresh'}]})");
+  assert.equal(app.node('#call-badge').textContent, '1 · stale');
+});

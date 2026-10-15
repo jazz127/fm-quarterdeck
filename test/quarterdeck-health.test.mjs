@@ -64,6 +64,10 @@ test('healthy is silent; attempts throttle; force bypasses stamp', async t => {
   assert.equal((await check(f, { FM_QUARTERDECK_HEALTH_FORCE: '1' })).stdout, '');
   assert.equal(f.calls(), 4);
 });
+test('a reading stale only by the server age ceiling defers to the check age limit', async t => {
+  const generatedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+  assert.deepEqual(await check(await fixture(t, { state: 'stale', stale: true, error: null, generatedAt })), { code: 0, stdout: '', stderr: '' });
+});
 test('down server produces exactly one private-data-free line', async t => {
   const f = await fixture(t);
   await new Promise(resolve => f.server.close(resolve));
@@ -73,6 +77,8 @@ test('down server produces exactly one private-data-free line', async t => {
 for (const [name, snapshot, match] of [
   ['stale timestamp', { generatedAt: '2000-01-01T00:00:00Z' }, /snapshot stale/],
   ['explicit stale', { stale: true }, /snapshot stale/],
+  ['failed-run stale', { state: 'stale', stale: true, error: 'synthetic failure' }, /snapshot stale/],
+  ['age-only stale past the check limit', { state: 'stale', stale: true, error: null, generatedAt: '2000-01-01T00:00:00Z' }, /snapshot stale/],
   ['loading with stale flag', { state: 'loading', stale: true }, /snapshot stale/],
   ['loading with error', { state: 'loading', error: 'synthetic failure' }, /snapshot error/],
   ['error state', { state: 'error' }, /not ready/],

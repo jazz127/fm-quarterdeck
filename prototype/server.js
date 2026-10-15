@@ -1640,7 +1640,11 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/health") {
-        await sendJson(request, response, 200, { ok: true, service: "fm-quarterdeck" });
+        // `ok` is HTTP readiness (preview launchers rely on it). Fleet-feed health is
+        // reported separately and never starts or waits for a collection run.
+        const { rev, state, observedAt, checkedAt, stale, error, ageMs = null, maxAgeMs = null } = bearingsSource.freshness();
+        const bearings = { rev, state, observedAt, checkedAt, stale, error, ageMs, maxAgeMs, remoteCollection: "cache" };
+        await sendJson(request, response, 200, { ok: true, service: "fm-quarterdeck", status: bearings.state === "ready" && !bearings.stale ? "ok" : "degraded", bearings });
         return;
       }
       if (dev && request.method === "GET" && url.pathname === "/api/dev-reload") {
