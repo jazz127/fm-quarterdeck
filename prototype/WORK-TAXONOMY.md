@@ -18,9 +18,9 @@ Persistent second mates appear in their own Overview section. The selected home'
 all known identities are excluded from work projections, task sessions and worker
 counts, including malformed, duplicate or undisplayed registrations. Cards are
 sorted by ID and limited to 64; the section is hidden when it has neither cards nor warnings.
-The cards start collapsed behind a heading button that shows the second-mate count;
-section warnings stay visible while collapsed, and the viewer's open/closed choice is
-kept with the other Overview disclosures in browser storage.
+The cards start collapsed on every page load behind a heading button that shows
+the second-mate count. Section warnings stay visible while collapsed, and dashboard
+refreshes preserve the viewer's open/closed choice within the page.
 A missing registry still permits metadata-only identities; an unreadable registry
 shows a warning and uses only those runtime identities.
 
