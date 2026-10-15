@@ -140,7 +140,7 @@ window.bearingsAnswerForm = (() => {
       }
       if (holdVersion && (state?.phase === "sent" || state?.heldReply != null)
         && (state.holdVersion ? state.holdVersion !== holdVersion : state.cardRev !== rev)) {
-        clearDraft(key);
+        if (state.phase === "sent") clearDraft(key);
         state = null;
         states.set(key, state);
       }
