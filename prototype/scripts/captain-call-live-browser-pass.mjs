@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../server.js';
 import { claudeProjectDirectory } from '../claude-transcript.js';
+import { awaySummary } from '../test/helpers/claude-recap.js';
 import { captureKpiGeometry } from './kpi-geometry.mjs';
 import { captureStaticReplyLinks } from './card-reply-links-static-proof.mjs';
 import { capturePendingUpdates } from './call-pending-update-acceptance.mjs';
@@ -44,7 +45,8 @@ await mkdir(transcriptDir, { recursive: true });
 await writeFile(path.join(home, 'state/.lock-session'), 'synthetic-main\n');
 const transcriptPath = path.join(transcriptDir, 'synthetic-main.jsonl');
 const chatRecord = (uuid, text) => `${JSON.stringify({ type: 'assistant', uuid, timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'synthetic-model', content: [{ type: 'text', text }] } })}\n`;
-await writeFile(transcriptPath, chatRecord('synthetic-ask-one', '**APPROVAL NEEDED:** Publish the sample notes. Reply "publish" or "wait".') + chatRecord('synthetic-ask-link', 'DECISION NEEDED: Also weigh alpha-call before publishing.'));
+const initialRecap = '[fm-lane General]\nThe sample checks completed.\n[end General]';
+await writeFile(transcriptPath, JSON.stringify(awaySummary(initialRecap)) + '\n' + chatRecord('synthetic-ask-one', '**APPROVAL NEEDED:** Publish the sample notes. Reply "publish" or "wait".') + chatRecord('synthetic-ask-link', 'DECISION NEEDED: Also weigh alpha-call before publishing.'));
 const fixturePath = path.join(home, 'snapshot.json');
 let raw = JSON.parse(await readFile(new URL('../test/fixtures/bearings/two-calls.json', import.meta.url), 'utf8'));
 raw.decisions_open[0].updated_at = new Date(Date.now() - 120000).toISOString();
@@ -270,8 +272,45 @@ try {
     stage('pending-update-only');
     await capturePendingUpdates({ browser, evaluate, until, base: `http://127.0.0.1:${server.address().port}`, head, proof, raw, change, server });
   } else {
-  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
+  const recapPage = await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
+  stage('primary-recap');
+  await until(`document.querySelector('#primary-recap').textContent==='The sample checks completed.'`);
+  await evaluate(`() => {
+    const card=document.querySelector('[data-call-key="decision:alpha-call"]');
+    const field=card.querySelector('[data-call-answer-text]'), radio=card.querySelector('input[value="staged"]');
+    window.recapProof={node:document.querySelector('#primary-recap'),card,field,radio};
+    radio.checked=true; radio.dispatchEvent(new Event('change',{bubbles:true}));
+    field.value='Neutral unsent recap-proof draft'; field.dispatchEvent(new Event('input',{bubbles:true}));
+    field.focus(); field.setSelectionRange(2,9);
+    return 'recap update starts with engaged draft and option';
+  }`);
+  const updatedRecap = 'Updated <img src=x onerror=alert(1)> [keep this]\n' + 'UnbrokenExampleText'.repeat(18);
+  await appendFile(transcriptPath, JSON.stringify(awaySummary(updatedRecap, { timestamp: '2000-01-01T00:00:00Z' })) + '\n');
+  await until(`document.querySelector('#primary-recap').textContent===${JSON.stringify(updatedRecap)}`);
+  await evaluate(`() => {
+    const {node,card,field,radio}=window.recapProof;
+    if(document.querySelector('#primary-recap')!==node||node.hidden||node.querySelector('img')||
+       document.querySelector('[data-call-key="decision:alpha-call"]')!==card||document.activeElement!==field||
+       field.value!=='Neutral unsent recap-proof draft'||field.selectionStart!==2||field.selectionEnd!==9||!radio.checked)
+      throw Error('recap update replaced nodes, executed markup or lost engaged state');
+    return 'recap-only live update preserves draft, focus, selection and radio';
+  }`);
+  for (const width of [1280,390]) {
+    await browser('resize',String(width),'844');
+    await evaluate(`() => { const node=document.querySelector('#primary-recap'),r=node.getBoundingClientRect();
+      if(r.width<=0||r.left<0||r.right>innerWidth||node.scrollWidth>node.clientWidth+1||getComputedStyle(node).whiteSpace!=='pre-wrap')throw Error('recap wrapping');
+      return {recapWrapping:true,width:innerWidth}; }`);
+  }
+  await browser('resize','1280','844');
+  await appendFile(transcriptPath, JSON.stringify(awaySummary('')) + '\n');
+  await until(`document.querySelector('#primary-recap').hidden && document.querySelector('#primary-recap').textContent===''`);
+  // The proof deliberately saves an option draft. A synthetic unchecked change
+  // still saves the radio's value; isolate this proof's tab-local drafts rather
+  // than letting a later reload turn its text-only thread note into an answer.
+  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
+  await browser('closepage', recapPage);
+  await until(`document.querySelectorAll('[data-call-key]').length===4 && !!document.querySelector('[data-call-key="decision:alpha-call"] input[value="staged"]')`);
   stage('transport-lifecycle');
   // Deterministic transport races in the real page realm, isolated from the UI's feed.
   await evaluate(`async () => {

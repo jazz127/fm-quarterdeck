@@ -1780,7 +1780,15 @@ function renderCallBadge(model) {
   if (count > callCount) $("#sr-announcer").textContent = `${count} Captain's Calls need your attention`;
   callCount = count;
 }
+function renderPrimaryRecap(recap) {
+  const node = $("#primary-recap");
+  const text = typeof recap?.text === "string" ? recap.text : "";
+  if (node.textContent !== text) node.textContent = text;
+  node.hidden = !text;
+  node.title = recap?.state === "limited" ? "Recap unavailable in the bounded transcript read" : "Latest existing recap from the current Claude Code primary session";
+}
 function observeBearings(data) {
+  renderPrimaryRecap(data.primaryRecap);
   if (data.firstmateActivity) {
     firstmateActivity = data.firstmateActivity;
     activityFetchedAt = Date.now();

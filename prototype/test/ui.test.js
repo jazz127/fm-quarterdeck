@@ -63,6 +63,28 @@ test("live model and observation feed the patcher, badge and independent Overvie
   assert.equal(app.node('#fleet-state').classList.contains('offline'), true);
 });
 
+test("Overview recap is a stable literal text node on model and observed updates", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  const node = app.node('#primary-recap');
+  const text = 'Literal <img src=x onerror=alert(1)>\nSecond sentence. [keep this]';
+  app.run(`window.callHooks.onModel({rev:'recap',cards:[],state:'ready',primaryRecap:{text:${JSON.stringify(text)},state:'ready'}})`);
+  assert.equal(node.textContent, text);
+  assert.equal(node.innerHTML || '', '', 'no HTML rendering');
+  assert.equal(node.hidden, false);
+  const patches = app.run('window.callPatches.length');
+  app.node('#review-message').value = 'Unsent neutral draft';
+  app.run("window.callHooks.onObserved({rev:'recap',state:'ready',primaryRecap:{text:'Updated recap',state:'ready'}})");
+  assert.equal(app.node('#primary-recap'), node);
+  assert.equal(node.textContent, 'Updated recap');
+  assert.equal(app.node('#review-message').value, 'Unsent neutral draft');
+  assert.equal(app.run('window.callPatches.length'), patches);
+  app.run("window.callHooks.onObserved({rev:'recap',state:'ready',primaryRecap:{text:null,state:'limited'}})");
+  assert.equal(node.hidden, true);
+  assert.equal(node.textContent, '');
+  assert.match(css, /#primary-recap \{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
+});
+
 test("unavailable preferences hide dead controls, recover, and preserve stale entries", () => {
   const app = ui(), controls = app.node("#preferences-view .scan-controls"), state = app.node("#preferences-state");
   app.run("renderPreferences({error: 'Unavailable'})");
