@@ -454,7 +454,7 @@ Firstmate also asks the captain things in chat without filing a captain hold, so
   - a confirmed answer (`202`);
   - `POST /api/bearings/dismiss`;
   - fresh selected-home ledger evidence that every linked hold is answered/released/closed;
-  - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes).
+  - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes). Asks whose marker lines carry different `[task:<id>]` markers are independent and never supersede each other through a shared reply.
 
   Hold closure records `resolvedBy:"answered"`, `resolutionSource:"data/backlog.md"`, task ids and recorded resolution modes. Unchecked captain holds override historical resolution prose; snapshot disappearance never proves closure, even when fresh and complete. Missing or stale ledger evidence cannot close an ask; snapshot omissions do not invalidate fresh closed-ledger evidence. Resolved keys are tombstoned and never revived. On upgrading the matching rules, the scanner resets only cursors once and replays the bounded newest 4 MiB window to repair existing open cards; existing open reply extraction is refreshed, while dismissals and answer tombstones are preserved.
 - **Model:** `chat:{state, error, open, linked, omitted, behind, sources[{source, backfillOmittedBytes}], resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]}` is part of the content revision. `chatCheckedAt` is freshness only. The model `rev` hashes the composed cards, coverage, omissions, chat coverage, and landed cards when any are present.
