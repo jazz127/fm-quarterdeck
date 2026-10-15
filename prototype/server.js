@@ -1709,7 +1709,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     if (request.headers["last-event-id"] !== current.rev) send("model", current, current.rev);
     else send("observed", bearingsSource.freshness());
     const unsubscribe = bearingsSource.subscribe((event) => {
-      void guarded(() => event.type === "model" ? send("model", event.model, event.model.rev) : send("observed", { rev: event.rev, state: event.state, observedAt: event.observedAt, checkedAt: event.checkedAt, stale: event.stale, error: event.error }));
+      void guarded(() => event.type === "model" ? send("model", event.model, event.model.rev) : send("observed", { rev: event.rev, state: event.state, observedAt: event.observedAt, checkedAt: event.checkedAt, stale: event.stale, error: event.error, primaryRecap: event.primaryRecap }));
     });
     const heartbeat = setInterval(() => { void guarded(() => { response.write(": hb\n\n"); void send("observed", bearingsSource.freshness()); }); }, streamOptions.heartbeatMs);
     const recycle = setTimeout(() => stream.end("bye"), streamOptions.recycleMs);

@@ -79,6 +79,7 @@
     "test/preview-lifecycle.test.js",
     "test/previews.test.js",
     "test/private-overlay.test.js",
+    "test/primary-recap.test.js",
     "test/public-defaults.test.js",
     "test/pwa.test.js",
     "test/quarterdeck-compatibility.test.js",

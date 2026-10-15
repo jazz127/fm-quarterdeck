@@ -7,7 +7,7 @@ import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from "no
 import path from "node:path";
 import { contentRevision, publicText, shortHash } from "./bearings.js";
 import { enumeratedLetterOptions, publishOptions, replyDescription } from "./enumerated-options.js";
-import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
+import { claudeAwaySummary, claudeTurns, findClaudePrimary } from "./claude-transcript.js";
 import { createHistoryReader } from "./history-reader.js";
 import { UNVERIFIED_INPUT } from "./authorship.js";
 import { parseBacklogTask, parseStatusLine } from "./firstmate-records.js";
@@ -180,7 +180,7 @@ export function memoryStateFile(initial = emptyChatState()) {
 // ---------------------------------------------------------------------------------------
 // Incremental reader: whole lines from the cursor, at most maxBytes per source per scan.
 // A line longer than maxLineBytes is skipped to its newline (cursor.skip), never parsed.
-async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillBytes, onLine }) {
+async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillBytes, onLine, onSkip = () => {} }) {
   const handle = await open(file, "r");
   try {
     const info = await handle.stat();
@@ -202,9 +202,10 @@ async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillByte
       position += bytesRead;
       let start = 0;
       for (let newline = data.indexOf(10); newline >= 0; newline = data.indexOf(10, start)) {
-        if (skip) { skip = false; start = newline + 1; carry = Buffer.alloc(0); carryStart = base + start; offset = carryStart; continue; }
+        if (skip) { onSkip(); skip = false; start = newline + 1; carry = Buffer.alloc(0); carryStart = base + start; offset = carryStart; continue; }
         const line = carry.length ? Buffer.concat([carry, data.subarray(start, newline)]) : data.subarray(start, newline);
         if (line.length <= maxLineBytes) await onLine(line, carry.length ? carryStart : base + start);
+        else onSkip();
         carry = Buffer.alloc(0);
         start = newline + 1;
         carryStart = base + start;
@@ -212,11 +213,11 @@ async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillByte
       }
       if (!skip && start < data.length) {
         carry = carry.length ? Buffer.concat([carry, data.subarray(start)]) : Buffer.from(data.subarray(start));
-        if (carry.length > maxLineBytes) { skip = true; carry = Buffer.alloc(0); }
+        if (carry.length > maxLineBytes) { onSkip(); skip = true; carry = Buffer.alloc(0); }
       }
       if (skip) offset = position;
     }
-    return { cursor: { ino: info.ino, offset, skip: Boolean(skip) }, behind: info.size > end, backfillOmittedBytes };
+    return { cursor: { ino: info.ino, offset, skip: Boolean(skip) }, behind: info.size > end, backfillOmittedBytes, limited: skip || carry.length > 0 };
   } finally { await handle.close(); }
 }
 
@@ -330,6 +331,11 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
   let view = { state: home ? "loading" : "unavailable", error: home ? null : "FM_HOME is not configured", checkedAt: null, sources: [], warnings: [] };
   let sources = null, discoveredAt = -Infinity, scanning = null;
   const sourceStatus = new Map();
+  // Ephemeral and current-primary only. On restart, reuse the existing bounded
+  // payload pass to backfill once rather than persist recap text or reread history.
+  let recapFile = null, recapStamp = null;
+  let primaryRecap = { text: null, state: "unavailable" };
+  let recapCandidate = primaryRecap;
 
   const openAsks = () => Object.values(state?.asks || {}).filter((ask) => ask.status === "open");
   function resolveAsk(target, ask, by, extra = {}) {
@@ -432,6 +438,12 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
     if (!home) return false;
     try {
       const active = await sourcesNow();
+      const primary = active.find(entry => entry.origin === "claude");
+      if (recapFile !== (primary?.file || null)) {
+        recapFile = primary?.file || null;
+        recapStamp = null;
+        recapCandidate = primaryRecap = { text: null, state: "unavailable" };
+      }
       state ||= await store.read();
       // One bounded replay repairs already-open cards when matching rules change. Keep
       // asks and tombstones: accepted answers/dismissals must never be revived.
@@ -448,7 +460,9 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
         let info = null;
         try { info = await stat(entry.file); } catch (error) { if (error.code !== "ENOENT") throw error; }
         const cursor = state.cursors[entry.source];
-        if (info && (!cursor || cursor.ino !== info.ino || cursor.offset !== info.size)) grown.push(entry);
+        const recapReset = entry.file === recapFile && info && (!recapStamp || recapStamp.ino !== info.ino || info.size < recapStamp.size || (info.size === recapStamp.size && info.mtimeMs !== recapStamp.mtimeMs));
+        if (entry.file === recapFile && !info) { recapStamp = null; recapCandidate = primaryRecap = { text: null, state: "unavailable" }; }
+        if (info && (recapReset || !cursor || cursor.ino !== info.ino || cursor.offset !== info.size)) grown.push({ ...entry, recapReset, info });
         else if (info) sourceStatus.set(entry.source, { source: entry.source, behind: false, backfillOmittedBytes: sourceStatus.get(entry.source)?.backfillOmittedBytes ?? 0 });
       }
       let changed = false;
@@ -456,18 +470,35 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
         const { state: next, result } = await store.update(async (target) => {
           let asksChanged = false, cursorMoved = false;
           for (const entry of grown) {
-            const prior = target.cursors[entry.source] || { ino: null, offset: 0, skip: false };
+            const isPrimary = entry.file === recapFile;
+            const prior = (!entry.recapReset && target.cursors[entry.source]) || { ino: null, offset: 0, skip: false };
+            if (isPrimary && entry.recapReset) recapCandidate = { text: null, state: "ready" };
             const backfill = prior.ino === null;
             const toolNames = new Map();
-            const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes, onLine: async (line, offset) => {
-              // Only Firstmate's own marker lines matter; session input never resolves an
-              // ask. The whole-record cap bounds parsing. Adapters still exclude tool
-              // output, hooks and machine traffic.
-              if (!line.includes("NEEDED")) return;
+            const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes,
+              onSkip: () => { if (isPrimary) recapCandidate = { text: null, state: "limited" }; },
+              onLine: async (line, offset) => {
+              // The same payload pass projects primary system recaps separately
+              // from asks; neither system text nor session input resolves an ask.
+              if (!isPrimary && !line.includes("NEEDED")) return;
+              const textLine = line.toString("utf8");
+              if (!textLine.trim()) return;
               let record;
-              try { record = JSON.parse(line.toString("utf8")); } catch { return; }
-              if (applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
+              try { record = JSON.parse(textLine); } catch {
+                if (isPrimary) recapCandidate = { text: null, state: "limited" };
+                return;
+              }
+              if (isPrimary) {
+                const text = claudeAwaySummary(record);
+                if (text !== undefined) recapCandidate = { text: text || null, state: "ready" };
+              }
+              if (line.includes("NEEDED") && applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
             } });
+            if (isPrimary) {
+              recapStamp = { ino: entry.info.ino, size: entry.info.size, mtimeMs: entry.info.mtimeMs };
+              if (outcome.backfillOmittedBytes && recapCandidate.text === null) recapCandidate.state = "limited";
+              primaryRecap = outcome.behind || outcome.limited ? { text: null, state: "limited" } : { ...recapCandidate };
+            }
             const before = target.cursors[entry.source];
             if (!before || before.ino !== outcome.cursor.ino || before.offset !== outcome.cursor.offset || before.skip !== outcome.cursor.skip) cursorMoved = true;
             target.cursors[entry.source] = outcome.cursor;
@@ -487,6 +518,8 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
         sources: active.map((entry) => sourceStatus.get(entry.source) || { source: entry.source, behind: false, backfillOmittedBytes: 0 }) };
       return await admitHistorical(active) || changed;
     } catch (error) {
+      recapStamp = null;
+      recapCandidate = primaryRecap = { text: null, state: "unavailable" };
       view = { ...view, state: state ? "stale" : "unavailable", error: `Chat asks unavailable: ${error.code || error.message}`, checkedAt: new Date(now()).toISOString() };
       return false;
     }
@@ -501,7 +534,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
   return {
     // Coalesces concurrent callers; resolves true when open asks changed.
     scan: () => (scanning ||= scanOnce().finally(() => { scanning = null; })),
-    view: () => ({ ...view, resolved: Object.values(state?.asks || {}).filter(ask => ask.status === "resolved" && ask.resolutionSource)
+    view: () => ({ ...view, primaryRecap: { ...primaryRecap }, resolved: Object.values(state?.asks || {}).filter(ask => ask.status === "resolved" && ask.resolutionSource)
       .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt))).slice(0, 50)
       .map(ask => ({ key: ask.key, status: "answered", resolvedAt: ask.resolvedAt, tasks: ask.resolvedTasks, source: ask.resolutionSource, resolutions: ask.holdResolutions || [] })) }),
     asks: () => openAsks(),
@@ -622,8 +655,9 @@ export function composeCallModel(base, asks, chatView) {
   const chatCards = unlinked.slice(0, MAX_OPEN).map(chatCard);
   const chat = { state: chatView.state, error: chatView.error, open: unlinked.length, linked: asks.length - unlinked.length, omitted: Math.max(0, unlinked.length - MAX_OPEN), behind: Boolean(chatView.behind),
     sources: chatView.sources.map(({ source, backfillOmittedBytes }) => ({ source: source.split("/")[0], backfillOmittedBytes })), resolved: chatView.resolved || [] };
+  const primaryRecap = chatView.primaryRecap || { text: null, state: "unavailable" };
   const content = { ...base, cards: [...cards, ...chatCards], chat };
-  return { ...base, cards: content.cards, chat, chatCheckedAt: chatView.checkedAt, rev: shortHash([contentRevision(content), chat]) };
+  return { ...base, cards: content.cards, chat, primaryRecap, chatCheckedAt: chatView.checkedAt, rev: shortHash([contentRevision(content), chat, primaryRecap]) };
 }
 
 // Wrap the snapshot hub so every consumer (GET, ?since, the stream, answers) sees one
@@ -634,15 +668,15 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   let composed = null, composedFrom = null;
   const listeners = new Set();
   let timer = null;
-  const freshness = () => { const model = current(); return { rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error }; };
+  const freshness = () => { const model = current(); return { rev: model.rev, state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error, primaryRecap: model.primaryRecap }; };
   // Recompose only when the hub published a new model object or the chat asks changed.
   let composedBase = null;
   function current() {
     const base = hub.current();
     const asks = chat.asks();
     const view = chat.view();
-    const signature = JSON.stringify([asks.map((ask) => [ask.key, ask.linkedTasks]), view.state, view.error, view.behind, view.sources, view.checkedAt, receiptsSignature]);
-    if (base !== composedBase || signature !== composedFrom) { composed = composeCallModel(base, asks, view); composed.cards = classifyAnsweredCalls(composed.cards, answerReceipts); composed.rev = shortHash([contentRevision(composed), composed.chat]); composedBase = base; composedFrom = signature; }
+    const signature = JSON.stringify([asks.map((ask) => [ask.key, ask.linkedTasks]), view.state, view.error, view.behind, view.sources, view.checkedAt, view.primaryRecap, receiptsSignature]);
+    if (base !== composedBase || signature !== composedFrom) { composed = composeCallModel(base, asks, view); composed.cards = classifyAnsweredCalls(composed.cards, answerReceipts); composed.rev = shortHash([contentRevision(composed), composed.chat, composed.primaryRecap]); composedBase = base; composedFrom = signature; }
     return composed;
   }
   const applyHolds = () => { const base = hub.current(); return chat.applySnapshot(base.cards, fresh(), base.holds || [], base.omitted || []); };

@@ -679,6 +679,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .category-chip { background: var(--accent-soft); color: var(--accent); }
 .confidence-label { border: 1px solid var(--line-strong); color: var(--muted); background: var(--surface); }
 .notice { padding: var(--space-3); margin-top: var(--space-3); border: 1px solid #e5d4b2; border-radius: 8px; background: #fbf2e1; color: var(--amber); font-size: var(--text-ui); overflow-wrap: anywhere; }
+#primary-recap { margin: 0 auto 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #overview-state.notice, #work-state.notice { box-sizing: border-box; width: min(100%, 1200px); margin: 8px auto; padding: 6px 12px; }
 .empty { grid-column: 1 / -1; padding: var(--space-6) var(--space-4); border: 1px dashed var(--line-strong); border-radius: var(--radius); color: var(--muted); text-align: center; font-size: var(--text-ui); }
 .empty.compact { padding: var(--space-4) var(--space-3); }

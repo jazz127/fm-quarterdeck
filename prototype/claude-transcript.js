@@ -54,6 +54,14 @@ export async function findClaudePrimary(root, configDir, reader, warnings) {
   return null;
 }
 
+// A display-only projection, not dialogue or a new summarization request. Undefined
+// means unrelated; an empty string clears the previous recap in this primary file.
+export function claudeAwaySummary(record) {
+  if (record?.type !== "system" || record.subtype !== "away_summary" || record.isSidechain || record.isMeta || record.isCompactSummary) return undefined;
+  if (typeof record.content !== "string") return "";
+  return record.content.replace(/(^|\r?\n)\[fm-lane ([^\]\r\n]+)\]\r?\n([\s\S]*?)\r?\n\[end \2\](?=\r?\n|$)/g, "$1$3").trim();
+}
+
 const stripReminders = (text) => text.replace(/<system-reminder>[\s\S]*?(<\/system-reminder>|$)/g, "").trim();
 
 function userString(record, text) {
