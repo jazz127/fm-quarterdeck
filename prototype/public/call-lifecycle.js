@@ -68,6 +68,7 @@ window.callLifecycle = (() => {
     const entries = Array.isArray(thread?.entries) ? thread.entries : null;
     const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer") && currentHoldNote(card, entry)) : [];
     const latest = captain.length ? captain[captain.length - 1] : null;
+    const localNoteId = (noteId, requestId) => noteId || captain.find((entry) => requestId && entry.requestId === `quarterdeck-call:${requestId}`)?.noteId;
     let posture = latest ? entryPosture(latest) : null;
     let reply = posture === "replied" ? replyFor(latest, entries) : "";
     let replyScope = latest?.replyScope;
@@ -76,25 +77,27 @@ window.callLifecycle = (() => {
       const local = receiptPosture(answer.receipt?.state);
       const localReply = local === "replied" && answer.receipt?.replyScope === "individual" ? replyText(answer.receipt?.reply) : "";
       // History order owns the receipt: a retry's later clock never promotes a note history already lists.
-      const answerListed = Boolean(answer.noteId && captain.some((entry) => entry.noteId === answer.noteId));
-      const answerIsLatest = !latest || (answer.noteId ? answer.noteId === latest.noteId : latest.kind === "answer");
-      const answerIsNewer = !answerListed && Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
+      const noteId = localNoteId(answer.noteId, answer.requestId);
+      const answerListed = Boolean(noteId && captain.some((entry) => entry.noteId === noteId));
+      const answerIsLatest = noteId ? !latest || noteId === latest.noteId : !entries;
+      const answerIsNewer = noteId && !answerListed && Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
       if (answerIsLatest || answerIsNewer) {
         if (!posture || POSTURE_RANK[local] >= POSTURE_RANK[posture] || answerIsNewer) {
           posture = local;
-          replyScope = answer.receipt?.replyScope || replyScope;
-          reply = local === "replied" && replyScope !== "combined" ? (localReply || reply) : "";
+          replyScope = answer.receipt?.replyScope || (answerIsLatest ? replyScope : undefined);
+          reply = local === "replied" && replyScope !== "combined" ? (localReply || (answerIsLatest ? reply : "")) : "";
         }
       }
     }
 
     const held = answer?.heldReply != null && currentHoldNote(card, answer) && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
-    const heldListed = Boolean(answer?.heldNoteId && captain.some((entry) => entry.noteId === answer.heldNoteId));
-    if (held && !heldListed && answer.heldAt && latest?.at && String(answer.heldAt) > String(latest.at)) {
+    const heldNoteId = localNoteId(answer?.heldNoteId, answer?.heldRequestId);
+    const heldListed = Boolean(heldNoteId && captain.some((entry) => entry.noteId === heldNoteId));
+    if (held && heldNoteId && !heldListed && answer.heldAt && latest?.at && String(answer.heldAt) > String(latest.at)) {
       posture = "replied";
       replyScope = answer.heldReplyScope;
       reply = replyScope === "individual" ? replyText(answer.heldReply) : "";
-    } else if (held && posture !== "pending" && posture !== "acknowledged" && (!answer.heldNoteId || !latest || answer.heldNoteId === latest.noteId)) {
+    } else if (held && posture !== "pending" && posture !== "acknowledged" && (heldNoteId ? !latest || heldNoteId === latest.noteId : !entries)) {
       posture = "replied";
       replyScope = replyScope || answer.heldReplyScope;
       reply = replyScope === "combined" ? "" : reply || (answer.heldReplyScope === "individual" ? replyText(answer.heldReply) : "");
