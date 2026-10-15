@@ -83,7 +83,7 @@ test("noteForCard matches thread asks by key and answers by their envelope, neve
   assert.deepEqual(noteForCard({ id: "h", request_id: null, body: `Hand note\n\`\`\`json fm-quarterdeck-thread\n${JSON.stringify({ key: decision.key, question: "By hand" })}\n\`\`\`` }, decision.key, decision), { kind: "ask", text: "By hand" });
 });
 
-test("history joins the card's notes, replies, chat asks and Firstmate chat turns, oldest first", async () => {
+test("history keeps exact notes and replies separate from contextual task-mentioned turns, oldest first", async () => {
   const askNote = { id: "note-ask", at: "2026-01-02T10:00:00Z", request_id: threadRequestId(decision.key, uuid(1)), body: formatThreadNote({ key: decision.key, card: decision, text: "What is alpha?", requestId: uuid(1) }),
     reply: { id: "note-ask", at: "2026-01-02T11:00:00Z", body: "Alpha picks the rollout window; see /srv/synthetic/home/data/alpha.md" } };
   const reply = askNote.reply;
@@ -101,15 +101,14 @@ test("history joins the card's notes, replies, chat asks and Firstmate chat turn
   assert.equal(history.task, "alpha-call");
   assert.deepEqual(history.transcript, { state: "ready", windowed: true });
   assert.deepEqual(history.entries.map((entry) => [entry.kind, entry.from, entry.at]), [
-    ["chat", "firstmate", "2026-01-02T09:00:00.000Z"],
     ["ask", "captain", "2026-01-02T10:00:00Z"],
     ["reply", "firstmate", "2026-01-02T11:00:00Z"],
     ["answer", "captain", "2026-01-02T12:00:00Z"],
-    ["chat", "firstmate", null],
   ]);
-  assert.equal(history.entries[1].state, "replied");
-  assert.equal(history.entries[3].state, "waiting");
-  assert.match(history.entries[2].text, /see …\/alpha\.md$/);
+  assert.equal(history.entries[0].state, "replied");
+  assert.equal(history.entries[2].state, "waiting");
+  assert.match(history.entries[1].text, /see …\/alpha\.md$/);
+  assert.deepEqual(history.provenance.map(entry => [entry.kind, entry.at]), [["context", "2026-01-02T09:00:00.000Z"], ["context", null]]);
 
   await assert.rejects(relay.history("lane:x", model()), refusal("invalid"));
   const chatHistory = await createThreadRelay({ home: "/synthetic/home", receipts: empty, transcript: async () => { throw new Error("not consulted"); } }).history(chat.key, model());
@@ -201,8 +200,9 @@ test("Pi primary transcript joins only Firstmate text naming the whole card task
   const transcript = createTranscriptTurns({ home: "/synthetic/home", discover: async () => ({ sources: [{ file, origin: "pi", source: "primary" }] }) });
   const relay = createThreadRelay({ home: "/synthetic/home", receipts: empty, transcript });
   const result = await relay.history(decision.key, model());
-  assert.equal(result.entries.length, 1);
-  assert.equal(result.entries[0].kind, "chat");
-  assert.equal(result.entries[0].at, "2026-01-02T08:01:00.000Z");
-  assert.ok(result.entries[0].text.length > 4000, "More can reveal long context instead of the old 4000-character cut");
+  assert.equal(result.entries.length, 0);
+  assert.equal(result.provenance.length, 1);
+  assert.equal(result.provenance[0].kind, "context");
+  assert.equal(result.provenance[0].at, "2026-01-02T08:01:00.000Z");
+  assert.ok(result.provenance[0].text.length > 4000, "More can reveal long context instead of the old 4000-character cut");
 });

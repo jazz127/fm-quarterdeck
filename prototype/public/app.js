@@ -1780,7 +1780,15 @@ function renderCallBadge(model) {
   if (count > callCount) $("#sr-announcer").textContent = `${count} Captain's Calls need your attention`;
   callCount = count;
 }
+function renderPrimaryRecap(recap) {
+  const node = $("#primary-recap");
+  const text = typeof recap?.text === "string" ? recap.text : "";
+  if (node.textContent !== text) node.textContent = text;
+  node.hidden = !text;
+  node.title = recap?.state === "limited" ? "Recap unavailable in the bounded transcript read" : "Latest existing recap from the current Claude Code primary session";
+}
 function observeBearings(data) {
+  renderPrimaryRecap(data.primaryRecap);
   if (data.firstmateActivity) {
     firstmateActivity = data.firstmateActivity;
     activityFetchedAt = Date.now();
@@ -1844,7 +1852,7 @@ function renderCallLifecycle() {
       const showReply = state === "active" && posture.posture === "replied";
       banner.hidden = !showReply;
       if (showReply && api.replyBanner) {
-        const text = api.replyBanner(posture.reply);
+        const text = api.replyBanner(posture.reply, posture.replyScope);
         if (banner.textContent !== text) window.bearingsView.messageText(banner, text);
       }
     }
@@ -1891,11 +1899,11 @@ $("#call-send-queued")?.addEventListener("click", () => {
 const callPatcher = window.bearingsPatch?.createCallPatcher({
   section: $("#captain-call"), list: $("#call-cards"), status: $("#call-status"), coverage: $("#call-coverage"),
   view: window.bearingsView, scroller: $("#overview-view"), sortControl: $("#call-sort"),
-  onRender(node, card) { callAnswers?.render(node, card); callOverflow?.render(node, card); callDismiss?.render(node); callThreads?.render(node); callText?.render(node); callProcrastinate?.render(node); },
+  onRender(node, card) { callAnswers?.render(node, card); callOverflow?.render(node, card); callDismiss?.render(node); callThreads?.render(node, card); callText?.render(node); callProcrastinate?.render(node); },
   onApply(model) { const keys = model.cards.map((card) => card.key); callAnswers?.prune(keys); callOverflow?.prune(keys); callDismiss?.prune(keys); callThreads?.prune(keys); callText?.prune(keys); renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); },
 });
 // Queued answers join the review panel's queue; its Send sends them with the notes.
-callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key) => { callThreads?.noteSent(key); renderCallLifecycle(); } });
+callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, holdVersion) => { callThreads?.noteSent(key, holdVersion); renderCallLifecycle(); } });
 if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: (options) => callAnswers.sendQueued(options), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
 callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
 callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });
@@ -1916,7 +1924,8 @@ const overviewTabs = window.overviewTabs?.createController?.({
   secondary: $("#overview-secondary"),
   counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0, underway: () => workBoard?.count("underway") || 0, charted: () => workBoard?.count("charted") || 0 },
   storage: localStorage,
-  media: window.matchMedia?.("(max-width: 720.005px)"),
+  // Phone and tablet share one column and the section tabs. Two columns start at 1100px.
+  media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
   onModel(model) { callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },

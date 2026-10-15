@@ -84,7 +84,11 @@ function ledgerItemTitle(fields) {
 export function shortHash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }
-const withRev = (card) => ({ ...card, rev: shortHash(card) });
+// Presentation compatibility: additive cycle metadata does not change the old revision.
+const withRev = (card) => {
+  const { holdVersion, ...presentation } = card;
+  return { ...card, rev: shortHash(presentation) };
+};
 const durableDate = (value) => isoDate(value) || (typeof value === "string" && /^\d{4}-\d\d-\d\d$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value ? value : null);
 export function decisionClock(row) {
   const candidates = [["Updated", row.updated_at], ["Hold set", row.hold_set_at], ["Created", row.created]]
@@ -275,6 +279,10 @@ async function addBacklogEvidence(output, home) {
     if (Array.isArray(raw.decisions_open)) raw.decisions_open = raw.decisions_open.map((row) =>
       object(row) && row.owner === "(main)" ? {
         ...clocks.get(row.id), ...row,
+        // The snapshot may predate a same-reason re-hold in the selected ledger.
+        ...(durableDate(clocks.get(row.id)?.hold_set_at)
+          && (!durableDate(row.hold_set_at) || Date.parse(clocks.get(row.id).hold_set_at) > Date.parse(row.hold_set_at))
+          ? { hold_set_at: clocks.get(row.id).hold_set_at } : {}),
         ...(typeof row.reason !== "string" && reasons.has(row.id) ? { reason: reasons.get(row.id) } : {}),
         ...(titles.has(row.id) ? { backlogTitle: titles.get(row.id) } : {}),
         ...(reasons.has(row.id) ? { backlogReason: reasons.get(row.id) } : {}),
@@ -503,7 +511,7 @@ function callSection(raw) {
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), answer: decisionAnswer(row, id),
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), answer: decisionAnswer(row, id),
       boardTitle: row.board_title || null,
       boardAbout: row.board_about || null,
       boardDecide: row.board_decide || null,

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import { claudeProjectDirectory } from '../prototype/claude-transcript.js';
 
-const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck'];
+const skills = ['fmqd-lanes', 'fmqd-health', 'fmqd-quartermaster', 'fmqd-toolcheck', 'fmqd-autoclean'];
 // Synthetic prior-release discovery names; ownership schema and rollback stay v1.
 const legacySkills = ['fm-lanes', 'fm-quarterdeck-health', 'fm-quartermaster', 'fm-toolcheck'];
 
@@ -75,10 +75,11 @@ function cli(script, home, mode, ...args) {
   return JSON.parse(result.stdout);
 }
 
-test('canonical skill directories and frontmatter declare only the four fmqd names', async () => {
+test('canonical skill sources distinguish five installable and five inactive snapshot names', async () => {
+  const inactive = ['fmqd-fleet-health', 'fmqd-cleanup-sweep', 'fmqd-pr-readiness', 'fmqd-pr-identity-guard', 'fmqd-restart-ready'];
   const root = new URL('../skills/', import.meta.url);
-  assert.deepEqual((await readdir(root)).sort(), [...skills].sort());
-  for (const name of skills) {
+  assert.deepEqual((await readdir(root)).sort(), [...skills, ...inactive].sort());
+  for (const name of [...skills, ...inactive]) {
     const body = await readFile(new URL(`${name}/SKILL.md`, root), 'utf8');
     assert.match(body, new RegExp(`^---\nname: ${name}\n`));
   }
@@ -119,7 +120,9 @@ for (const discovery of ['absent', 'alias', 'directory']) {
 
       // Publish a synthetic new revision using the actual current installer.
       await cp(new URL('../scripts/firstmate-integration.mjs', import.meta.url), script);
-      for (let i = 0; i < skills.length; i++) await rename(path.join(source, 'skills', legacySkills[i]), path.join(source, 'skills', skills[i]));
+      for (let i = 0; i < legacySkills.length; i++) await rename(path.join(source, 'skills', legacySkills[i]), path.join(source, 'skills', skills[i]));
+      await mkdir(path.join(source, 'skills/fmqd-autoclean'));
+      await writeFile(path.join(source, 'skills/fmqd-autoclean/SKILL.md'), '# Synthetic report-only skill\n');
       git('add', '.'); git('-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@users.noreply.github.com', 'commit', '-qm', 'Synthetic skill prefix');
       const next = git('rev-parse', 'HEAD').trim();
       for (const mode of ['status', 'verify']) {
@@ -453,12 +456,13 @@ test('toolcheck runs status/verify, reports pin and projection drift with exact 
   await writeFile(path.join(home, '.claude/settings.local.json'), '{}\n');
   await writeFile(path.join(home, 'data/captain.md'), '# Working preferences\n');
   await rm(path.join(home, '.agents/skills/fmqd-toolcheck'));
+  await rm(path.join(home, '.agents/skills/fmqd-autoclean'));
   await rm(path.join(home, 'state/fm-quarterdeck-health.check-trust'));
   await writeFile(path.join(home, 'state/quarterdeck-health.json'), '{}\n');
   await symlink('quarterdeck-health.json', path.join(home, 'state/fm-quarterdeck-health.notes.json'));
   const drifted = await snapshot(home);
   const output = report();
-  for (const evidence of ['status:', 'verify:', 'out-of-date-pin', revision, main, '.claude/settings.local.json', 'data/captain.md', '.agents/skills/fmqd-toolcheck', 'state/fm-quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.notes.json', 'Exact reinstall command (review only; NEVER executed)', source + '/scripts/firstmate-integration.mjs', 'cp --', 'uninstall', 'install', 'mktemp']) assert.ok(output.includes(evidence), evidence);
+  for (const evidence of ['status:', 'verify:', 'out-of-date-pin', revision, main, '.claude/settings.local.json', 'data/captain.md', '.agents/skills/fmqd-toolcheck', '.agents/skills/fmqd-autoclean', 'state/fm-quarterdeck-health.check-trust', 'state/quarterdeck-health.json', 'state/fm-quarterdeck-health.notes.json', 'Exact reinstall command (review only; NEVER executed)', source + '/scripts/firstmate-integration.mjs', 'cp --', 'uninstall', 'install', 'mktemp']) assert.ok(output.includes(evidence), evidence);
   assert.deepEqual(await snapshot(home), drifted);
 });
 
@@ -492,6 +496,27 @@ test('an unowned new-note marker refuses installation and is never adopted', asy
   const before = await snapshot(home);
   await assert.rejects(run('install'), /Unowned runtime bookkeeping/);
   assert.deepEqual(await snapshot(home), before);
+});
+
+test('installed pin contains inert autoclean script and its real read-only import graph', async t => {
+  const { home, revision, run } = await fixture(t, { realSource: true });
+  await run('install');
+  const script = path.join(home, 'data/quarterdeck-integration/pins', revision, 'scripts/quarterdeck-autoclean.mjs');
+  const inventory = await run('inventory');
+  assert.ok(inventory.artifacts.some(item => item.file.endsWith('/scripts/quarterdeck-autoclean.mjs') && item.retained));
+  assert.ok(inventory.artifacts.some(item => item.file === '.agents/skills/fmqd-autoclean'));
+  const before = await snapshot(home);
+  const report = args => {
+    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  assert.equal(report([]).enabled, false);
+  assert.deepEqual(report(['--enabled-report', home]).effects, []);
+  assert.deepEqual(await snapshot(home), before);
+  await run('uninstall');
+  assert.equal(await lstat(path.join(home, '.agents/skills/fmqd-autoclean')).catch(() => null), null);
+  assert.ok((await run('inventory')).artifacts.every(item => item.retained));
 });
 
 test('installed pin runs the real Stop hook from its captured import graph', async t => {

@@ -4,6 +4,7 @@ import { displayAnswer } from "./bearings-answer.js";
 import { discoverPrimarySources, mentionsTask, recordTurns } from "./chat-asks.js";
 import { createHistoryReader } from "./history-reader.js";
 import { inboxReceipts, noteWithRequestId } from "./inbox.js";
+import { currentCardNote, receiptReply, replyBody } from "./receipt-provenance.js";
 
 // Card threads (BEARINGS.md "Card threads"). Text in a Captain's Call card's one box, with
 // no option selected, sends the captain's note to Firstmate through the same guarded,
@@ -79,7 +80,7 @@ function parseBody(body) {
 export function formatThreadNote({ key, card, text, requestId }) {
   const task = cardTask(card, key);
   const envelope = { schema: THREAD_SCHEMA, key, type: card?.type || key.split(":")[0], ...(task ? { task } : {}),
-    ...(card?.type === "chat" ? { ask: threadText(`${card.marker}: ${card.summary}`, 1024) } : {}), question: text, requestId };
+    ...(card?.type === "chat" ? { ask: threadText(`${card.marker}: ${card.summary}`, 1024) } : {}), question: text, requestId, ...(card?.holdVersion ? { holdVersion: card.holdVersion } : {}) };
   return [
     `Captain asks about ${cardLabel(card, key)} from Quarterdeck: ${text.replace(/\s+/g, " ")}`,
     "Answer with `bin/fm-inbox.sh reply <this note id>` (it appears in this card's thread) or in the main chat naming the task id. This is a question, not an answer; nothing was decided.",
@@ -124,12 +125,12 @@ export function noteForCard(note, key, card) {
 
 // Firstmate's own text in the newest window of each primary source. Cached per source by
 // inode, size and mtime, so an unchanged transcript is never re-parsed.
-export function createTranscriptTurns({ home, claudeConfigDir = null, discover = discoverPrimarySources, windowBytes = TRANSCRIPT_WINDOW_BYTES, discoverEveryMs = 30000, now = Date.now } = {}) {
+export function createTranscriptTurns({ home, claudeConfigDir = null, historyLimits = {}, discover = discoverPrimarySources, windowBytes = TRANSCRIPT_WINDOW_BYTES, discoverEveryMs = 30000, now = Date.now } = {}) {
   const cache = new Map();
   let sources = null, discoveredAt = -Infinity;
   return async function firstmateTurns() {
     if (!home) return { turns: [], omitted: false };
-    if (!sources || now() - discoveredAt >= discoverEveryMs) { sources = (await discover(home, { claudeConfigDir })).sources; discoveredAt = now(); }
+    if (!sources || now() - discoveredAt >= discoverEveryMs) { sources = (await discover(home, { claudeConfigDir, reader: createHistoryReader(historyLimits) })).sources; discoveredAt = now(); }
     const turns = [];
     let omitted = false;
     for (const entry of sources) {
@@ -138,7 +139,7 @@ export function createTranscriptTurns({ home, claudeConfigDir = null, discover =
       const stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
       let cached = cache.get(entry.file);
       if (cached?.stamp !== stamp) {
-        const reader = createHistoryReader({ maxFileBytes: windowBytes, maxTotalBytes: windowBytes * 2, windowReserveBytes: 0, maxRecords: 200000, maxLineBytes: 2 * 1024 * 1024 });
+        const reader = createHistoryReader({ maxFileBytes: windowBytes, maxTotalBytes: windowBytes * 2, windowReserveBytes: 0, maxRecords: 200000, maxLineBytes: 2 * 1024 * 1024, ...historyLimits });
         const window = await reader.recent(entry.file, windowBytes);
         const found = [];
         const toolNames = new Map();
@@ -193,35 +194,61 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       if (!validCardKey(key)) refuse(400, "invalid", "Thread must name an open card");
       const card = cardByKey(model, key) || null;
-      const entries = [];
+      const entries = [], provenance = [], combinedSeen = new Set();
       const data = await receipts(home);
       const notes = new Map();
       for (const item of [...data.pending, ...data.handled]) if (item?.id && !notes.has(item.request_id || item.id)) notes.set(item.request_id || item.id, item);
       for (const item of notes.values()) {
         const match = noteForCard(item, key, card);
         if (!match) continue;
-        const reply = data.replies?.find((entry) => entry.id === item.id || entry.note_id === item.id || entry.in_reply_to === item.id) || item.reply;
-        const replyText = typeof reply?.body === "string" ? reply.body : typeof reply?.text === "string" ? reply.text : null;
-        entries.push({ kind: match.kind, from: "captain", at: item.at || null, text: threadText(match.text), noteId: item.id, state: reply ? "replied" : data.handled.some((entry) => entry.id === item.id) ? "received" : "waiting" });
-        if (replyText !== null) entries.push({ kind: "reply", from: "firstmate", at: reply.at || null, text: threadText(replyText), noteId: item.id });
+        const { reply, scope } = receiptReply(data, item);
+        const replyText = replyBody(reply);
+        const envelope = taggedEnvelope(item.body, "fm-bearings-answer") || taggedEnvelope(item.body, THREAD_NOTE_TAG) || {};
+        const current = currentCardNote(card, envelope, item.at);
+        const captain = { kind: match.kind, from: "captain", at: item.at || null, text: threadText(match.text), noteId: item.id, requestId: item.request_id,
+          ...(card?.holdVersion ? { holdVersion: envelope.holdVersion || null, cardRev: envelope.cardRev || null, currentHold: current } : {}),
+          ...(reply ? { replyScope: scope } : {}), state: reply ? "replied" : data.handled.some((entry) => entry.id === item.id) ? "received" : "waiting" };
+        if (current) entries.push(captain);
+        else provenance.push({ ...captain, kind: "earlier-note" });
+        if (scope === "combined") {
+          if (!combinedSeen.has(item.id)) {
+            combinedSeen.add(item.id);
+            provenance.push({ kind: "combined-submission", from: "captain", at: item.at || null, noteId: item.id, requestId: item.submission?.requestId || null, state: captain.state,
+              text: threadText(item.submission?.body || "Original combined submission text unavailable in this receipt view."), sourceLimited: !item.submission?.body || item.submission.body.length > MAX_ENTRY_CHARS });
+            if (replyText !== null) provenance.push({ kind: "combined-reply", from: "firstmate", at: reply.at || null, text: threadText(replyText), noteId: item.id, sourceLimited: replyText.length > MAX_ENTRY_CHARS });
+          }
+        } else if (replyText !== null) {
+          const response = { kind: "reply", from: "firstmate", at: reply.at || null, text: threadText(replyText), noteId: item.id, requestId: item.request_id };
+          if (current) entries.push(response);
+          else provenance.push({ ...response, kind: "earlier-reply" });
+        }
       }
       if (card?.type === "chat") entries.push({ kind: "chat-ask", from: "firstmate", at: card.clock?.at || null, text: threadText(`${card.marker}: ${card.summary}`) });
-      for (const ask of card?.chatAsks || []) entries.push({ kind: "chat-ask", from: "firstmate", at: ask.clock?.at || null, text: threadText(`${ask.kind ? `${ask.kind.toUpperCase()} NEEDED: ` : ""}${ask.summary}`) });
+      // A source-linked task ask has its own chat identity, not this hold's cycle identity.
+      for (const ask of card?.chatAsks || []) provenance.push({ kind: "linked-ask", from: "firstmate", at: ask.clock?.at || null, text: threadText(`${ask.kind ? `${ask.kind.toUpperCase()} NEEDED: ` : ""}${ask.summary}`), askKey: ask.key });
       const task = cardTask(card, key);
       let transcriptState = "ready", omitted = false;
       if (task) {
         try {
           const found = await transcript();
           omitted = found.omitted;
-          for (const turn of found.turns) if (mentionsTask(turn.text, task)) entries.push({ kind: "chat", from: "firstmate", at: turn.at, text: threadText(turn.text) });
+          for (const turn of found.turns) if (mentionsTask(turn.text, task)) provenance.push({ kind: "context", from: "firstmate", at: turn.at, text: threadText(turn.text), sourceLimited: turn.text.length > MAX_ENTRY_CHARS });
         } catch { transcriptState = "unavailable"; }
       } else transcriptState = "not-applicable";
       // Oldest first; unknown times keep their discovery order at the end.
-      const ordered = entries.map((entry, index) => ({ entry, index }))
+      const ordered = (items) => items.map((entry, index) => ({ entry, index }))
         .sort((a, b) => (a.entry.at ? 0 : 1) - (b.entry.at ? 0 : 1) || String(a.entry.at).localeCompare(String(b.entry.at)) || a.index - b.index)
         .map(({ entry }) => entry);
-      const dropped = Math.max(0, ordered.length - MAX_ENTRIES);
-      return { schema: THREAD_SCHEMA, key, task, entries: ordered.slice(dropped), omitted: dropped, transcript: { state: transcriptState, windowed: omitted }, checkedAt: new Date(now()).toISOString() };
+      const exact = ordered(entries);
+      // Chatter cannot evict a retained original combined receipt. Bound receipt and
+      // contextual provenance independently, and disclose every excluded record.
+      const original = ordered(provenance.filter(entry => entry.kind !== "context" && entry.kind !== "linked-ask"));
+      const contextual = ordered(provenance.filter(entry => entry.kind === "context" || entry.kind === "linked-ask"));
+      const dropped = Math.max(0, exact.length - MAX_ENTRIES);
+      const provenanceDropped = Math.max(0, original.length - MAX_ENTRIES) + Math.max(0, contextual.length - MAX_ENTRIES);
+      return { schema: THREAD_SCHEMA, key, task, entries: exact.slice(dropped), omitted: dropped,
+        provenance: ordered([...original.slice(-MAX_ENTRIES), ...contextual.slice(-MAX_ENTRIES)]), provenanceOmitted: provenanceDropped,
+        transcript: { state: transcriptState, windowed: omitted }, checkedAt: new Date(now()).toISOString() };
     },
   };
 }

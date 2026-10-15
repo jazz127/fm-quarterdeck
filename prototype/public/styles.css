@@ -679,6 +679,7 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
 .category-chip { background: var(--accent-soft); color: var(--accent); }
 .confidence-label { border: 1px solid var(--line-strong); color: var(--muted); background: var(--surface); }
 .notice { padding: var(--space-3); margin-top: var(--space-3); border: 1px solid #e5d4b2; border-radius: 8px; background: #fbf2e1; color: var(--amber); font-size: var(--text-ui); overflow-wrap: anywhere; }
+#primary-recap { margin: 0 auto 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #overview-state.notice, #work-state.notice { box-sizing: border-box; width: min(100%, 1200px); margin: 8px auto; padding: 6px 12px; }
 .empty { grid-column: 1 / -1; padding: var(--space-6) var(--space-4); border: 1px dashed var(--line-strong); border-radius: var(--radius); color: var(--muted); text-align: center; font-size: var(--text-ui); }
 .empty.compact { padding: var(--space-4) var(--space-3); }
@@ -1658,6 +1659,18 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   #desktop-review-footer #review-panel-toggle { order: 1; margin-left: auto; }
   #desktop-review-footer #review-form { grid-template-columns: minmax(80px, 1fr) minmax(210px, auto); }
   .review-panel { bottom: 152px; max-height: calc(100dvh - 152px); }
+}
+/* The 1000px footer still puts the note beside the actions, which crushes the note once the nav is open.
+   Stack the note over the actions and let the bar grow so Review chat stays inside it. */
+@media (min-width: 720.01px) and (max-width: 1000px) {
+  #desktop-review-footer { height: auto; min-height: 176px; align-content: start; }
+  #desktop-review-footer #review-form { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto; }
+  #desktop-review-footer #review-message { grid-column: 1; grid-row: 1; width: 100%; min-width: 0; }
+  #desktop-review-footer .review-actions { grid-column: 1; grid-row: 2; flex-wrap: wrap; }
+  #desktop-review-footer .review-actions button { flex: 1 1 7.5rem; min-width: 0; max-width: none; }
+  #desktop-review-footer #review-target { grid-column: 1; grid-row: 3; }
+  #desktop-review-footer #review-target:empty { display: none; }
+  .review-panel { bottom: 192px; max-height: calc(100dvh - 192px); }
 }
 @media (max-width: 720.005px) {
   #sidebar-version, #sidebar-version-detail { display: none; }
@@ -2821,7 +2834,8 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   #overview-view .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 720.005px) {
-  #overview-view.feature-view { padding: 12px 12px 20px; }
+  /* Clear the fixed phone tab bar. The dock's own inset already covers the home indicator. */
+  #overview-view.feature-view { padding: 12px 12px 80px; }
   #overview-view .feature-head { margin-bottom: 10px; }
   #overview-view #fleet-source { flex-wrap: wrap; justify-content: flex-start; margin-left: 0; white-space: normal; row-gap: 2px; }
   #overview-view .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
@@ -2833,8 +2847,15 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
   #captain-call > .call-sort { flex-basis: 100%; }
   #overview-view .call-sort select { flex: 1 1 auto; min-width: 0; }
   #overview-view .overview-section-tabs {
+    position: fixed;
+    z-index: 40;
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    bottom: var(--mobile-dock-height, calc(69px + env(safe-area-inset-bottom, 0px)));
+    width: auto;
+    max-width: none;
     gap: 0;
-    margin: 0 0 12px;
+    margin: 0;
     padding: 4px;
     border: 2px solid var(--text);
     border-radius: 12px;
@@ -2857,6 +2878,47 @@ mark { background: #fdf0cd; color: var(--text); padding: 0 2px; border-radius: 2
     color: #fff;
     box-shadow: none;
   }
+}
+/* Below 1100px the desktop nav leaves a stage too narrow for two poster columns.
+   Keep the phone tabs and one column; 1280px still uses the two-column rules. */
+@media (min-width: 720.01px) and (max-width: 1099.98px) {
+  .overview-columns { grid-template-columns: minmax(0, 1fr); }
+  #overview-view .overview-section-tabs {
+    display: flex;
+    gap: 0;
+    margin: 0 0 12px;
+    padding: 4px;
+    border: 2px solid var(--text);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 3px 3px 0 var(--text);
+  }
+  #overview-view .overview-section-tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 44px;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+  #overview-view .overview-section-tabs button:hover:not([aria-selected="true"]) { background: var(--canvas); }
+  #overview-view .overview-section-tabs button[aria-selected="true"],
+  #overview-view .overview-section-tabs button[aria-selected="true"]:hover {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: none;
+  }
+  #overview-view .metric-card { display: block; }
+  #overview-view .metric-card strong { grid-row: auto; font-size: 1.75rem; }
+  #overview-view .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #captain-call > .call-sort { flex-basis: 100%; }
+  #overview-view .call-lifecycle-filter button { overflow-wrap: anywhere; }
 }
 @media (forced-colors: active) {
   #overview-view.feature-view { background: Canvas; background-image: none; }

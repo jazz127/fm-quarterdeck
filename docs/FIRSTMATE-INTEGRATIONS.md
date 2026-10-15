@@ -8,10 +8,26 @@ A skill in source is not activated in a Firstmate home. These integrations are o
 | fmqd-toolcheck | Read-only scoped audit of public Kunchenguid-owned tools declared by installed bootstrap; no installs/upgrades | `skills/fmqd-toolcheck/`, [TOOLCHECK.md](TOOLCHECK.md) |
 | fmqd-quartermaster | Explicit advisory outsider review of loops, regressions, architecture and waste; bounded investigations need existing authority, workers gain no delegation authority | `skills/fmqd-quartermaster/SKILL.md` |
 | fmqd-health | Explicit custom-watcher registration; bounded dashboard/Serve/Bearings and new/overdue-inbox checks during setup and `/afk`, safe captain-note handling with reply+ack, ownership-safe recovery | `skills/fmqd-health/SKILL.md`, `scripts/quarterdeck-health-check.sh` |
+| fmqd-autoclean | OFF-by-default one-shot report of recorded stale agents/copies/panes/terminals and optional established tracking links; no effects or runtime hook | `skills/fmqd-autoclean/SKILL.md`, `scripts/quarterdeck-autoclean.mjs` |
 | Captain ask Stop hook | Code-enforced structured task markers against selected-home open captain holds; bounded diagnostic fail-open, no model or stock Firstmate edits | `scripts/captain-ask-stop-hook.mjs`, `scripts/captain-ask-hook-install.mjs` |
 | Mechanical helpers | Opt-in lane syntax check, receipt-proven note reply+ack, owned standalone restart after landing; no automatic installation or shared takeover | `scripts/check-lane-envelopes.mjs`, `scripts/quarterdeck-note-close.mjs`, `scripts/quarterdeck-watch.mjs` |
 | Tier-aware delivery | Future Firstmate integration must independently implement/validate the [branch contract](branching-and-preview-model.md) | Not implied by UI labels |
 | Durable session/source authority | Future integration needs durable primary/worker/relayed/read-only evidence | Never inferred from display names or lane tags |
+
+## Inactive snapshot-only source skills
+
+The five additional [snapshot skills](SNAPSHOT-SKILLS.md) are source-only and
+**not part of this installer's discovery projections**: `fmqd-fleet-health`,
+`fmqd-cleanup-sweep`, `fmqd-pr-readiness`, `fmqd-pr-identity-guard` and
+`fmqd-restart-ready`. They consume explicit saved read-only observations, never
+invoke owners or actions, and never authorize cleanup/publication/restart.
+Stow-safety is always UNKNOWN because stock Firstmate has no structured stow
+checkpoint. No installation, global copy, activation, hook, pin or live acceptance
+is included. A future projection requires a separate installer-owned change with
+tagging, uninstall, inventory and toolcheck coverage; do not hand-install them.
+The unchanged installer may retain their tracked bytes as inert source in its
+manifest-tagged integration pin, covered by normal pin inventory and drift checks;
+that does not project or activate these skills.
 
 ## Unified mechanical installation
 
@@ -53,10 +69,10 @@ Installed artifacts:
   markers with **complete lane syntax enforcement**. It uses explicit home/Node
   paths, the pinned script and optional `CLAUDE_CONFIG_DIR`. The original ask-only
   installer remains compatible; it is not the unified installation owner.
-- Four home-local `.agents/skills/` links, each explicitly tagged in the ownership
-  manifest, using the four `fmqd-` names above. Claude's stock `../.agents/skills`
+- Five home-local `.agents/skills/` links, each explicitly tagged in the ownership
+  manifest, using the five `fmqd-` names above. Claude's stock `../.agents/skills`
   alias is preserved; an absent discovery path gets that alias, while an existing
-  real `.claude/skills/` directory gets four links. Other aliases are refused.
+  real `.claude/skills/` directory gets five links. Other aliases are refused.
   No user-global skill directory or other home is inspected or changed. Pi's
   normal `.agents/skills` discovery remains applicable, but Pi has **no Stop
   enforcement**; skill discovery is not universal harness enforcement.
@@ -128,7 +144,7 @@ refuse adoption even if they look similar. A new pin requires uninstall, then
 install; the operator owns that deliberate two-step update window.
 
 Quarterdeck skill discovery now uses `fmqd-lanes`, `fmqd-health`,
-`fmqd-quartermaster` and `fmqd-toolcheck`. The previous names `fm-lanes`,
+`fmqd-quartermaster`, `fmqd-toolcheck` and the inert `fmqd-autoclean` report skill. The previous names `fm-lanes`,
 `fm-quarterdeck-health`, `fm-quartermaster` and `fm-toolcheck` remain only as
 compatibility evidence in inspection, immutable onboarding templates and migration
 regressions. Status/verify report `legacy-skill-names:reinstall-required` for an
@@ -297,6 +313,43 @@ Removal verifies the exact installed entry and removes only it, preserving other
 ## Mechanical helpers
 
 The [instruction-to-code inventory](INSTRUCTION-TO-CODE.md) separates executable rules from producer conventions and authority. These helpers need maintained Node 24 LTS and explicit operator activation. They do not modify Firstmate source/bin/AGENTS, project skills, register watchers, install hooks or publish anything. Use an approved clean checkout; do not execute an unreviewed candidate. No live activation is implied by their tests.
+
+### Autoclean report-only inventory
+
+The installed `fmqd-autoclean` skill resolves the pinned
+`scripts/quarterdeck-autoclean.mjs`. With no arguments it returns disabled and
+reads no home; explicit `--enabled-report /absolute/selected/firstmate` opts
+into one report. Optional `--tracking-findings` inspects existing issue/Project
+links in that home's backlog, never remote status or desired field mappings.
+There is no persistent enable setting, turn-end hook, conversation-size trigger
+or implicit activation through another skill.
+
+Only bounded selected-home regular `state/*.meta`, `state/*.status` and
+`data/backlog.md` records are read. Existing status/backlog parsers supply
+record semantics. Up to 512 tasks, 64 KiB per task file and 1 MiB backlog are
+read; omissions/unsafe/missing owners are explicit. The script lists recorded
+agents, worktree/copy paths, pane handles and Orca terminal handles without
+following paths or probing backends. Unrecorded resources are outside coverage.
+A 24-hour-old done declaration on a closed task with no recorded hold/blocker
+or in-flight flag is only a stale **review candidate**. Landing, live state,
+exclusive ownership and deletion safety remain unverified for every record.
+Foreign/secondmate endpoints are never inspected. A secondmate runs against its
+own authorized home, not its parent's namespace.
+
+Tracking absent means not-applicable; unavailable backlog means unverified;
+explicit links produce per-task/recorded-repository review findings for the
+established reporter. No setup, network call or reconciliation mutation occurs.
+This is not a remote status comparison. Reports contain private resource paths:
+keep them private, not in public issues or comments.
+
+There is **no acting mode**: zero stow, cleanup, detach, reset, lifecycle send,
+lock repair or reconciliation effects. Own-pane reset and all acting modes are
+later follow-ups requiring a supported detach/completion interface and separate
+concrete authority. Native clearing and Firstmate session-start/lock/supervision
+continuity remain unexercised. Claude/Pi/secondmate source compatibility is not
+installed harness or live-home acceptance. Installer discovery, tagged pin
+inventory, uninstall and fmqd-toolcheck drift checks cover the skill/script;
+source tests do not install or activate a real home.
 
 ### Lane syntax preflight
 

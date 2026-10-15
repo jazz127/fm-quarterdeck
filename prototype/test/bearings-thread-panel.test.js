@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
 
-const sources = await Promise.all(["bearings-patch.js", "bearings-view.js", "bearings-thread-panel.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
+const sources = await Promise.all(["bearings-patch.js", "bearings-view.js", "bearings-thread-panel.js", "call-lifecycle.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
 const flush = async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const decision = (rev = "a1") => ({ key: "decision:alpha-call", type: "decision", task: "alpha-call", summary: "Pick the alpha rollout window", rev,
@@ -42,7 +42,7 @@ function setup({ responses = [], storage = null } = {}) {
   let n = 0;
   let threads = null;
   const patcher = win.bearingsPatch.createCallPatcher({ section, list, status, view: win.bearingsView, doc: document, win, storage, timers,
-    onRender: (node) => threads?.render(node), onApply: (next) => threads?.prune(next.cards.map((card) => card.key)) });
+    onRender: (node, card) => threads?.render(node, card), onApply: (next) => threads?.prune(next.cards.map((card) => card.key)) });
   threads = win.bearingsThread.createThreadController({ list, drafts: patcher.drafts, doc: document, win, storage, fetchImpl, timers, uuid: () => uuid(++n) });
   const node = () => list.children.find((entry) => entry.getAttribute("data-call-key") === KEY);
   const part = (name) => node().querySelector(`[data-call-thread-${name}]`);
@@ -52,7 +52,7 @@ function setup({ responses = [], storage = null } = {}) {
 
 test("a card shows the latest exchange above the text box, with a count, and keeps watching", async () => {
   const entries = [
-    { kind: "chat", from: "firstmate", at: "2026-01-02T09:00:00.000Z", text: "Filed a hold for alpha-call." },
+    { kind: "chat-ask", from: "firstmate", at: "2026-01-02T09:00:00.000Z", text: "Filed a hold for alpha-call." },
     { kind: "ask", from: "captain", at: "2026-01-02T10:00:00.000Z", text: "What is alpha?", state: "replied" },
     { kind: "reply", from: "firstmate", at: "2026-01-02T11:00:00.000Z", text: "It picks the rollout window." },
   ];
@@ -78,7 +78,7 @@ test("a card shows the latest exchange above the text box, with a count, and kee
   assert.equal(t.part("history-toggle").hidden, false);
   t.part("history-toggle").click();
   assert.equal(t.node().querySelector("[data-call-thread-text]"), null, "showing earlier messages does not open a composer");
-  assert.deepEqual([...t.part("log").children].map((entry) => entry.querySelector("strong").textContent), ["Firstmate in chat", "You asked", "Firstmate replied"]);
+  assert.deepEqual([...t.part("log").children].map((entry) => entry.querySelector("strong").textContent), ["Firstmate asked in chat", "You asked", "Firstmate replied"]);
   assert.match(t.part("log").children[1].textContent, /replied/);
   assert.equal(t.part("log").children[2].querySelector("time").getAttribute("datetime"), "2026-01-02T11:00:00.000Z");
   t.part("history-toggle").click();
@@ -148,7 +148,7 @@ test("long entries stay fully readable and copy fails visibly", async () => {
   const text = "Synthetic context ".repeat(300);
   const t = setup({ responses: [history([
     { kind: "ask", from: "captain", at: "2026-01-02T10:00:00Z", text: "Earlier question" },
-    { kind: "chat", from: "firstmate", at: "2026-01-02T11:00:00Z", text },
+    { kind: "reply", from: "firstmate", at: "2026-01-02T11:00:00Z", text },
   ])] });
   t.patcher.update(model([decision()]));
   await flush();
@@ -205,6 +205,47 @@ test("untrusted schemes, credentials and HTML remain plain thread text", async (
   assert.equal(body.textContent, text);
   assert.equal(body.querySelectorAll("a").length, 0);
   assert.equal(body.querySelectorAll("img").length, 0);
+});
+
+test("combined and contextual provenance is separately reachable, copyable and retained across refills", async () => {
+  const response = history([{ kind: "ask", from: "captain", noteId: "shared", state: "replied", replyScope: "combined", text: "Explain my card" }]);
+  response.body.provenance = [
+    { kind: "combined-submission", from: "captain", noteId: "shared", text: "Original item A and item B", state: "replied" },
+    { kind: "combined-reply", from: "firstmate", noteId: "shared", text: "Item A: window. Item B: board." },
+    { kind: "context", from: "firstmate", text: "alpha-call and another task; attribution unverified" },
+  ];
+  const t = setup({ responses: [response] });
+  t.patcher.update(model([decision()]));
+  await flush();
+  assert.equal(t.part("count").textContent, "Thread · 1");
+  assert.equal(t.part("expand").hidden, true);
+  assert.equal(t.part("provenance-toggle").hidden, false);
+  assert.equal(t.part("provenance").hidden, true);
+  t.part("provenance-toggle").click();
+  assert.equal(t.part("provenance").hidden, false);
+  assert.match(t.part("provenance-log").textContent, /Reply to the combined submission · not card-specific/);
+  assert.match(t.part("provenance-log").textContent, /Item B: board/);
+  assert.equal(t.part("provenance-log").querySelectorAll("button").length, 3);
+  assert.equal(t.part("log").textContent, "");
+  assert.equal(t.part("replies").textContent, "", "provenance is not an unread card reply");
+  t.patcher.update(model([decision("a2")]));
+  assert.equal(t.part("provenance").hidden, false);
+  assert.match(t.part("provenance-status").textContent, /original durable records are unchanged/);
+});
+
+test("cached old-cycle notes and legacy task-only entries cannot paint as current exact history", async () => {
+  const response = history([
+    { kind: "ask", from: "captain", noteId: "old", holdVersion: "old", state: "replied", text: "Old question" },
+    { kind: "reply", from: "firstmate", noteId: "old", text: "Old answer" },
+    { kind: "chat", from: "firstmate", text: "alpha-call: contextual old scope" },
+  ]);
+  const t=setup({responses:[response]});
+  t.patcher.update(model([{...decision(),holdVersion:"new"}]));await flush();
+  assert.equal(t.part("count").textContent,"Thread · 0");
+  t.part("provenance-toggle").click();
+  assert.match(t.part("provenance-log").textContent,/Old question/);
+  assert.match(t.part("provenance-log").textContent,/attribution unverified/);
+  assert.equal(t.part("log").textContent,"");
 });
 
 test("link boundaries preserve surrounding punctuation, balanced URL paths and fragments", async () => {

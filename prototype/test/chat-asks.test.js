@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
-import { answerEnvelope, formatAnswerNote, validateAnswer } from "../bearings-answer.js";
-import { createBearingsHub, normalizeSnapshot } from "../bearings.js";
+import { answerEnvelope, createAnswerRelay, formatAnswerNote, validateAnswer } from "../bearings-answer.js";
+import { backlogHoldRecords, createBearingsHub, normalizeSnapshot } from "../bearings.js";
 import { chatAsksPath, chatCard, composeCallModel, createCallSource, createChatAskScanner, extractAsks, extractReplies, mentionsTask } from "../chat-asks.js";
 import { claudeProjectDirectory } from "../claude-transcript.js";
 import { createServer } from "../server.js";
@@ -265,6 +265,113 @@ test("named either/or replies reach filed controls without invented Yes/No; unst
   assert.deepEqual([answerEnvelope(reply, "model").selection, answerEnvelope(reply, "model").note], ["", "Yes"]);
 });
 
+test("single-task explicit unquoted Yes/No survives transcript intake, projection and typed answer receipts", async (context) => {
+  const env = await claudeHome(context);
+  const raw = JSON.parse(await readFile(new URL("./fixtures/bearings/two-calls.json", import.meta.url), "utf8"));
+  raw.decisions_open[0].hold_set_at = at(0);
+  const text = '[fm-lane General]\n- DECISION NEEDED [task:alpha-call] Shall we archive the sample notes? Reply Yes or No.\n[end General]';
+  await writeFile(env.transcript, lines(firstmate("explicit-boolean", 1, text)));
+  const scanner = scannerFor(env);
+  await scanner.scan();
+  const snapshot = { ...normalizeSnapshot(raw), state: "ready" };
+  await scanner.applySnapshot(snapshot.cards, true);
+  const current = composeCallModel(snapshot, scanner.asks(), scanner.view());
+  const card = current.cards.find(card => card.task === "alpha-call");
+  assert.equal(current.chat.linked, 1);
+  assert.equal(card.holdVersion, snapshot.cards.find(card => card.task === "alpha-call").holdVersion);
+  assert.deepEqual(card.chatAsks[0].replies, ["Yes", "No"]);
+  const window = {};
+  vm.runInNewContext(await readFile(new URL("../public/bearings-view.js", import.meta.url), "utf8"), { window, URL });
+  assert.deepEqual([...window.bearingsView.cardHtml(card).matchAll(/data-call-option-label="([^"]*)"/g)].map(m => m[1]), ["Yes", "No"]);
+  const notes = [];
+  const relay = createAnswerRelay({ home: env.home, note: async (_home, id, text) => { notes.push({ id, text }); return { id: `synthetic-${notes.length}`, outcome: "created" }; } });
+  for (const [index, reply] of ["Yes", "No"].entries()) {
+    // Linked replies use the existing form's note representation, never a new option id.
+    const receipt = await relay.submit({ requestId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`, key: card.key, cardRev: card.rev, selection: "", note: reply }, current);
+    assert.equal(receipt.state, "accepted");
+    assert.equal(receipt.envelope.schema, "fm-bearings-answer.v1");
+    assert.equal(receipt.envelope.task, "alpha-call");
+    assert.equal(receipt.envelope.question, "alpha-call");
+    assert.equal(receipt.envelope.holdVersion, card.holdVersion);
+    assert.equal(receipt.envelope.cardRev, card.rev);
+    assert.equal(receipt.envelope.note, reply);
+  }
+  assert.equal(notes.length, 2);
+  const request = { requestId: "00000000-0000-4000-8000-000000000003", key: card.key, cardRev: card.rev, selection: "", note: "Yes" };
+  for (const [body, model, code] of [
+    [request, { ...current, state: "stale" }, "not-current"],
+    [{ ...request, key: "decision:missing" }, current, "gone"],
+    [{ ...request, cardRev: "0".repeat(16) }, current, "changed"],
+    [request, { ...current, cards: current.cards.filter(c => c.key !== card.key) }, "gone"],
+    [request, { ...current, cards: [{ ...card, answer: null }] }, "not-answerable"],
+  ]) assert.throws(() => validateAnswer(body, model), error => error.code === code);
+
+  // Existing bounded upgrade refreshes open extraction but preserves resolved tombstones.
+  const state = JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8"));
+  state.matchingVersion = 4;
+  state.asks[scanner.asks()[0].key].replies = [];
+  await writeFile(chatAsksPath(env.statePath), JSON.stringify(state));
+  const upgraded = scannerFor(env); await upgraded.scan();
+  assert.deepEqual(upgraded.asks()[0].replies, ["Yes", "No"]);
+  await upgraded.resolve(upgraded.asks()[0].key, "dismissed");
+  const closed = JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8"));
+  closed.matchingVersion = 4;
+  await writeFile(chatAsksPath(env.statePath), JSON.stringify(closed));
+  const restarted = scannerFor(env); await restarted.scan();
+  assert.deepEqual(restarted.asks(), [], "upgrade never revives answered/dismissed asks");
+});
+
+test("unquoted boolean grammar requires one marked task and a complete explicit decision instruction", () => {
+  const ask = body => extractAsks(`DECISION NEEDED [task:alpha-call] ${body}`)[0];
+  assert.deepEqual(ask("Archive sample notes? Reply Yes or No.").replies, ["Yes", "No"]);
+  assert.deepEqual(ask('Archive sample notes? Reply "Yes" or "No".').replies, ["Yes", "No"]);
+  for (const body of ["Shall we archive sample notes?", "On yes, archive the notes.", "Reply Yes", "Reply No", "Reply Yes or Nobody.", "Reply Yes or No to both.", 'Please quote "Reply Yes or No."', "Reply Yes or No, then continue.", "[task:beta-call] Reply Yes or No."]) {
+    assert.deepEqual(ask(body).replies, [], body);
+  }
+  for (const line of ["Shall we archive sample notes? Reply Yes or No.", "DECISION NEEDED: Archive sample notes? Reply Yes or No.", "APPROVAL NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No.", "DECISION NEEDED [task:alpha-call] [task:beta-call] Archive both? Reply Yes or No."]) {
+    assert.ok(extractAsks(line).every(ask => ask.replies.length === 0), line);
+  }
+  const two = extractAsks("- DECISION NEEDED [task:alpha-call] Archive notes? Reply Yes or No.\n- DECISION NEEDED [task:beta-call] Retain sample files? Reply Yes or No.");
+  assert.deepEqual(two.map(a => [a.taskMarkers, a.replies]), [[["alpha-call"], ["Yes", "No"]], [["beta-call"], ["Yes", "No"]]]);
+});
+
+test("shared replies never supersede an ask marked for a different task; same-task repeats still do", async (context) => {
+  const env = await claudeHome(context);
+  await writeFile(env.transcript, lines(
+    firstmate("alpha", 1, "DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No."),
+    firstmate("beta", 2, "DECISION NEEDED [task:beta-call] Remove the sample branch? Reply Yes or No."),
+    firstmate("gamma-old", 3, 'DECISION NEEDED [task:gamma-call] Keep sample logs? Reply "keep" or "drop".'),
+    firstmate("gamma-new", 4, 'DECISION NEEDED [task:gamma-call] The sample logs are larger now; reply "keep" or "drop".'),
+  ));
+  const scanner = scannerFor(env);
+  await scanner.scan();
+  assert.deepEqual(scanner.asks().map(ask => [ask.recordId, ask.replies]), [["alpha", ["Yes", "No"]], ["beta", ["Yes", "No"]], ["gamma-new", ["keep", "drop"]]],
+    "different tasks stay independent; a same-task repeat still supersedes");
+});
+
+test("a matching-version replay keeps persisted open asks for different tasks independent", async (context) => {
+  const env = await claudeHome(context);
+  await writeFile(env.transcript, lines(
+    firstmate("alpha", 1, "DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No."),
+    firstmate("beta", 2, "DECISION NEEDED [task:beta-call] Remove the sample branch? Reply Yes or No."),
+    firstmate("gamma-old", 3, 'DECISION NEEDED [task:gamma-call] Keep sample logs? Reply "keep" or "drop".'),
+    firstmate("gamma-new", 4, 'DECISION NEEDED [task:gamma-call] The sample logs are larger now; reply "keep" or "drop".'),
+  ));
+  await scannerFor(env).scan();
+  // Recreate state persisted before the Yes/No grammar: both unquoted asks open, no replies.
+  const state = JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8"));
+  for (const ask of Object.values(state.asks).filter(ask => ask.recordId !== "gamma-old")) {
+    delete state.tombstones[ask.key];
+    for (const field of ["resolvedBy", "resolvedAt", "supersededBy"]) delete ask[field];
+    Object.assign(ask, { status: "open", replies: [] });
+  }
+  state.matchingVersion = 4;
+  await writeFile(chatAsksPath(env.statePath), JSON.stringify(state));
+  const upgraded = scannerFor(env);
+  await upgraded.scan();
+  assert.deepEqual(upgraded.asks().map(ask => [ask.recordId, ask.replies]), [["alpha", ["Yes", "No"]], ["beta", ["Yes", "No"]], ["gamma-new", ["keep", "drop"]]]);
+});
+
 test("an ask naming a filed hold is shown inside that card, not twice, and resolves when the hold closes", async (context) => {
   const env = await claudeHome(context);
   await writeFile(env.transcript, lines(
@@ -282,11 +389,26 @@ test("an ask naming a filed hold is shown inside that card, not twice, and resol
   const again = composeCallModel(held, scanner.asks(), scanner.view());
   assert.equal(again.rev, model.rev, "an unchanged composition keeps its revision");
 
-  // A stale snapshot never closes a linked ask; a fresh one without the hold does.
+  // Neither stale nor fresh disappearance proves the hold was answered.
   await scanner.applySnapshot([], false);
   assert.equal(scanner.asks().length, 2);
   await scanner.applySnapshot([], true);
-  assert.deepEqual(scanner.asks().map((ask) => ask.recordId), ["f-2"]);
+  assert.equal(scanner.asks().length, 2);
+  const restarted = scannerFor(env);
+  await restarted.scan();
+  await restarted.applySnapshot([], true);
+  assert.deepEqual(restarted.asks().map(ask => ask.key), scanner.asks().map(ask => ask.key), "disappearance remains open across a persisted restart");
+  const closed = backlogHoldRecords('- [x] sample-task - Rollout (hold-kind: captain)');
+  await restarted.applySnapshot([], true, closed);
+  assert.deepEqual(restarted.asks().map((ask) => ask.recordId), ["f-2"]);
+  const state = JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8"));
+  const resolved = Object.values(state.asks).find(ask => ask.recordId === "f-1");
+  assert.equal(resolved.resolutionSource, "data/backlog.md");
+  assert.ok(state.tombstones[resolved.key]);
+  const afterClosure = scannerFor(env);
+  await afterClosure.scan();
+  await afterClosure.applySnapshot([], true);
+  assert.deepEqual(afterClosure.asks().map(ask => ask.recordId), ["f-2"], "closed tombstones are not resurrected");
 });
 
 test("filed holds win by quoted replies in titles or reasons without task-id mentions", async (context) => {
@@ -316,6 +438,9 @@ test("filed holds win by quoted replies in titles or reasons without task-id men
   await scanner.applySnapshot([], false);
   assert.equal(scanner.asks().length, 4, "stale disappearance cannot close linked asks");
   await scanner.applySnapshot([], true);
+  assert.equal(scanner.asks().length, 4, "fresh disappearance cannot close reply-linked asks either");
+  const closed = backlogHoldRecords('- [x] choice-hold - Choice (hold-kind: captain)\n- [x] release-hold - Release (hold-kind: captain)');
+  await scanner.applySnapshot([], true, closed);
   assert.deepEqual(scanner.asks().map(ask => ask.recordId), ["unquoted", "partial"]);
 });
 
