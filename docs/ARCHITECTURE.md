@@ -20,6 +20,7 @@ No home discovery or saved circular pointer inside the home is required. The sel
 - `prototype/server.js`: HTTP mediation only: route admission, the preview gateway, revision pinning, live streams and dashboard composition. It re-exports the readers below so tests, scripts and the watcher keep one entry.
 - `prototype/firstmate-home.js`: home/fleet ingestion: registry, backlog, state, transcript and inbox readers, bounded source windows and the lanes/work-split model.
 - `prototype/expense-ledger.js`: exact decimal expense rollups and public/private/demo ledger selection.
+- `prototype/request-guards.js`: the one admission rule every guarded route applies: exact loopback or configured HTTPS origin, JSON-only bodies and byte-bounded uploads decoded once.
 - `prototype/transcript.js` / `supervision.js`: JSONL normalization, exact-home session confinement, mirror deduplication and outcome notes.
 - `prototype/private-runtime.js` / `cost-config.js`: guarded private expense selection and validated attribution.
 - `prototype/costs.js` / `quota.js`: bounded allowlisted account adapters, cache coalescing and truthful unavailable/stale states.

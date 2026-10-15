@@ -6,14 +6,14 @@ import { configuredStatePath } from "./agent-state.js";
 import { taggedEnvelope } from "./bearings-thread.js";
 import { notificationPaths, privateJson, digest, deviceId, createNotificationOwner } from "./notification-state.js";
 import { createPushProvider, validSubscription } from "./push-provider.js";
+import { exactHttpsOrigin } from "./request-guards.js";
 
 export const GENERIC_NOTIFICATION = Object.freeze({ title: "Quarterdeck", body: "A new Captain’s Call needs your attention", destination: "/#overview" });
 const pendingStates = new Set(["queued", "retry", "sending"]);
-const exactOrigin = (value) => typeof value === "string" && /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(value);
 const outside = (root, file) => { const rel = path.relative(root, file); return rel === ".." || rel.startsWith(`..${path.sep}`); };
 export async function notificationConfiguration(env) {
   if (env.FM_QUARTERDECK_PUSH_ENABLED !== "1") return null;
-  if (!env.FM_HOME || env.FM_DEPLOYMENT_TIER || env.FM_PREVIEW_GENERATION || env.FM_PREVIEW_COMMIT || env.FM_DEV === "1" || !exactOrigin(env.FM_QUARTERDECK_PUSH_ORIGIN) || !(env.FM_QUARTERDECK_STATE_PATH || env.FM_AGENTOS_STATE_PATH)) throw new Error("Push requires a configured stable private host");
+  if (!env.FM_HOME || env.FM_DEPLOYMENT_TIER || env.FM_PREVIEW_GENERATION || env.FM_PREVIEW_COMMIT || env.FM_DEV === "1" || !exactHttpsOrigin(env.FM_QUARTERDECK_PUSH_ORIGIN) || !(env.FM_QUARTERDECK_STATE_PATH || env.FM_AGENTOS_STATE_PATH)) throw new Error("Push requires a configured stable private host");
   const state = configuredStatePath(env), directory = path.dirname(state);
   if (!path.isAbsolute(state) || path.normalize(state) !== state || await realpath(directory) !== directory || !outside(await realpath(env.FM_HOME), directory)) throw new Error("Push state must be private and outside FM_HOME");
   const info = await stat(directory);

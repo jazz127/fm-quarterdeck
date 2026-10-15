@@ -47,7 +47,8 @@
     "test/tailscale-launch.test.mjs",
     "test/ui.test.js",
     "test/validation-runtime.test.js",
-    "test/bearings-landed-ui.test.js"
+    "test/bearings-landed-ui.test.js",
+    "test/request-guards.test.js"
   ],
   "integration": [
     "test/authorship.test.js",

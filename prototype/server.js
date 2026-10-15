@@ -29,6 +29,7 @@ import { createInboxBatcher } from "./inbox-batcher.js";
 import { announceReview, inboxReady, inboxReviewState } from "./inbox.js";
 import { PublicDataError, claudeConfigDir, loadFirstmateHome, recordedTaskRepository, shortIntent } from "./firstmate-home.js";
 import { loadExpenses } from "./expense-ledger.js";
+import { exactHttpsOrigin, exactOriginRequest, isJsonRequest, readJsonBody, sameOriginAuthorized, sendNowRequested } from "./request-guards.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -227,19 +228,17 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   // Only an operator-configured, canonical HTTPS DNS origin may bypass the loopback review guard.
   // Match the wire Host and Origin exactly; forwarding headers are not authority.
   const allowedReviewOrigin = env.FM_REVIEW_ALLOWED_ORIGIN || "";
-  if (allowedReviewOrigin && !/^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(allowedReviewOrigin)) {
+  if (allowedReviewOrigin && !exactHttpsOrigin(allowedReviewOrigin)) {
     throw new Error("FM_REVIEW_ALLOWED_ORIGIN must be one exact HTTPS DNS origin without port or path");
   }
   const dev = env.FM_DEV === "1";
   let version = randomUUID();
   const clients = new Set();
-  const authorized = (request) => {
-    const host = request.headers.host || "";
-    const origin = request.headers.origin || "";
-    return (/^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`) ||
-      Boolean(allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin);
-  };
+  const authorized = (request) => sameOriginAuthorized(request, allowedReviewOrigin);
   const previewReads = new Set(["/notifications-ui.js", "/", "/app.js", "/chat-ask-extraction.js", "/sidebar-version.js", "/bulk-controls.js", "/work-hierarchy.js", "/message-kinds.js", "/filter-view.js", "/pane-bounds.js", "/message-font-size.js", "/quota-view-model.js", "/cost-view-model.js", "/styles.css", "/inbox-pending.js", "/review-target.js", "/review-client.js", "/panel-resize.js", "/shell-panel.js", "/shell-panel-layout.js", "/shell-width.js", "/shell-panel.css", "/dev-reload.js", "/bearings-patch.js", "/bearings-live.js", "/bearings-view.js", "/bearings-answer-form.js", "/bearings-overflow.js", "/bearings-dismiss.js", "/bearings-thread-panel.js", "/bearings-procrastinate.js", "/bearings-landed.js", "/bearings-work.js", "/overview-tabs.js", "/call-lifecycle.js", "/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/bearings", "/api/costs", "/api/health", "/api/review", "/api/review/status", "/api/dev-reload"]);
+  // Quarterdeck's own viewing state and relays stay on the host (BEARINGS.md); previews poll /api/bearings instead.
+  const hostOnlyRoutes = new Set(["/api/bearings/stream", "/api/bearings/answer", "/api/bearings/answer/status", "/api/bearings/dismiss",
+    "/api/bearings/procrastinate", "/api/bearings/landed/acks", "/api/bearings/landed/ack", "/api/bearings/thread", "/api/inbox/pending", "/api/inbox/send-now"]);
   // Live Captain's Call streams (host only; previews poll /api/bearings?since).
   const streamOptions = { heartbeatMs: 20000, recycleMs: 600000, maxStreams: 16, ...bearingsStream };
   const streams = new Set();
@@ -262,16 +261,14 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       const selectedCommit = selected?.commit || commit;
       if (url.pathname.startsWith("/api/notifications/")) {
         const pushOrigin = env.FM_QUARTERDECK_PUSH_ORIGIN;
-        const permitted = pushOrigin ? request.headers.host === pushOrigin.slice("https://".length) && request.headers.origin === pushOrigin : authorized(request);
+        const permitted = pushOrigin ? exactOriginRequest(request, pushOrigin) : authorized(request);
         if (!permitted || deploymentTier || dev || preview) { await sendJson(request, response, 403, { error: "Notifications require the stable private origin" }); return; }
-        if (request.method !== "POST" || url.search || !["/api/notifications/status", "/api/notifications/enroll", "/api/notifications/disable"].includes(url.pathname) || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 400, { error: "Notification JSON operation required" }); return; }
+        if (request.method !== "POST" || url.search || !["/api/notifications/status", "/api/notifications/enroll", "/api/notifications/disable"].includes(url.pathname) || !isJsonRequest(request)) { await sendJson(request, response, 400, { error: "Notification JSON operation required" }); return; }
         const minute = Math.floor(Date.now() / 60000);
         if (minute !== notificationRate.at) { notificationRate.at = minute; notificationRate.count = 0; }
         if (++notificationRate.count > 30) { await sendJson(request, response, 429, { error: "Notification request limit reached" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 4096) { await sendJson(request, response, 413, { error: "Subscription too large" }); return; } }
-        let body;
-        try { body = JSON.parse(text); } catch {}
+        const { body, tooLarge } = await readJsonBody(request, 4096);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Subscription too large" }); return; }
         const enroll = url.pathname.endsWith("/enroll");
         if (!body || Object.keys(body).sort().join(",") !== (enroll ? "id,subscription" : "id") || !deviceId(body.id)) { await sendJson(request, response, 400, { error: "Exact installation fields required" }); return; }
         try {
@@ -291,11 +288,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       if (url.pathname === "/api/previews/select" && request.method === "POST") {
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 400, { error: "Registry ID JSON only" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (text.length > 256) { await sendJson(request, response, 413, { error: "Selection too large" }); return; } }
-        let body;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 400, { error: "Registry ID JSON only" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, 256);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Selection too large" }); return; }
         if (!body || Object.keys(body).join(",") !== "id" || typeof body.id !== "string" || !registry.has(body.id)) { await sendJson(request, response, 400, { error: "Select only a registered ID" }); return; }
         const result = await lifecycle.select(body.id);
         await sendJson(request, response, result.accepted ? 200 : 409, result);
@@ -321,20 +316,15 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (preview && (selected.id === hostId || ["/api/quota", "/api/costs", "/api/work-state"].includes(preview.pathname))) url.pathname = preview.pathname;
+      if (preview && hostOnlyRoutes.has(url.pathname)) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
       if (selected?.id === hostId && request.method === "GET" && ["/api/dashboard", "/api/lanes", "/api/preferences", "/api/preferences/health", "/api/quota", "/api/costs"].includes(url.pathname)) {
         response.once("finish", () => { if (response.statusCode === 200) lastDataRead.set(hostId, new Date().toISOString()); });
       }
       if (preview && preview.pathname === "/api/chat" && request.method === "POST") {
-        const host = request.headers.host || "";
-        const origin = request.headers.origin || "";
-        const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`;
-        const allowed = allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin;
-        if (!loopback && !allowed) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
-        if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (text.length > 12288) { await sendJson(request, response, 413, { error: "Chat too large" }); return; } }
-        let message;
-        try { message = JSON.parse(text); } catch { message = null; }
+        if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
+        if (!isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required" }); return; }
+        const { body: message, tooLarge } = await readJsonBody(request, 12288);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Chat too large" }); return; }
         if (!message || Object.keys(message).sort().join(",") !== "messageId,route,schema,text,viewContext" || message.schema !== "fm-agentos-chat.v1" ||
             typeof message.text !== "string" || !message.text.trim() || message.text.length > 4000 ||
             typeof message.route !== "string" || !/^#(?:lanes(?:\/[^\s#?]*)?|overview|work|expenses|quota|preferences|closed)$/.test(message.route) ||
@@ -372,11 +362,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       if (url.pathname === "/api/work-state" && request.method === "POST") {
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 400, { error: "JSON required" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (text.length > 2048) { await sendJson(request, response, 413, { error: "Request too large" }); return; } }
-        let body;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 400, { error: "JSON required" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, 2048);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Request too large" }); return; }
         if (!body || !["acknowledge", "classify", "create-taxonomy"].includes(body.action) || !/^[a-f0-9]{64}$/.test(body.taskFingerprint || "")) { await sendJson(request, response, 400, { error: "Invalid presentation request" }); return; }
         const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier, reader: createHistoryReader(historyLimits) });
         const item = current.workSplit.items.find((entry) => entry.taskFingerprint === body.taskFingerprint);
@@ -431,25 +419,10 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
           return;
         }
         if (request.method === "POST") {
-          const host = request.headers.host || "";
-          const origin = request.headers.origin || "";
-          const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) && origin === `http://${host}`;
-          const allowed = allowedReviewOrigin && host === allowedReviewOrigin.slice("https://".length) && origin === allowedReviewOrigin;
-          if (!loopback && !allowed) {
-            await sendJson(request, response, 403, { error: "Review requires an authorized same-origin request" });
-            return;
-          }
-          if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) {
-            await sendJson(request, response, 415, { error: "JSON required" });
-            return;
-          }
-          let text = "";
-          for await (const chunk of request) {
-            text += chunk;
-            if (text.length > 150000) { await sendJson(request, response, 413, { error: "Review too large" }); return; }
-          }
-          let payload;
-          try { payload = JSON.parse(text); } catch { payload = null; }
+          if (!authorized(request)) { await sendJson(request, response, 403, { error: "Review requires an authorized same-origin request" }); return; }
+          if (!isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required" }); return; }
+          const { body: payload, tooLarge } = await readJsonBody(request, 150000);
+          if (tooLarge) { await sendJson(request, response, 413, { error: "Review too large" }); return; }
           // A slow upload may span a fast-forward. Refuse it rather than deliver
           // under either a stale or mixed identity.
           if (await syncRevision(true) !== commit || !validateReviewPayload(payload, payload?.version, review.sessionId)) {
@@ -460,7 +433,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
           try {
             const existing = review.delivery === "local" ? await localReviewReceipt(payload) : null;
             if (existing) {
-              if (env.FM_HOME) await announceReview(env.FM_HOME, existing.payload, inboxBatcher.note, { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
+              if (env.FM_HOME) await announceReview(env.FM_HOME, existing.payload, inboxBatcher.note, { immediate: sendNowRequested(request) });
               await sendJson(request, response, 200, { receiptId: existing.receiptId, delivery: "local" });
               return;
             }
@@ -474,7 +447,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
             const receipt = review.delivery === "lavish"
               ? await reviewDeliver(attributed, review.endpoint)
               : await localReviewDeliver(attributed, env.FM_REVIEW_STATUS_PATH);
-            if (review.delivery === "local" && env.FM_HOME) await announceReview(env.FM_HOME, attributed, inboxBatcher.note, { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
+            if (review.delivery === "local" && env.FM_HOME) await announceReview(env.FM_HOME, attributed, inboxBatcher.note, { immediate: sendNowRequested(request) });
             await sendJson(request, response, 200, receipt);
           } catch {
             await sendJson(request, response, 502, { error: "Review delivery unconfirmed; queue retained for retry" });
@@ -510,11 +483,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         }
         if (request.method === "POST") {
           if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
-          if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 400, { error: "JSON required" }); return; }
-          let text = "";
-          for await (const chunk of request) { text += chunk; if (text.length > 2048) { await sendJson(request, response, 413, { error: "Request too large" }); return; } }
-          let value;
-          try { value = JSON.parse(text); } catch {}
+          if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 400, { error: "JSON required" }); return; }
+          const { body: value, tooLarge } = await readJsonBody(request, 2048);
+          if (tooLarge) { await sendJson(request, response, 413, { error: "Request too large" }); return; }
           if (!validHealthPreferences(value)) { await sendJson(request, response, 400, { error: "Use whole minutes from 1 to 1440 for both settings" }); return; }
           try { await sendJson(request, response, 200, await saveHealthPreferences(env, value)); }
           catch { await sendJson(request, response, 503, { error: "Health preferences could not be saved" }); }
@@ -553,19 +524,16 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/bearings/stream") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (streams.size >= streamOptions.maxStreams) { await sendJson(request, response, 503, { error: "Too many live streams; poll /api/bearings" }); return; }
         openBearingsStream(request, response);
         return;
       }
       if (url.pathname === "/api/inbox/pending" && request.method === "GET") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         try { await sendJson(request, response, 200, { items: await inboxBatcher.pending() }); }
         catch { await sendJson(request, response, 503, { error: "Pending inbox state unavailable; saved items retained" }); }
         return;
       }
       if (url.pathname === "/api/inbox/send-now" && request.method === "POST") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin" }); return; }
         try { await inboxBatcher.flush(); await sendJson(request, response, 200, { state: "sent" }); }
         catch { await sendJson(request, response, 502, { error: "Delivery unconfirmed; pending items retained for retry" }); }
@@ -573,17 +541,14 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       // Captain's Call answers: host only, an explicit captain submit relayed to Firstmate (BEARINGS.md "Answers").
       if (url.pathname === "/api/bearings/answer" && request.method === "POST") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > MAX_ANSWER_BODY_BYTES) { await sendJson(request, response, 413, { error: "Answer too large", code: "too-long" }); return; } }
-        let body = null;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, MAX_ANSWER_BODY_BYTES);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Answer too large", code: "too-long" }); return; }
         // A request spanning a fast-forward is refused rather than answered under a mixed identity.
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         try {
-          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1", arrived });
+          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: sendNowRequested(request), arrived });
           // A chat ask has no Firstmate hold to close it; the confirmed relay resolves it here.
           if (accepted.envelope?.type === "chat") await bearingsSource.resolveChat?.(accepted.key, "answered", { requestId: accepted.requestId }).catch(() => {});
           await sendJson(request, response, 202, accepted);
@@ -595,13 +560,10 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       // Dismiss a chat ask (BEARINGS.md "Chat asks"): recorded only in Quarterdeck's own state.
       if (url.pathname === "/api/bearings/dismiss" && request.method === "POST") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 1024) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; } }
-        let body = null;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, 1024);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; }
         if (!body || typeof body !== "object" || Object.keys(body).sort().join(",") !== "cardRev,key" || !chatAskKey(body.key) || !/^[0-9a-f]{16}$/.test(String(body.cardRev))) {
           await sendJson(request, response, 400, { error: "Dismiss must name a chat ask and the revision shown", code: "invalid" }); return;
         }
@@ -616,7 +578,6 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       // Procrastinate (BEARINGS.md "Procrastinated calls"): Quarterdeck viewing state only, never an answer.
       if (url.pathname === "/api/bearings/procrastinate" && request.method === "GET") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         const current = bearingsSource.current?.() || {};
         const openKeys = current.state === "ready" || current.state === "stale"
           ? new Set((current.cards || []).filter((card) => !card.readOnly).map((card) => card.key)) : null;
@@ -625,13 +586,10 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (url.pathname === "/api/bearings/procrastinate" && request.method === "POST") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 1024) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; } }
-        let body = null;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, 1024);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; }
         const fields = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).sort().join(",") : "";
         const durationOk = fields === "duration,key" && procrastinationKey(body.key) && ["3h", "6h", "1d", "3d"].includes(body.duration);
         const clearOk = fields === "clear,key" && body.clear === true && procrastinationKey(body.key);
@@ -648,19 +606,15 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       // Just landed acknowledgements (BEARINGS.md "Just landed"): Quarterdeck viewing state only.
       if (url.pathname === "/api/bearings/landed/acks" && request.method === "GET") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         try { await sendJson(request, response, 200, await landedAcks.read()); }
         catch { await sendJson(request, response, 503, { error: "Landed acknowledgements unavailable" }); }
         return;
       }
       if (url.pathname === "/api/bearings/landed/ack" && request.method === "POST") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > 1024) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; } }
-        let body = null;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, 1024);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Request too large", code: "too-long" }); return; }
         if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "key" || !landedAckKey(body.key)) {
           await sendJson(request, response, 400, { error: "Acknowledge must name a landed card", code: "invalid" }); return;
         }
@@ -679,15 +633,12 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       // Card threads (BEARINGS.md "Card threads"): an explicit captain question about one card,
       // relayed as an inbox note; the history is a read-only join. Host only.
       if (url.pathname === "/api/bearings/thread" && request.method === "POST") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
-        if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
-        let text = "";
-        for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > MAX_THREAD_BODY_BYTES) { await sendJson(request, response, 413, { error: "Question too large", code: "too-long" }); return; } }
-        let body = null;
-        try { body = JSON.parse(text); } catch {}
+        if (url.search || !isJsonRequest(request)) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
+        const { body, tooLarge } = await readJsonBody(request, MAX_THREAD_BODY_BYTES);
+        if (tooLarge) { await sendJson(request, response, 413, { error: "Question too large", code: "too-long" }); return; }
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
-        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1", arrived })); }
+        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: sendNowRequested(request), arrived })); }
         catch (error) {
           if (!(error instanceof ThreadRefused)) throw error;
           await sendJson(request, response, error.status, { error: error.message, code: error.code });
@@ -695,7 +646,6 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (url.pathname === "/api/bearings/thread" && request.method === "GET") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         try { await sendJson(request, response, 200, await threadRelay.history(String(url.searchParams.get("key") || ""), bearingsSource.current())); }
         catch (error) {
           await sendJson(request, response, error instanceof ThreadRefused ? error.status : 502, { error: error instanceof ThreadRefused ? error.message : "Firstmate receipts unavailable", code: error instanceof ThreadRefused ? error.code : "unavailable" });
@@ -703,7 +653,6 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         return;
       }
       if (url.pathname === "/api/bearings/answer/status" && request.method === "GET") {
-        if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         try {
           await sendJson(request, response, 200, await answerRelay.status(String(url.searchParams.get("ids") || "").split(",")));
         } catch (error) {
