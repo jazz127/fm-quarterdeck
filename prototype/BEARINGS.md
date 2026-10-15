@@ -194,17 +194,16 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
    - unconfirmed (network error or `5xx`) → *failed*: **Retry send** is another explicit click and reuses the same request id, so Firstmate records one note.
      Reloading during *sending* also restores this uncertain retry state; it never resends automatically.
    - refused (`4xx`) → *refused*: the server's reason is shown and the fields unlock.
-     Once a send was attempted, editing and re-queueing preserve its request id, even after a changed-card refusal or reload.
-     A different payload under a recorded id is refused rather than creating a second note.
+     A fresh review gets a new request id; only Retry reuses the frozen attempted request.
 4. **Edit** returns from *confirm*/*failed* to *compose* (and takes the item out of the queue).
-   An unconfirmed send warns that it may already have reached Firstmate; retry uses the original identity, and editing cannot replace a recorded note.
+   An unconfirmed send warns that it may already have reached Firstmate; Retry keeps its original payload and cycle, including after a card update or reload. Edit starts a fresh review instead of retrying the uncertain send; it cannot replace a recorded note.
    **Answer again** leaves *sent* for a correction (Firstmate's intake rejects a drifted answer to a closed call).
 
 Queue, Send and Edit sit beside the one text box on desktop and on a phone, in the same row as that box.
 Only the buttons for the current phase are shown (Queue in *compose*; Send and Edit in *confirm*/*failed*).
 
 **Queue integration.** `app.js` registers `window.quarterdeckCallQueue` (`list`, `send`, `remove`) over the answer controller's `queued()`, `sendQueued()` and `unqueue(key)`.
-The review panel (`review-client.js`) lists queued items above its queued notes (desktop) or as a "Queued Captain's Call answers" batch (phone), counts them in its queued badge, and offers **Remove**, which returns the item to its card for editing (keeping its request id once a send was attempted).
+The review panel (`review-client.js`) lists queued items above its queued notes (desktop) or as a "Queued Captain's Call answers" batch (phone), counts them in its queued badge, and offers **Remove**, which returns the item to its card for editing (starting a fresh review with a new request id).
 **Send** and Ctrl+Enter send queued items first, each with its own request id: an answer through `POST /api/bearings/answer` and a thread note through `POST /api/bearings/thread`, then the review notes through review delivery.
 On the Active status view, **Send queued (N)** calls that same `sendCallAnswers` sender when N staged items exist.
 It stays hidden on every other status and when N is 0, and it is disabled while a send is in flight.
@@ -213,7 +212,7 @@ A card that was Queued only because of that staged item becomes Sent after the i
 Batching changes no intake, and review delivery being unavailable does not block the items.
 A queued item survives reload in its *confirm* state; only an explicit click sends it.
 
-Typing protection is unchanged: the form lives inside its held card, so focus, typing, a selection or a press holds that card's updates. If the card's `rev` or hold cycle (`holdVersion`) changes while its answer or note is in *confirm* or *failed*, the next render moves it to *refused* ("changed while you were reviewing") and the captain queues it again; the server refuses a stale `cardRev` or `holdVersion` too. A cycle-only change counts as a card update even though `rev` is unchanged, so the card is re-rendered, or held with its update notice while engaged. Answer state for calls that leave the model is forgotten on the next applied update, so a re-held task starts fresh.
+Typing protection is unchanged: the form lives inside its held card, so focus, typing, a selection or a press holds that card's updates. If the card's `rev` or hold cycle (`holdVersion`) changes while its answer or note is in *confirm* and has not been attempted, the next render moves it to *refused* ("changed while you were reviewing") and the captain queues it again; the server refuses a stale `cardRev` or `holdVersion` too. An attempted send stays available for explicit Retry with its frozen payload, request id and original cycle. An acknowledgement for an older cycle returns to compose without clearing the current draft or marking the newer cycle Sent; reviewing that draft creates a new request id. A cycle-only change counts as a card update even though `rev` is unchanged, so the card is re-rendered, or held with its update notice while engaged. Answer state for calls that leave the model is forgotten on the next applied update, so a re-held task starts fresh.
 
 **`POST /api/bearings/answer`** (host only; 404 through a preview path):
 

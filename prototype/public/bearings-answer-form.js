@@ -153,8 +153,8 @@ window.bearingsAnswerForm = (() => {
         states.set(key, state);
       }
       // The captain reviewed a different version or hold cycle of this call: never send it as-is.
-      if (state && ["confirm", "failed"].includes(state.phase) && (state.cardRev !== rev || Boolean(state.holdVersion && holdVersion && state.holdVersion !== holdVersion))) {
-        state = { ...state, attempted: state.attempted || state.phase === "failed", phase: "refused", error: "This call changed while you were reviewing; check it and review your answer again." };
+      if (state?.phase === "confirm" && !state.attempted && (state.cardRev !== rev || Boolean(state.holdVersion && holdVersion && state.holdVersion !== holdVersion))) {
+        state = { ...state, phase: "refused", error: "This call changed while you were reviewing; check it and review your answer again." };
         states.set(key, state);
       }
       const phase = state?.phase || "compose";
@@ -249,7 +249,7 @@ window.bearingsAnswerForm = (() => {
       const cap = thread ? MAX_QUESTION_BYTES : MAX_ANSWER_BYTES;
       const measured = thread ? answer.note : display(answer.selection, answer.note);
       if (bytes(measured) > cap) { update(key, { ...previous, phase: "refused", error: `The ${thread ? "note" : "answer"} is longer than ${cap} bytes; shorten it.` }, "text"); return; }
-      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion: holdVersions.get(key) || null, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: previous.requestId || uuid(), attempted: previous.attempted === true }, "send");
+      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion: holdVersions.get(key) || null, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: uuid(), attempted: false }, "send");
     }
 
     function clearDraft(key) {
@@ -280,17 +280,20 @@ window.bearingsAnswerForm = (() => {
       if (destroyed) return;
       if (response && response.status === 202) {
         // The words now live in Firstmate's inbox; an unsent-text stub would be wrong.
-        clearDraft(key);
+        const sentHoldVersion = (thread ? body?.holdVersion : body?.envelope?.holdVersion) || state.holdVersion;
+        const currentHoldVersion = holdVersions.get(key);
+        const currentCycle = !sentHoldVersion || !currentHoldVersion || sentHoldVersion === currentHoldVersion;
+        if (currentCycle) clearDraft(key);
         win.dispatchEvent?.(new Event("quarterdeck-sent"));
-        if (thread) {
+        if (thread || !currentCycle) {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
           // which keeps the card Sent until that note is acknowledged or Firstmate replies.
           update(key, null, focus ? "text" : null);
-          onAsked(key, body?.holdVersion || state.holdVersion);
+          if (thread) onAsked(key, sentHoldVersion);
           return true;
         }
         // A same-id retry resends the original note; record the cycle the relay stamped.
-        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: body?.envelope?.holdVersion || state.holdVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
+        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: sentHoldVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
         return true;
       }
       const noun = thread ? "note" : "answer";
