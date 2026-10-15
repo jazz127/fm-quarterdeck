@@ -39,9 +39,10 @@ window.callLifecycle = (() => {
   }
 
   function replyFor(entry, entries) {
-    if (!entry || !Array.isArray(entries)) return "";
-    const matched = entries.find((item) => item && item.kind === "reply" && item.noteId && entry.noteId && item.noteId === entry.noteId);
-    return replyText(matched?.text);
+    if (!entry || !Array.isArray(entries) || entry.replyScope === "combined") return "";
+    const matched = entries.find((item) => item && item.kind === "reply" && item.noteId && entry.noteId && item.noteId === entry.noteId && replyText(item.text));
+    if (matched) return replyText(matched.text);
+    return ""; // Another note's latest reply cannot establish this note's answer.
   }
 
   function cardPosture(card) {
@@ -50,39 +51,52 @@ window.callLifecycle = (() => {
     return null;
   }
 
+  // Optional cycle evidence is independent of cosmetic presentation revisions.
+  function currentHoldNote(card, note) {
+    if (!card?.holdVersion) return true;
+    const updated = Date.parse(card.clock?.at), sent = Date.parse(note?.sentAt || note?.heldAt || note?.at);
+    if (Number.isFinite(updated) && Number.isFinite(sent) && updated > sent) return false;
+    if (note?.holdVersion) return note.holdVersion === card.holdVersion;
+    if (note?.cardRev) return note.cardRev === card.rev;
+    return note?.currentHold !== false && Number.isFinite(updated) && Number.isFinite(sent) && sent >= updated;
+  }
+
   // Latest captain note from receipts the page already holds.
   // Pending: still unread. Acknowledged: read, no reply. Replied: the call is the captain's again.
   function delivery({ card = null, answer = null, thread = null } = {}) {
     const entries = Array.isArray(thread?.entries) ? thread.entries : null;
-    const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer")) : [];
+    const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer") && currentHoldNote(card, entry)) : [];
     const latest = captain.length ? captain[captain.length - 1] : null;
     let posture = latest ? entryPosture(latest) : null;
     let reply = posture === "replied" ? replyFor(latest, entries) : "";
+    let replyScope = latest?.replyScope;
 
-    if (answer?.phase === "sent") {
+    if (answer?.phase === "sent" && currentHoldNote(card, answer)) {
       const local = receiptPosture(answer.receipt?.state);
-      const localReply = local === "replied" ? replyText(answer.receipt?.reply) : "";
+      const localReply = local === "replied" && answer.receipt?.replyScope === "individual" ? replyText(answer.receipt?.reply) : "";
       const answerIsLatest = !latest || Boolean(answer.noteId && answer.noteId === latest.noteId);
       const answerInHistory = Boolean(answer.noteId && captain.some((entry) => entry.noteId === answer.noteId));
       const answerIsNewer = !answerInHistory && Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
       if (answerIsLatest || answerIsNewer) {
         if (!posture || POSTURE_RANK[local] > POSTURE_RANK[posture] || answerIsNewer) {
           posture = local;
+          replyScope = answer.receipt?.replyScope || replyScope;
           reply = localReply;
         }
       }
     }
 
-    const held = answer?.heldReply != null && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
+    const held = answer?.heldReply != null && currentHoldNote(card, answer) && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
     const heldInHistory = Boolean(answer?.heldNoteId && captain.some((entry) => entry.noteId === answer.heldNoteId));
     if (held && (!latest
       || (!heldInHistory && answer.heldAt && latest.at && String(answer.heldAt) > String(latest.at))
       || (answer.heldNoteId && answer.heldNoteId === latest.noteId && posture !== "replied"))) {
       posture = "replied";
-      reply = replyText(answer.heldReply);
+      replyScope = answer.heldReplyScope;
+      reply = replyScope === "individual" ? replyText(answer.heldReply) : "";
     }
 
-    if (thread?.captainNoteId && !captain.some((entry) => entry.noteId === thread.captainNoteId)) {
+    if ((!card?.holdVersion || thread?.holdVersion === card.holdVersion) && thread?.captainNoteId && !captain.some((entry) => entry.noteId === thread.captainNoteId)) {
       posture = "pending";
       reply = "";
     }
@@ -91,18 +105,20 @@ window.callLifecycle = (() => {
       const fallback = cardPosture(card);
       if (fallback) {
         posture = fallback;
-        reply = fallback === "replied" ? replyText(card?.sentReply) : "";
+        replyScope = card?.sentReplyScope;
+        reply = fallback === "replied" && replyScope !== "combined" ? replyText(card?.sentReply) : "";
       }
     }
 
-    return { posture, reply: posture === "replied" ? reply : "" };
+    return { posture, reply: posture === "replied" ? reply : "", ...(posture === "replied" && replyScope ? { replyScope } : {}) };
   }
 
   function sentLabel(posture) {
     return posture === "acknowledged" ? "Firstmate is on it" : "Sent - waiting for Firstmate to read";
   }
 
-  function replyBanner(reply) {
+  function replyBanner(reply, scope) {
+    if (scope === "combined") return "Firstmate replied to the combined submission; a card-specific reply is not recorded. See Original / contextual provenance.";
     const text = replyText(reply);
     return text ? `Firstmate replied: ${text}` : "Firstmate replied";
   }
@@ -183,5 +199,5 @@ window.callLifecycle = (() => {
     if (button.getAttribute("aria-label") !== view.label) button.setAttribute("aria-label", view.label);
   }
 
-  return { FILTERS, STORAGE_KEY, LABELS, derive, cardState, delivery, sentLabel, replyBanner, counts, readFilter, writeFilter, visible, emptyText, paintToggle, sendQueuedControl, paintSendQueued, answerQueued };
+  return { FILTERS, STORAGE_KEY, LABELS, derive, cardState, delivery, currentHoldNote, sentLabel, replyBanner, counts, readFilter, writeFilter, visible, emptyText, paintToggle, sendQueuedControl, paintSendQueued, answerQueued };
 })();

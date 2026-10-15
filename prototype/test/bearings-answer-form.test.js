@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
+import { normalizeSnapshot } from "../bearings.js";
+import { composeCallModel, extractAsks } from "../chat-asks.js";
 
 const sources = await Promise.all(["bearings-patch.js", "bearings-view.js", "bearings-answer-form.js", "bearings-overflow.js", "call-lifecycle.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
 const flush = async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
@@ -56,6 +58,105 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
   const leave = () => { outside.focus(); outside.click(); timers.advance(700); };
   return { dom, document, timers, list, patcher, answers, overflow, fetches, node, part, submit, leave, win };
 }
+
+const explicitBooleanModel = () => {
+  const base = normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Archive sample notes?", hold_set_at: "2030-01-02T10:00:00Z" }], contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
+  const ask = { ...extractAsks("DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No.")[0], key: "chat:sampleboolean", linkedTasks: ["alpha-call"], source: "synthetic/main", offset: 0, part: 0 };
+  return composeCallModel({ ...base, state: "ready" }, [ask], { state: "ready", sources: [] });
+};
+
+test("extracted Yes and No controls use the typed answer path; text alone remains a thread note", async () => {
+  const current = explicitBooleanModel(), key = "decision:alpha-call";
+  for (const reply of ["Yes", "No"]) {
+    const t = setup(); t.patcher.update(current);
+    const radio = t.node(key).querySelector(`input[data-call-reply="${reply}"]`);
+    assert.ok(radio, `${reply} is visible`);
+    radio.checked = true; radio.dispatchEvent({ type: "change" });
+    t.submit(key); t.part(key, "send").click(); await flush();
+    assert.equal(t.fetches[0].url, "/api/bearings/answer");
+    assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection: "", note: reply });
+  }
+  for (const text of ["Yes", "No", "Please explain the timing"]) {
+    const t = setup(); t.patcher.update(current);
+    t.part(key, "text").type(text); t.submit(key); t.part(key, "send").click(); await flush();
+    assert.equal(t.fetches[0].url, "/api/bearings/thread");
+    assert.equal(t.fetches[0].body.text, text);
+  }
+});
+
+test("arrival of explicit Yes/No choices holds the engaged card and preserves focus and draft", () => {
+  const t = setup(), current = explicitBooleanModel(), key = "decision:alpha-call";
+  const before = { ...current.cards[0], rev: "a1", chatAsks: [] };
+  t.patcher.update(model([before]));
+  const field = t.part(key, "text"); field.focus(); field.type("Keep this draft");
+  t.patcher.update(current);
+  assert.equal(t.patcher.held, true);
+  assert.equal(t.document.activeElement, field);
+  assert.equal(t.part(key, "text"), field);
+  assert.equal(field.value, "Keep this draft");
+  assert.equal(t.node(key).querySelector('input[data-call-reply="Yes"]'), null);
+  t.node(key).querySelector("[data-call-update-now]").click();
+  assert.equal(t.part(key, "text").value, "Keep this draft");
+  assert.ok(t.node(key).querySelector('input[data-call-reply="Yes"]'));
+});
+
+test('optional cycle identity retains an accepted answer across presentation changes and resets only a new hold', async () => {
+  const t=setup();const key='merge:beta-merge';
+  const c={...merge(),holdVersion:'current'};
+  t.patcher.update(model([c]));
+  const radio=t.node(key).querySelector('input[value="merge"]');radio.checked=true;radio.dispatchEvent({type:'change'});
+  t.submit(key);t.part(key,'send').click();await flush();t.leave();
+  assert.equal(t.answers.state(key).holdVersion,'current');
+  t.patcher.update(model([{...c,rev:'b2'}]));t.leave();
+  assert.equal(t.answers.state(key).phase,'sent','cosmetic revision cannot reset a versioned accepted answer');
+  t.patcher.update(model([{...c,rev:'b3',holdVersion:'new'}]));t.leave();
+  assert.equal(t.answers.state(key),null,'new hold excludes the old local lock');
+  assert.equal(t.part(key,'text').readOnly,false);
+});
+
+const generatedDecision = (hold = '2026-01-02T10:00:00Z', extra = {}) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: [{ id: 'alpha-call', owner: '(main)', summary: 'Pick a window', reason: 'Choose staged or now', hold_set_at: hold, options: [{ value: 'staged', label: 'Staged' }, { value: 'now', label: 'Now' }], ...extra }], contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }).cards[0];
+
+test('generated hold upgrades unversioned legacy sent state only with current durable classification and forgets a re-hold on reload', () => {
+  const key = 'decision:alpha-call', storageKey = 'fm-quarterdeck-call-answer.v1:' + key;
+  const legacy = { phase: 'sent', requestId: uuid(9), note: 'Use staged', selection: 'staged', sentAt: '2026-01-02T11:00:00Z', receipt: { state: 'accepted' } };
+  for (const answered of [false, true]) {
+    const storage = tabStorage(); storage.setItem(storageKey, JSON.stringify(legacy));
+    const t = setup({ storage }); const c = generatedDecision();
+    t.patcher.update(model([{ ...c, answered }]));
+    if (answered) {
+      assert.equal(t.answers.state(key).holdVersion, c.holdVersion);
+      assert.equal(t.part(key, 'text').readOnly, true);
+      const reload = setup({ storage }); reload.patcher.update(model([generatedDecision('2026-01-02T12:00:00Z')]));
+      assert.equal(reload.answers.state(key), null);
+      assert.equal(reload.part(key, 'text').value, '');
+      assert.equal(reload.part(key, 'text').readOnly, false);
+      assert.equal(reload.node(key).querySelectorAll('input[type="radio"]').some(input => input.checked), false);
+    } else {
+      assert.equal(t.answers.state(key), null, 'missing current durable receipt cannot upgrade legacy local words');
+      assert.equal(t.part(key, 'text').value, '');
+    }
+    assert.equal(t.fetches.length, 0, 'upgrade/reset never resends');
+  }
+});
+
+test('actual generated cycle retains sent echo for cosmetic update but clears local lock between history polls', async () => {
+  const t = setup({ responses: [{ status: 202, body: { state: 'accepted', sentAt: '2026-01-02T11:00:00Z' } }] });
+  const key = 'decision:alpha-call', c = generatedDecision();
+  t.patcher.update(model([c]));
+  const radio = t.node(key).querySelector('input[value="staged"]'); radio.checked = true; radio.dispatchEvent({ type: 'change' });
+  t.part(key, 'text').type('Use the staged window'); t.submit(key); t.part(key, 'send').click(); await flush(); t.leave();
+  assert.equal(t.answers.state(key).holdVersion, c.holdVersion);
+  t.patcher.update(model([generatedDecision(undefined, { repo: 'example-app' })])); t.leave();
+  assert.equal(t.answers.state(key).phase, 'sent');
+  assert.equal(t.part(key, 'text').value, 'Use the staged window');
+  t.patcher.update(model([generatedDecision('2026-01-02T12:00:00Z')])); t.leave();
+  assert.equal(t.answers.state(key), null);
+  assert.equal(t.part(key, 'summary').hidden, true);
+  assert.equal(t.part(key, 'text').readOnly, false);
+  assert.equal(t.part(key, 'text').value, '');
+  assert.equal(t.node(key).querySelectorAll('input[type="radio"]').some(input => input.checked), false);
+  assert.equal(t.fetches.length, 1, 're-hold never replays the accepted answer');
+});
 
 test('protected sorting preserves typing, confirmation and viewer preference across reload', () => {
   const viewerStorage = tabStorage();
@@ -280,7 +381,7 @@ test("a named linked alternative relays its exact label; unselected text uses th
 });
 
 test("nothing is sent until Queue and then an explicit Send; the sent answer clears its draft and shows receipts", async () => {
-  const t = setup({ responses: [{ status: 202, body: { state: "accepted", noteId: "note-accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", reply: "Holding until Tuesday" } } } }] });
+  const t = setup({ responses: [{ status: 202, body: { state: "accepted", noteId: "note-accepted", sentAt: "2026-01-02T03:04:05.000Z" } }, { status: 200, body: { answers: { [uuid(1)]: { state: "received" } } } }, { status: 200, body: { answers: { [uuid(1)]: { state: "replied", replyScope: "individual", reply: "Holding until Tuesday" } } } }] });
   const card = decision();
   card.answer = { ...card.answer, options: [{ value: "staged", label: "Staged", hint: "Fewer users" }], recommend: "staged" };
   t.patcher.update(model([card]));

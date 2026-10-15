@@ -1,15 +1,16 @@
-import { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
+import { extractAsks, extractAskSections, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 export { extractAsks, extractReplies, taskMarkers } from "./public/chat-ask-extraction.js";
 import { classifyAnsweredCalls } from "./answered-calls.js";
 import { inboxReceipts } from "./inbox.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { contentRevision, publicText, shortHash } from "./bearings.js";
 import { enumeratedLetterOptions, publishOptions, replyDescription } from "./enumerated-options.js";
-import { claudeTurns, findClaudePrimary } from "./claude-transcript.js";
+import { claudeAwaySummary, claudeTurns, findClaudePrimary } from "./claude-transcript.js";
 import { createHistoryReader } from "./history-reader.js";
 import { UNVERIFIED_INPUT } from "./authorship.js";
+import { parseBacklogTask, parseStatusLine } from "./firstmate-records.js";
 
 // Chat asks (BEARINGS.md "Chat asks"). Firstmate's captain-facing asks carry marker lines
 // (ACTION NEEDED / APPROVAL NEEDED / DECISION NEEDED). This module turns every such line in
@@ -19,7 +20,7 @@ import { UNVERIFIED_INPUT } from "./authorship.js";
 export const CHAT_ASKS_SCHEMA = "fm-quarterdeck-chat-asks.v1";
 const MAX_OPEN = 100;
 const MAX_TOMBSTONES = 5000;
-const MATCHING_VERSION = 4;
+const MATCHING_VERSION = 5;
 
 const MiB = 1024 * 1024;
 
@@ -179,7 +180,7 @@ export function memoryStateFile(initial = emptyChatState()) {
 // ---------------------------------------------------------------------------------------
 // Incremental reader: whole lines from the cursor, at most maxBytes per source per scan.
 // A line longer than maxLineBytes is skipped to its newline (cursor.skip), never parsed.
-async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillBytes, onLine }) {
+async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillBytes, onLine, onSkip = () => {} }) {
   const handle = await open(file, "r");
   try {
     const info = await handle.stat();
@@ -201,9 +202,10 @@ async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillByte
       position += bytesRead;
       let start = 0;
       for (let newline = data.indexOf(10); newline >= 0; newline = data.indexOf(10, start)) {
-        if (skip) { skip = false; start = newline + 1; carry = Buffer.alloc(0); carryStart = base + start; offset = carryStart; continue; }
+        if (skip) { onSkip(); skip = false; start = newline + 1; carry = Buffer.alloc(0); carryStart = base + start; offset = carryStart; continue; }
         const line = carry.length ? Buffer.concat([carry, data.subarray(start, newline)]) : data.subarray(start, newline);
         if (line.length <= maxLineBytes) await onLine(line, carry.length ? carryStart : base + start);
+        else onSkip();
         carry = Buffer.alloc(0);
         start = newline + 1;
         carryStart = base + start;
@@ -211,23 +213,129 @@ async function readNewLines(file, cursor, { maxBytes, maxLineBytes, backfillByte
       }
       if (!skip && start < data.length) {
         carry = carry.length ? Buffer.concat([carry, data.subarray(start)]) : Buffer.from(data.subarray(start));
-        if (carry.length > maxLineBytes) { skip = true; carry = Buffer.alloc(0); }
+        if (carry.length > maxLineBytes) { onSkip(); skip = true; carry = Buffer.alloc(0); }
       }
       if (skip) offset = position;
     }
-    return { cursor: { ino: info.ino, offset, skip: Boolean(skip) }, behind: info.size > end, backfillOmittedBytes };
+    return { cursor: { ino: info.ino, offset, skip: Boolean(skip) }, behind: info.size > end, backfillOmittedBytes, limited: skip || carry.length > 0 };
   } finally { await handle.close(); }
+}
+
+// Explicit MAIN-owned historical-answer selection, never transcript/receipt inference.
+// The callback supplies exact file ranges; this boundary reads and validates the actual
+// monitored Pi records and native owner ledger/archive/parent events. No callback means
+// no reads, no added authority, and no change to ordinary user-record authorship.
+const historicalRefused = (code) => { throw new Error(code); };
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const historicalTime = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : historicalRefused("clock");
+const historicalId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(value);
+async function historicalRange(ref, expectedFile, { line = false, item = false, limit = 64 * 1024 } = {}) {
+  if (!ref || ref.file !== expectedFile || !path.isAbsolute(expectedFile) || !Number.isSafeInteger(ref.offset) || ref.offset < 0 ||
+      !Number.isSafeInteger(ref.length) || ref.length < 1 || ref.length > limit || !/^[a-f0-9]{64}$/.test(ref.sha256 || "") ||
+      !Number.isSafeInteger(ref.identity?.dev) || !Number.isSafeInteger(ref.identity?.ino)) historicalRefused("file-reference");
+  if (!await regularFile(expectedFile)) historicalRefused("file-identity");
+  const handle = await open(expectedFile, "r");
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== ref.identity.dev || before.ino !== ref.identity.ino || ref.offset + ref.length > before.size || await realpath(expectedFile) !== expectedFile) historicalRefused("file-identity");
+    if (ref.offset) {
+      const previous = Buffer.alloc(1);
+      if ((await handle.read(previous, 0, 1, ref.offset - 1)).bytesRead !== 1 || previous[0] !== 10) historicalRefused("record-boundary");
+    }
+    const bytes = Buffer.alloc(ref.length);
+    let read = 0;
+    while (read < bytes.length) {
+      const next = await handle.read(bytes, read, bytes.length - read, ref.offset + read);
+      if (!next.bytesRead) historicalRefused("record-boundary");
+      read += next.bytesRead;
+    }
+    if (bytes.at(-1) !== 10 || (line && bytes.subarray(0, -1).includes(10))) historicalRefused("record-boundary");
+    // A canonical item range must include its whole body, not a selectively projected
+    // answer hiding a later hold/context. Inspect only the next item/heading delimiter.
+    if (item && ref.offset + ref.length < before.size) {
+      const next = Buffer.alloc(8);
+      const tail = await handle.read(next, 0, next.length, ref.offset + ref.length);
+      if (!/^(?:- \[[ xX]\] |## )/.test(next.subarray(0, tail.bytesRead).toString("utf8"))) historicalRefused("item-boundary");
+    }
+    const after = await handle.stat();
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || sha256(bytes) !== ref.sha256) historicalRefused("record-digest");
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } finally { await handle.close(); }
+}
+function historicalItem(text, task) {
+  const lines = text.split("\n");
+  const match = /^- \[([ xX])\] (\S+) - (.+)$/.exec(lines[0]);
+  if (!match || match[2] !== task || lines.slice(1).some(line => /^\s*- \[[ xX]\] \S+ - |^## /.test(line))) historicalRefused("owner-item");
+  return { parsed: parseBacklogTask(match[3], match[1] !== " "), body: lines.slice(1).join("\n") };
+}
+function historicalTarget(ask, record, claim, source) {
+  if (!ask || ask.status !== "open" || ask.linkedTasks.length || ask.source !== source.source || ask.recordId !== claim.request.eventId ||
+      ask.offset !== claim.request.ref.offset || ask.part !== claim.request.part || chatCard(ask).rev !== claim.request.rev ||
+      (ask.holdVersion ?? null) !== (claim.request.holdVersion ?? null)) historicalRefused("current-target");
+  if (record.type !== "message" || record.id !== ask.recordId || record.message?.role !== "assistant") historicalRefused("request-event");
+  const turn = recordTurns(record, "pi").find(turn => turn.part === ask.part && turn.role === "firstmate");
+  const at = new Date(historicalTime(record.timestamp)).toISOString();
+  const found = turn && extractAsks(turn.text).find(found => `chat:${shortHash([record.id, turn.part, found.line])}` === ask.key);
+  if (!found || ask.key !== claim.request.key || ask.at !== at || ["kind", "marker", "text", "taskMarkers", "replies"].some(name => JSON.stringify(ask[name]) !== JSON.stringify(found[name]))) historicalRefused("request-identity");
+}
+async function validateHistoricalAnswer(claim, { home, sources, ask, now, maxLineBytes }) {
+  if (!claim?.request || !claim?.answer || !claim?.owner || !historicalId(claim.request.eventId) || !historicalId(claim.answer.eventId)) historicalRefused("association");
+  const source = sources.find(source => source.source === claim.request.source && source.file === claim.request.ref?.file && source.origin === "pi");
+  if (!source || claim.answer.ref?.file !== source.file) historicalRefused("monitored-source");
+  if (!Number.isSafeInteger(claim.request.part) || claim.request.part < 0 || !Number.isSafeInteger(claim.answer.part) || claim.answer.part < 0) historicalRefused("part");
+  const request = JSON.parse(await historicalRange(claim.request.ref, source.file, { line: true, limit: maxLineBytes }));
+  historicalTarget(ask, request, claim, source);
+  const answer = JSON.parse(await historicalRange(claim.answer.ref, source.file, { line: true, limit: maxLineBytes }));
+  const answerTurn = recordTurns(answer, "pi").find(turn => turn.part === claim.answer.part && turn.role === UNVERIFIED_INPUT.role);
+  if (answer.type !== "message" || answer.id !== claim.answer.eventId || answer.message?.role !== "user" || !answerTurn || MACHINE_TEXT.test(answerTurn.text)) historicalRefused("answer-event");
+  if (!/^[a-f0-9]{64}$/.test(claim.answer.digest || "") || sha256(answerTurn.text) !== claim.answer.digest) historicalRefused("answer-digest");
+  const owner = claim.owner;
+  if (!historicalId(owner.task) || !historicalId(owner.fleet) || !path.isAbsolute(owner.home || "") || await realpath(owner.home) !== owner.home ||
+      !Number.isSafeInteger(owner.occurrence) || owner.occurrence < 1 || owner.parentKey !== `captain-hold-${owner.task}-${owner.occurrence}` ||
+      ask.taskMarkers.length !== 1 || ask.taskMarkers[0] !== owner.task) historicalRefused("owner");
+  const held = historicalItem(await historicalRange(owner.held, path.join(owner.home, "data", "note-archive.md"), { item: true }), owner.task);
+  const resolution = historicalItem(await historicalRange(owner.resolution, path.join(owner.home, "data", "backlog.md"), { item: true }), owner.task);
+  const prior = [...held.body.matchAll(/^  Resolution recorded by fm-captain-hold\.$/gm)].length;
+  const stamp = /^  Captain hold set: (\S+)$/gm;
+  const stamps = [...held.body.matchAll(stamp)].map(match => match[1]);
+  if (held.parsed.holdKind !== "captain" || !held.parsed.holdActive || !held.parsed.holdReason?.trim() || stamps.length !== 1 || stamps[0] !== owner.heldAt || owner.occurrence !== prior + 1 ||
+      resolution.parsed.holdActive || !["released", "answered"].includes(owner.mode)) historicalRefused("owner-occurrence");
+  const prefix = `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${claim.answer.digest}\n  Resolution mode: ${owner.mode}\n\n  Captain decision:\n`;
+  const decision = answerTurn.text.split("\n").map(line => line ? `  ${line}` : "").join("\n");
+  const previous = held.body.replace(/^  Captain hold set: \S+\n\n/, "");
+  // Native release prepends the new exact answer and preserves the prior body. This
+  // checks the recorded occurrence, actual bytes and retained history, not task Done.
+  if (resolution.body !== `${prefix}${decision}\n\n${previous}`) historicalRefused("owner-resolution");
+  const parentFile = path.join(home, "state", `${owner.fleet}.status`);
+  const event = async ref => parseStatusLine((await historicalRange(ref, parentFile, { line: true, limit: 16 * 1024 })).replace(/\n$/, ""));
+  const raised = await event(owner.raised), resolved = await event(owner.resolved);
+  const epoch = event => {
+    const values = event.fields.filter(field => field.name === "at");
+    if (!event.transitionAllowed || event.key !== owner.parentKey || event.fields.filter(field => field.name === "key").length !== 1 || values.length !== 1 || !/^\d+$/.test(values[0].value)) historicalRefused("parent-event");
+    return Number(values[0].value) * 1000;
+  };
+  const heldAt = historicalTime(owner.heldAt), askAt = historicalTime(request.timestamp), answerAt = historicalTime(answer.timestamp), resolvedAt = historicalTime(owner.resolvedAt);
+  if (raised.state !== "needs-decision" || !raised.text.startsWith(`captain hold ${owner.task}: `) || resolved.state !== "resolved" || resolved.text !== `captain hold ${owner.task}: ${owner.mode}` ||
+      epoch(raised) < heldAt || epoch(raised) > askAt || epoch(resolved) !== resolvedAt || heldAt > askAt || askAt > answerAt || answerAt > resolvedAt || resolvedAt > now ||
+      claim.request.ref.offset + claim.request.ref.length > claim.answer.ref.offset || owner.raised.offset >= owner.resolved.offset) historicalRefused("occurrence-clock");
+  return { request, source, task: owner.task, mode: owner.mode };
 }
 
 // ---------------------------------------------------------------------------------------
 // The scanner owns the chat-ask state. scan() is cheap when nothing grew (stat only).
-export function createChatAskScanner({ home, claudeConfigDir = null, statePath = null, store = statePath ? createStateFile(statePath) : memoryStateFile(),
+export function createChatAskScanner({ home, claudeConfigDir = null, historyLimits = {}, statePath = null, store = statePath ? createStateFile(statePath) : memoryStateFile(),
   now = Date.now, discover = discoverPrimarySources, discoverEveryMs = 30000, backfillBytes = 4 * MiB, backfillMaxAgeMs = 24 * 3600 * 1000,
-  maxScanBytes = 4 * MiB, maxLineBytes = 2 * MiB } = {}) {
+  maxScanBytes = 4 * MiB, maxLineBytes = 2 * MiB, historicalAnswer = null } = {}) {
+  if (historicalAnswer !== null && typeof historicalAnswer !== "function") throw new TypeError("Historical answer producer must be an explicitly configured function");
   let state = null;
   let view = { state: home ? "loading" : "unavailable", error: home ? null : "FM_HOME is not configured", checkedAt: null, sources: [], warnings: [] };
   let sources = null, discoveredAt = -Infinity, scanning = null;
   const sourceStatus = new Map();
+  // Ephemeral and current-primary only. On restart, reuse the existing bounded
+  // payload pass to backfill once rather than persist recap text or reread history.
+  let recapFile = null, recapStamp = null;
+  let primaryRecap = { text: null, state: "unavailable" };
+  let recapCandidate = primaryRecap;
 
   const openAsks = () => Object.values(state?.asks || {}).filter((ask) => ask.status === "open");
   function resolveAsk(target, ask, by, extra = {}) {
@@ -251,11 +359,17 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
     let changed = false;
     for (const turn of recordTurns(record, origin, toolNames)) {
       if (turn.role === "firstmate") {
-        for (const found of extractAsks(turn.text)) {
+        let precedingEnd = 0;
+        for (const { ask: found, start, end } of extractAskSections(turn.text)) {
+          // Display-only evidence: never another text part or an earlier marker's ask.
+          // Sanitize before clipping so a cut cannot expose a partial absolute path.
+          const preceding = publicText(turn.text.slice(precedingEnd, start), Infinity);
+          precedingEnd = end;
+          const sourceContext = { text: preceding?.slice(-4000) || null, limited: Boolean(preceding && preceding.length > 4000) };
           const key = `chat:${shortHash([recordId, turn.part, found.line])}`;
           if (target.tombstones[key] || (target.asks[key] && target.asks[key].status !== "open")) continue;
           const existing = target.asks[key];
-          const ask = existing || { key, kind: found.kind, marker: found.marker, text: found.text, taskMarkers: found.taskMarkers, replies: found.replies, source, offset, part: turn.part, recordId, at, status: "open", linkedTasks: [] };
+          const ask = existing || { key, kind: found.kind, marker: found.marker, text: found.text, taskMarkers: found.taskMarkers, replies: found.replies, source, offset, part: turn.part, recordId, at, status: "open", linkedTasks: [], sourceContext };
           // Replay refreshes extraction on existing open cards, not just their cursors.
           if (existing && (JSON.stringify(existing.replies) !== JSON.stringify(found.replies) || JSON.stringify(existing.taskMarkers) !== JSON.stringify(found.taskMarkers))) {
             existing.taskMarkers = found.taskMarkers;
@@ -280,17 +394,56 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
 
   async function sourcesNow() {
     if (sources && now() - discoveredAt < discoverEveryMs) return sources;
-    const found = await discover(home, { claudeConfigDir });
+    const found = await discover(home, { claudeConfigDir, reader: createHistoryReader(historyLimits) });
     sources = found.sources;
     discoveredAt = now();
     view = { ...view, warnings: found.warnings };
     return sources;
   }
 
+  async function admitHistorical(active) {
+    if (!historicalAnswer) return false;
+    let deadline;
+    try {
+      const validated = await Promise.race([
+        (async () => {
+          // Freeze selection before any await; re-check the actual target inside the
+          // same existing state-file transaction before resolution. Never expose this
+          // callback as an HTTP/environment/audit-file intake.
+          const claim = structuredClone(await historicalAnswer());
+          if (claim === null || state.tombstones[claim?.request?.key]) return null;
+          const proof = await validateHistoricalAnswer(claim, { home, sources: active, ask: state.asks[claim?.request?.key], now: now(), maxLineBytes });
+          return { claim, proof };
+        })(),
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("producer-timeout")), 1500); }),
+      ]);
+      if (!validated) return false;
+      const { claim, proof } = validated;
+      const result = await mutate(target => {
+        historicalTarget(target.asks[claim.request.key], proof.request, claim, proof.source);
+        const dirty = resolveAsk(target, target.asks[claim.request.key], "answered", { resolutionSource: "verified historical answer", resolvedTasks: [proof.task], holdResolutions: [{ task: proof.task, resolution: proof.mode }] });
+        prune(target);
+        return { dirty, write: dirty };
+      });
+      return result.dirty;
+    } catch (error) {
+      const safeCodes = new Set(["association", "file-reference", "file-identity", "record-boundary", "item-boundary", "record-digest", "owner-item", "current-target", "request-event", "request-identity", "monitored-source", "part", "answer-event", "answer-digest", "owner", "owner-occurrence", "owner-resolution", "parent-event", "occurrence-clock", "clock", "producer-timeout"]);
+      const code = safeCodes.has(error.message) ? error.message : "unavailable";
+      view.warnings = [...view.warnings, `Historical answer not admitted: ${code}`].filter((value, index, values) => values.indexOf(value) === index);
+      return false;
+    } finally { clearTimeout(deadline); }
+  }
+
   async function scanOnce() {
     if (!home) return false;
     try {
       const active = await sourcesNow();
+      const primary = active.find(entry => entry.origin === "claude");
+      if (recapFile !== (primary?.file || null)) {
+        recapFile = primary?.file || null;
+        recapStamp = null;
+        recapCandidate = primaryRecap = { text: null, state: "unavailable" };
+      }
       state ||= await store.read();
       // One bounded replay repairs already-open cards when matching rules change. Keep
       // asks and tombstones: accepted answers/dismissals must never be revived.
@@ -307,7 +460,9 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
         let info = null;
         try { info = await stat(entry.file); } catch (error) { if (error.code !== "ENOENT") throw error; }
         const cursor = state.cursors[entry.source];
-        if (info && (!cursor || cursor.ino !== info.ino || cursor.offset !== info.size)) grown.push(entry);
+        const recapReset = entry.file === recapFile && info && (!recapStamp || recapStamp.ino !== info.ino || info.size < recapStamp.size || (info.size === recapStamp.size && info.mtimeMs !== recapStamp.mtimeMs));
+        if (entry.file === recapFile && !info) { recapStamp = null; recapCandidate = primaryRecap = { text: null, state: "unavailable" }; }
+        if (info && (recapReset || !cursor || cursor.ino !== info.ino || cursor.offset !== info.size)) grown.push({ ...entry, recapReset, info });
         else if (info) sourceStatus.set(entry.source, { source: entry.source, behind: false, backfillOmittedBytes: sourceStatus.get(entry.source)?.backfillOmittedBytes ?? 0 });
       }
       let changed = false;
@@ -315,18 +470,35 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
         const { state: next, result } = await store.update(async (target) => {
           let asksChanged = false, cursorMoved = false;
           for (const entry of grown) {
-            const prior = target.cursors[entry.source] || { ino: null, offset: 0, skip: false };
+            const isPrimary = entry.file === recapFile;
+            const prior = (!entry.recapReset && target.cursors[entry.source]) || { ino: null, offset: 0, skip: false };
+            if (isPrimary && entry.recapReset) recapCandidate = { text: null, state: "ready" };
             const backfill = prior.ino === null;
             const toolNames = new Map();
-            const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes, onLine: async (line, offset) => {
-              // Only Firstmate's own marker lines matter; session input never resolves an
-              // ask. The whole-record cap bounds parsing. Adapters still exclude tool
-              // output, hooks and machine traffic.
-              if (!line.includes("NEEDED")) return;
+            const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes,
+              onSkip: () => { if (isPrimary) recapCandidate = { text: null, state: "limited" }; },
+              onLine: async (line, offset) => {
+              // The same payload pass projects primary system recaps separately
+              // from asks; neither system text nor session input resolves an ask.
+              if (!isPrimary && !line.includes("NEEDED")) return;
+              const textLine = line.toString("utf8");
+              if (!textLine.trim()) return;
               let record;
-              try { record = JSON.parse(line.toString("utf8")); } catch { return; }
-              if (applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
+              try { record = JSON.parse(textLine); } catch {
+                if (isPrimary) recapCandidate = { text: null, state: "limited" };
+                return;
+              }
+              if (isPrimary) {
+                const text = claudeAwaySummary(record);
+                if (text !== undefined) recapCandidate = { text: text || null, state: "ready" };
+              }
+              if (line.includes("NEEDED") && applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
             } });
+            if (isPrimary) {
+              recapStamp = { ino: entry.info.ino, size: entry.info.size, mtimeMs: entry.info.mtimeMs };
+              if (outcome.backfillOmittedBytes && recapCandidate.text === null) recapCandidate.state = "limited";
+              primaryRecap = outcome.behind || outcome.limited ? { text: null, state: "limited" } : { ...recapCandidate };
+            }
             const before = target.cursors[entry.source];
             if (!before || before.ino !== outcome.cursor.ino || before.offset !== outcome.cursor.offset || before.skip !== outcome.cursor.skip) cursorMoved = true;
             target.cursors[entry.source] = outcome.cursor;
@@ -344,8 +516,10 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
       const behind = [...sourceStatus.values()].some((entry) => entry.behind);
       view = { ...view, state: "ready", error: null, checkedAt: new Date(now()).toISOString(), behind,
         sources: active.map((entry) => sourceStatus.get(entry.source) || { source: entry.source, behind: false, backfillOmittedBytes: 0 }) };
-      return changed;
+      return await admitHistorical(active) || changed;
     } catch (error) {
+      recapStamp = null;
+      recapCandidate = primaryRecap = { text: null, state: "unavailable" };
       view = { ...view, state: state ? "stale" : "unavailable", error: `Chat asks unavailable: ${error.code || error.message}`, checkedAt: new Date(now()).toISOString() };
       return false;
     }
@@ -360,7 +534,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, statePath =
   return {
     // Coalesces concurrent callers; resolves true when open asks changed.
     scan: () => (scanning ||= scanOnce().finally(() => { scanning = null; })),
-    view: () => ({ ...view, resolved: Object.values(state?.asks || {}).filter(ask => ask.status === "resolved" && ask.resolutionSource)
+    view: () => ({ ...view, primaryRecap: { ...primaryRecap }, resolved: Object.values(state?.asks || {}).filter(ask => ask.status === "resolved" && ask.resolutionSource)
       .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt))).slice(0, 50)
       .map(ask => ({ key: ask.key, status: "answered", resolvedAt: ask.resolvedAt, tasks: ask.resolvedTasks, source: ask.resolutionSource, resolutions: ask.holdResolutions || [] })) }),
     asks: () => openAsks(),
@@ -419,7 +593,12 @@ export function chatCard(ask) {
   const card = { key: ask.key, type: "chat", kind: ask.kind, marker: ask.marker, summary: publicText(ask.text, Infinity) || `${ask.marker} (no text)`, replies: options.map((option) => option.label),
     source: ask.source.split("/")[0], transcript: { offset: ask.offset, part: ask.part }, clock: { label: "Asked", at: ask.at },
     answer: { question: chatQuestion(ask.key), options, recommend: null, close: null, freeform: true } };
-  return { ...card, rev: shortHash(card) };
+  // Context is not answer/review identity. Existing summaries, options and revs stay exact.
+  return { ...card, rev: shortHash(card), sourceContext: contextEvidence(ask) };
+}
+function contextEvidence(ask) {
+  return { text: ask.sourceContext?.text || null, limited: Boolean(ask.sourceContext?.limited),
+    captured: Boolean(ask.sourceContext), source: ask.source.split("/")[0], offset: ask.offset, part: ask.part };
 }
 const linkedEntry = (ask) => {
   const replies = ask.replies.map((reply) => publicText(reply, 200)).filter(Boolean);
@@ -428,7 +607,7 @@ const linkedEntry = (ask) => {
     const hint = describedHint(ask.text, reply);
     if (hint) replyHints[reply] = hint;
   }
-  return { key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies, ...(Object.keys(replyHints).length ? { replyHints } : {}), clock: { label: "Asked", at: ask.at } };
+  return { key: ask.key, kind: ask.kind, summary: publicText(ask.text, Infinity) || ask.marker, replies, ...(Object.keys(replyHints).length ? { replyHints } : {}), clock: { label: "Asked", at: ask.at }, sourceContext: contextEvidence(ask) };
 };
 // A filed decision with no structured choices offers lettered lines from a linked decision ask.
 function withLinkedChoices(card, entries) {
@@ -474,15 +653,17 @@ export function composeCallModel(base, asks, chatView) {
     // Missing choices stay text-only. The view already offers explicit linked replies;
     // a decision/approval marker alone cannot establish a boolean question.
     if (modified) {
-      return { ...rest, rev: shortHash(rest) };
+      const identity = { ...rest, chatAsks: rest.chatAsks.map(({ sourceContext, ...entry }) => entry) };
+      return { ...rest, rev: shortHash(identity) };
     }
     return card;
   });
   const chatCards = unlinked.slice(0, MAX_OPEN).map(chatCard);
   const chat = { state: chatView.state, error: chatView.error, open: unlinked.length, linked: asks.length - unlinked.length, omitted: Math.max(0, unlinked.length - MAX_OPEN), behind: Boolean(chatView.behind),
     sources: chatView.sources.map(({ source, backfillOmittedBytes }) => ({ source: source.split("/")[0], backfillOmittedBytes })), resolved: chatView.resolved || [] };
+  const primaryRecap = chatView.primaryRecap || { text: null, state: "unavailable" };
   const content = { ...base, cards: [...cards, ...chatCards], chat };
-  return { ...base, cards: content.cards, chat, chatCheckedAt: chatView.checkedAt, rev: shortHash([contentRevision(content), chat]) };
+  return { ...base, cards: content.cards, chat, primaryRecap, chatCheckedAt: chatView.checkedAt, rev: shortHash([contentRevision(content), chat, primaryRecap]) };
 }
 
 // Wrap the snapshot hub so every consumer (GET, ?since, the stream, answers) sees one
@@ -493,15 +674,15 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   let composed = null, composedFrom = null;
   const listeners = new Set();
   let timer = null;
-  const freshness = () => { const model = current(); return { ...hub.freshness(), rev: model.rev }; };
+  const freshness = () => { const model = current(); return { ...hub.freshness(), rev: model.rev, primaryRecap: model.primaryRecap }; };
   // Recompose only when the hub published a new model object or the chat asks changed.
   let composedBase = null;
   function current() {
     const base = hub.current();
     const asks = chat.asks();
     const view = chat.view();
-    const signature = JSON.stringify([asks.map((ask) => [ask.key, ask.linkedTasks]), view.state, view.error, view.behind, view.sources, view.checkedAt, receiptsSignature]);
-    if (base !== composedBase || signature !== composedFrom) { composed = composeCallModel(base, asks, view); composed.cards = classifyAnsweredCalls(composed.cards, answerReceipts); composed.rev = shortHash([contentRevision(composed), composed.chat]); composedBase = base; composedFrom = signature; }
+    const signature = JSON.stringify([asks.map((ask) => [ask.key, ask.linkedTasks]), view.state, view.error, view.behind, view.sources, view.checkedAt, view.primaryRecap, receiptsSignature]);
+    if (base !== composedBase || signature !== composedFrom) { composed = composeCallModel(base, asks, view); composed.cards = classifyAnsweredCalls(composed.cards, answerReceipts); composed.rev = shortHash([contentRevision(composed), composed.chat, composed.primaryRecap]); composedBase = base; composedFrom = signature; }
     return composed;
   }
   const applyHolds = () => { const base = hub.current(); return chat.applySnapshot(base.cards, fresh(), base.holds || []); };

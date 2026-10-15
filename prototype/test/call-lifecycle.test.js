@@ -82,7 +82,7 @@ test("an answer receipt and the card receipt use the same three postures", () =>
   assert.equal(accepted.reply, "");
   assert.equal(life.cardState({ card, answer: { phase: "sent", receipt: { state: "received" } } }), "sent");
   assert.equal(life.sentLabel("acknowledged"), "Firstmate is on it");
-  const answered = life.delivery({ card, answer: { phase: "sent", sentAt: "2026-01-02T12:00:00.000Z", receipt: { state: "replied", reply: "Holding until Tuesday" } } });
+  const answered = life.delivery({ card, answer: { phase: "sent", sentAt: "2026-01-02T12:00:00.000Z", receipt: { state: "replied", replyScope: "individual", reply: "Holding until Tuesday" } } });
   assert.equal(answered.posture, "replied");
   assert.equal(life.replyBanner(answered.reply), "Firstmate replied: Holding until Tuesday");
   assert.equal(life.cardState({ card, answer: { phase: "compose", heldReply: "Holding until Tuesday", heldAt: "2026-01-02T12:00:00.000Z" } }), "active");
@@ -140,6 +140,30 @@ test("empty or absent latest replies never display a different note's reply", ()
       assert.equal(life.cardState(facts), "active");
     }
   }
+});
+
+test("combined reply posture never supplies card-specific text or an unrelated note fallback", () => {
+  const card={key:"decision:sample",sentReceipt:"replied",sentReplyScope:"combined"};
+  const thread={entries:[{kind:"ask",from:"captain",noteId:"a",state:"replied",replyScope:"combined"},{kind:"reply",from:"firstmate",noteId:"b",text:"Sibling answer"}]};
+  const result=life.delivery({card,thread});
+  assert.equal(result.posture,"replied");assert.equal(result.reply,"");assert.equal(result.replyScope,"combined");
+  assert.match(life.replyBanner(result.reply,result.replyScope),/card-specific reply is not recorded/);
+  assert.equal(life.delivery({thread:{entries:[{kind:"ask",from:"captain",noteId:"a",state:"replied"},{kind:"reply",from:"firstmate",noteId:"b",text:"Wrong note"}]}}).reply,"");
+  assert.equal(life.delivery({answer:{phase:"compose",heldReply:"Legacy unattributed text"}}).reply,"");
+  const current={...card,sentReceipt:undefined,sentReplyScope:undefined,holdVersion:"new",clock:{at:"2026-01-01T12:00:00Z"}};
+  assert.equal(life.delivery({card:current,thread:{entries:[{kind:"ask",from:"captain",holdVersion:"old",state:"replied",at:"2026-01-01T12:01:00Z"}]}}).posture,null);
+  assert.equal(life.delivery({card:current,answer:{phase:"sent",holdVersion:"new",cardRev:"old",sentAt:"2026-01-01T12:01:00Z",receipt:{state:"received"}}}).posture,"acknowledged");
+});
+
+test("pending thread identity stays in its hold cycle and survives older history", () => {
+  const card = { key: "decision:sample", holdVersion: "new" };
+  const thread = { captainNoteId: "pending-note", holdVersion: "new", entries: [
+    { kind: "ask", from: "captain", noteId: "old-note", state: "replied", holdVersion: "new" },
+  ] };
+  assert.equal(life.delivery({ card, thread }).posture, "pending");
+  assert.equal(life.delivery({ card: { ...card, holdVersion: "next" }, thread }).posture, null);
+  thread.entries.push({ kind: "ask", from: "captain", noteId: "pending-note", state: "received", holdVersion: "new" });
+  assert.equal(life.delivery({ card, thread }).posture, "acknowledged");
 });
 
 test("status counts and the remembered filter default to Active", () => {

@@ -109,6 +109,9 @@ test("two remote landings never borrow a local task's transcript or each other's
   assert.deepEqual((await relay.history(a.key, model)).entries.map((entry) => entry.text), ["Explain A"]);
   assert.deepEqual((await relay.history(b.key, model)).entries, []);
   assert.equal(reads, 0);
-  assert.deepEqual((await relay.history(local.key, model)).entries.map((entry) => entry.text), ["The local cached-landed release is ready."]);
+  const localHistory = await relay.history(local.key, model);
+  assert.deepEqual(localHistory.entries, []);
+  assert.deepEqual(localHistory.provenance.map((entry) => [entry.kind, entry.text]), [["context", "The local cached-landed release is ready."]]);
+  assert.equal(reads, 1);
   assert.equal((await relay.history(a.key, { landed: [] })).transcript.state, "not-applicable");
 });

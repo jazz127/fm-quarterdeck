@@ -2,11 +2,13 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { writeSync } from 'node:fs';
 import { appendFile, mkdtemp, mkdir, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../server.js';
 import { claudeProjectDirectory } from '../claude-transcript.js';
+import { awaySummary } from '../test/helpers/claude-recap.js';
 import { captureKpiGeometry } from './kpi-geometry.mjs';
 import { captureStaticReplyLinks } from './card-reply-links-static-proof.mjs';
 import { capturePendingUpdates } from './call-pending-update-acceptance.mjs';
@@ -14,6 +16,24 @@ import { acquireFixturePage, waitForBrowserPort, cleanupBrowserProfile } from '.
 const root = path.resolve(import.meta.dirname, '../..');
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(), '', 'serve a clean committed candidate');
+// Flush only neutral progress metadata: never command arguments, evaluation bodies,
+// browser output, notes, source payloads, paths or exception text.
+const traceStart = performance.now();
+let traceStage = 'fixture-setup', traceStageStart = traceStart;
+let traceCommand = null, traceAwait = null, traceCommandCount = 0, tracePassed = 0;
+const traceSite = () => [...(new Error().stack || '').matchAll(/captain-call-live-browser-pass\.mjs:(\d+):\d+/g)]
+  .slice(2).map(match => `L${match[1]}`).join('/') || 'helper';
+const trace = (event, fields = {}) => writeSync(1, `captain-call-trace ${JSON.stringify({
+  event, stage: traceStage, elapsedMs: Math.round(performance.now() - traceStart), ...fields,
+})}\n`);
+const stage = (name) => {
+  trace('stage-end', { durationMs: Math.round(performance.now() - traceStageStart), passedEvaluations: tracePassed });
+  traceStage = name; traceStageStart = performance.now();
+  trace('stage-start');
+};
+const commandNames = new Set(['pages', 'newpage', 'selectpage', 'closepage', 'eval', 'run',
+  'emulate', 'resize', 'screenshot', 'press', 'snapshot', 'console', 'stop']);
+trace('stage-start');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'quarterdeck-call-pass-'));
 const proof = process.env.SCREENSHOT_DIR || temp;
 await mkdir(proof, { recursive: true });
@@ -25,7 +45,8 @@ await mkdir(transcriptDir, { recursive: true });
 await writeFile(path.join(home, 'state/.lock-session'), 'synthetic-main\n');
 const transcriptPath = path.join(transcriptDir, 'synthetic-main.jsonl');
 const chatRecord = (uuid, text) => `${JSON.stringify({ type: 'assistant', uuid, timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'synthetic-model', content: [{ type: 'text', text }] } })}\n`;
-await writeFile(transcriptPath, chatRecord('synthetic-ask-one', '**APPROVAL NEEDED:** Publish the sample notes. Reply "publish" or "wait".') + chatRecord('synthetic-ask-link', 'DECISION NEEDED: Also weigh alpha-call before publishing.'));
+const initialRecap = '[fm-lane General]\nThe sample checks completed.\n[end General]';
+await writeFile(transcriptPath, JSON.stringify(awaySummary(initialRecap)) + '\n' + chatRecord('synthetic-ask-one', '**APPROVAL NEEDED:** Publish the sample notes. Reply "publish" or "wait".') + chatRecord('synthetic-ask-link', 'DECISION NEEDED: Also weigh alpha-call before publishing.'));
 const fixturePath = path.join(home, 'snapshot.json');
 let raw = JSON.parse(await readFile(new URL('../test/fixtures/bearings/two-calls.json', import.meta.url), 'utf8'));
 raw.decisions_open[0].updated_at = new Date(Date.now() - 120000).toISOString();
@@ -51,7 +72,8 @@ const landedBacklog = `- [ ] sample-queue - Prepare the sample follow-up (repo: 
 - [x] ship-window - Ship the example-app release window (repo: example-app) (done 2026-10-01)
 - [x] local-notes - Land the sample notes on local main (repo: sample-notes) (merged 2026-10-02)
 `;
-const alphaBacklog = () => `# Synthetic backlog ${raw.generated}\n- [ ] alpha-call - ${alphaFull} (repo: example-app)\n${landedBacklog}${extraBacklog}`;
+let alphaRepo = 'example-app';
+const alphaBacklog = () => `# Synthetic backlog ${raw.generated}\n- [ ] alpha-call - ${alphaFull} (repo: ${alphaRepo})\n${landedBacklog}${extraBacklog}`;
 await writeFile(path.join(home, 'data/backlog.md'), alphaBacklog());
 await writeFile(path.join(home, 'data/projects.md'), '- synthetic-repository - Offline fixture\n');
 const secondmateHome = path.join(temp, 'secondmate');
@@ -118,6 +140,9 @@ for (const item of items) {
   await appendFile(home + '/' + kind + '-attempts', item.requestId + '\\n');
   await writeFile(home + '/' + kind + '-note.txt', item.text);
   await writeFile(home + '/' + kind + '-' + item.requestId + '.txt', item.text);
+  // Seal a comparable receipt time once; polling must not rejuvenate an old note.
+  const atFile = home + '/' + kind + '-' + item.requestId + '.at';
+  await writeFile(atFile, new Date().toISOString(), { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
   if (!thread) {
     if (await readFile(home + '/fail-answer').then(() => true, () => false)) process.exit(1);
     if (await readFile(home + '/delay-answer').then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 5000));
@@ -148,7 +173,7 @@ for (let i = 0; i < threadIds.length; i++) {
   const answered = repliedIds.has(requestId);
   if (answered || acked.has(requestId)) data.handled.push(note);
   else data.pending.push(note);
-  if (answered) data.replies.push({ id: note.id, at: '2026-01-02T11:' + minute + ':00.000Z', body: 'This call chooses the synthetic release window. Read https://example.invalid/acme/example-app/guide. Then https://example.invalid/acme/example-app/details?mode=phone&section=notes (keep this note).' });
+  if (answered) data.replies.push({ id: note.id, at: new Date(Date.parse(note.at) + 1).toISOString(), body: 'This call chooses the synthetic release window. Read https://example.invalid/acme/example-app/guide. Then https://example.invalid/acme/example-app/details?mode=phone&section=notes (keep this note).' });
 }
 console.log(JSON.stringify(data));
 `);
@@ -165,31 +190,67 @@ chrome.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk.toString(
 const exec = promisify(execFile);
 const browser = async (...args) => {
   const options = { env, timeout: 45000, maxBuffer: 1024 * 1024 };
-  if (args[0] !== 'run') return (await exec('chrome-devtools-axi', args, options)).stdout;
-  return new Promise((resolve, reject) => {
-    const child = execFile('chrome-devtools-axi', ['run'], options, (error, stdout) => error ? reject(error) : resolve(stdout));
-    child.stdin.end(args[1]);
-  });
+  const command = { id: ++traceCommandCount, name: commandNames.has(args[0]) ? args[0] : 'other',
+    site: traceSite(), started: performance.now(), outcome: 'running' };
+  traceCommand = command;
+  trace('command-start', { command: command.id, name: command.name, site: command.site, condition: traceAwait?.label || null });
+  try {
+    const output = args[0] !== 'run' ? (await exec('chrome-devtools-axi', args, options)).stdout : await new Promise((resolve, reject) => {
+      const child = execFile('chrome-devtools-axi', ['run'], options, (error, stdout) => error ? reject(error) : resolve(stdout));
+      child.stdin.end(args[1]);
+    });
+    command.outcome = 'completed';
+    return output;
+  } finally {
+    if (command.outcome === 'running') command.outcome = 'failed';
+    trace('command-end', { command: command.id, name: command.name, outcome: command.outcome,
+      durationMs: Math.round(performance.now() - command.started) });
+  }
 };
 const results = [];
 async function evaluate(js) {
+  trace('evaluation-start', { evaluation: results.length + 1, site: traceSite() });
   const output = await browser('eval', js);
   if (/isError":\s*true|Error:|Exception:/.test(output)) throw Error(output);
   results.push(output);
+  tracePassed = results.length;
+  trace('evaluation-pass', { evaluation: tracePassed });
   return output;
 }
-const until = (condition) => evaluate(`async () => { for(let i=0;i<350;i++){if(${condition})return 'PASS ${condition.replaceAll("'", '').replaceAll('"', '')}';await new Promise(r=>setTimeout(r,100));}throw Error('bounded readiness timeout'); }`);
+const until = async (condition, label = `predicate-${traceSite()}`) => {
+  const waiting = { label, started: performance.now() };
+  traceAwait = waiting;
+  trace('await-start', { condition: label });
+  let passed = false;
+  try {
+    const output = await evaluate(`async () => { for(let i=0;i<350;i++){if(${condition})return 'PASS ${condition.replaceAll("'", '').replaceAll('"', '')}';await new Promise(r=>setTimeout(r,100));}throw Error('bounded readiness timeout'); }`);
+    passed = true;
+    return output;
+  } finally {
+    trace('await-end', { condition: label, outcome: passed ? 'passed' : 'failed', durationMs: Math.round(performance.now() - waiting.started) });
+    traceAwait = null;
+  }
+};
 async function settleReload() {
   const started = Date.now();
+  const waiting = { label: 'reload-ready', started: performance.now() };
+  traceAwait = waiting;
+  trace('await-start', { condition: waiting.label });
   let last = '';
   while (Date.now() - started < 20000) {
     try {
       const output = await browser('eval', `() => (!document.documentElement.dataset.reloadProof && document.querySelector('#call-lifecycle-filter')) ? 'ready' : 'loading'`);
       last = output;
-      if (output.includes('ready') && !/isError"\s*:\s*true|Error:|Exception:/.test(output)) return;
+      if (output.includes('ready') && !/isError"\s*:\s*true|Error:|Exception:/.test(output)) {
+        trace('await-end', { condition: waiting.label, outcome: 'passed', durationMs: Math.round(performance.now() - waiting.started) });
+        traceAwait = null;
+        return;
+      }
     } catch (error) { last = String(error); }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  trace('await-end', { condition: waiting.label, outcome: 'failed', durationMs: Math.round(performance.now() - waiting.started) });
+  traceAwait = null;
   throw Error(`reload did not return Captain's Call: ${last}`);
 }
 const change = async () => {
@@ -204,15 +265,63 @@ const server = createServer({ FM_HOME: home, CLAUDE_CONFIG_DIR: config, FM_BEARI
   lanesReader: async () => ({ lanes: [], transcript: { sessions: [], warnings: [] } }),
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const deadline = setTimeout(() => { console.error('Captain Call browser deadline exceeded'); process.exit(1); }, 360000);
+// Bounded whole-matrix watchdog; every per-command/per-condition limit is unchanged.
+const deadline = setTimeout(() => {
+  trace('deadline', { passedEvaluations: tracePassed,
+    lastCommand: traceCommand && { id: traceCommand.id, name: traceCommand.name, site: traceCommand.site,
+      outcome: traceCommand.outcome, ageMs: Math.round(performance.now() - traceCommand.started) },
+    condition: traceAwait?.label || null, awaitAgeMs: traceAwait ? Math.round(performance.now() - traceAwait.started) : null });
+  console.error('Captain Call browser deadline exceeded'); process.exit(1);
+}, 480000);
+trace('watchdog-armed', { limitMs: 480000 });
 try {
+  stage('browser-acquisition');
   const port = await waitForBrowserPort(chrome, profile, { spawnError: () => spawnError, diagnostics: () => diagnostics });
   env.CHROME_DEVTOOLS_AXI_BROWSER_URL = `http://127.0.0.1:${port}`;
   if (process.argv.includes('--pending-update-only')) {
+    stage('pending-update-only');
     await capturePendingUpdates({ browser, evaluate, until, base: `http://127.0.0.1:${server.address().port}`, head, proof, raw, change, server });
   } else {
-  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
+  const recapPage = await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
+  stage('primary-recap');
+  await until(`document.querySelector('#primary-recap').textContent==='The sample checks completed.'`);
+  await evaluate(`() => {
+    const card=document.querySelector('[data-call-key="decision:alpha-call"]');
+    const field=card.querySelector('[data-call-answer-text]'), radio=card.querySelector('input[value="staged"]');
+    window.recapProof={node:document.querySelector('#primary-recap'),card,field,radio};
+    radio.checked=true; radio.dispatchEvent(new Event('change',{bubbles:true}));
+    field.value='Neutral unsent recap-proof draft'; field.dispatchEvent(new Event('input',{bubbles:true}));
+    field.focus(); field.setSelectionRange(2,9);
+    return 'recap update starts with engaged draft and option';
+  }`);
+  const updatedRecap = 'Updated <img src=x onerror=alert(1)> [keep this]\n' + 'UnbrokenExampleText'.repeat(18);
+  await appendFile(transcriptPath, JSON.stringify(awaySummary(updatedRecap, { timestamp: '2000-01-01T00:00:00Z' })) + '\n');
+  await until(`document.querySelector('#primary-recap').textContent===${JSON.stringify(updatedRecap)}`);
+  await evaluate(`() => {
+    const {node,card,field,radio}=window.recapProof;
+    if(document.querySelector('#primary-recap')!==node||node.hidden||node.querySelector('img')||
+       document.querySelector('[data-call-key="decision:alpha-call"]')!==card||document.activeElement!==field||
+       field.value!=='Neutral unsent recap-proof draft'||field.selectionStart!==2||field.selectionEnd!==9||!radio.checked)
+      throw Error('recap update replaced nodes, executed markup or lost engaged state');
+    return 'recap-only live update preserves draft, focus, selection and radio';
+  }`);
+  for (const width of [1280,390]) {
+    await browser('resize',String(width),'844');
+    await evaluate(`() => { const node=document.querySelector('#primary-recap'),r=node.getBoundingClientRect();
+      if(r.width<=0||r.left<0||r.right>innerWidth||node.scrollWidth>node.clientWidth+1||getComputedStyle(node).whiteSpace!=='pre-wrap')throw Error('recap wrapping');
+      return {recapWrapping:true,width:innerWidth}; }`);
+  }
+  await browser('resize','1280','844');
+  await appendFile(transcriptPath, JSON.stringify(awaySummary('')) + '\n');
+  await until(`document.querySelector('#primary-recap').hidden && document.querySelector('#primary-recap').textContent===''`);
+  // The proof deliberately saves an option draft. A synthetic unchecked change
+  // still saves the radio's value; isolate this proof's tab-local drafts rather
+  // than letting a later reload turn its text-only thread note into an answer.
+  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
+  await browser('closepage', recapPage);
+  await until(`document.querySelectorAll('[data-call-key]').length===4 && !!document.querySelector('[data-call-key="decision:alpha-call"] input[value="staged"]')`);
+  stage('transport-lifecycle');
   // Deterministic transport races in the real page realm, isolated from the UI's feed.
   await evaluate(`async () => {
     const models = [], states = [], sources = [], pending = [];
@@ -255,6 +364,7 @@ try {
       return 'PASS pagehide, replacement-stream ownership, pushed-model race, and constructor-failure fallback';
     } finally { live.stop(); }
   }`);
+  stage('chat-cards-and-source-resolution');
   // Transcript cards load and stream without a snapshot write or an AI call.
   for (const scheme of ['light', 'dark']) {
     await browser('emulate', '--color-scheme', scheme);
@@ -303,6 +413,7 @@ try {
   await until(`!document.querySelector('[data-call-type="chat"]')`);
   await rm(path.join(home, 'answer-note.txt'));
   await until("document.querySelectorAll('[data-call-key]').length===3");
+  stage('durable-reason-and-options');
   const holdReason = "Ship the ledger change only after the captain picks a window.";
   extraBacklog = `- [ ] hold-reason - Choose a window (repo: quarterdeck) (hold: fm-hold-v1:${Buffer.from(holdReason).toString("base64")}) (hold-kind: captain)\n`;
   raw.decisions_open.push({ id: "hold-reason", key: "hold-reason", summary: "Choose", owner: "(main)", verb: "captain-hold" });
@@ -320,6 +431,7 @@ try {
   await until(`!!document.querySelector('[data-call-type="chat"]')`);
   await evaluate(`() => { const c=document.querySelector('[data-call-type="chat"]'); c.querySelector('[data-call-dismiss]').click(); c.querySelector('[data-call-dismiss-send]').click(); return 'dismissed reason ask'; }`);
   await until(`document.querySelectorAll('[data-call-key]').length===3 && !document.querySelector('[data-call-type="chat"]')`);
+  stage('rich-cards-and-work-layout');
   if (process.env.FM_BROWSER_FORCED_COLORS === '1') await evaluate(`() => { if(!matchMedia('(forced-colors: active)').matches)throw Error('forced colors not active'); return 'native Chromium forced colors active'; }`);
   for (const width of [1280,360,390]) {
     await browser('resize', String(width), '844');
@@ -329,7 +441,7 @@ try {
       await evaluate(`() => { const active=document.querySelector('#call-lifecycle-filter [data-call-lifecycle="active"]'); const badges=[...document.querySelectorAll('[data-call-lifecycle-badge]')]; if(active.getAttribute('aria-pressed')!=='true'||!active.textContent.startsWith('Active')||!badges.length||badges.some(badge=>badge.getAttribute('aria-label')!=='Active'||badge.textContent!=='')||document.querySelector('#call-answered-toggle')||document.querySelector('#call-procrastinated-toggle'))throw Error('active lifecycle filter'); if(active.getBoundingClientRect().height<44||document.documentElement.scrollWidth>innerWidth)throw Error('lifecycle toggle geometry'); return 'active filter'; }`);
       await browser('screenshot', path.join(proof, `captain-lifecycle-active-${width}.png`));
     }
-    await evaluate(`() => { const columns=document.querySelector('#overview-columns'); const primary=document.querySelector('#overview-primary'); const secondary=document.querySelector('#overview-secondary'); const summary=document.querySelector('#summary'); const landed=document.querySelector('#just-landed'); if(!columns||!primary||!secondary||!landed||!secondary.contains(landed)||!primary.contains(document.querySelector('#captain-call')))throw Error('overview columns'); if(landed.querySelector('[data-call-procrastinate], [data-call-key]'))throw Error('landed is not a call card'); const cards=[...landed.querySelectorAll('[data-landed-key]')]; if(cards.length!==2)throw Error('landed count '+cards.length); const ship=landed.querySelector('[data-landed-key="landed:ship-window"]'); const local=landed.querySelector('[data-landed-key="landed:local-notes"]'); const link=ship.querySelector('a.call-link'); if(!link||link.textContent!=='https://example.invalid/acme/example-app/pull/42'||link.href!==link.textContent)throw Error('pull request link'); if(!local.textContent.includes('local main')||local.querySelector('a'))throw Error('local main'); if(!ship.textContent.includes('example-app')||!local.textContent.includes('sample-notes')||!ship.textContent.includes('2026-10-01')||!ship.textContent.includes('time unknown'))throw Error('repo or when'); const shipTitle=ship.querySelector('h3'); if(!shipTitle||shipTitle.textContent!=='Ship the example-app release window'||ship.querySelector('[data-call-text-toggle]'))throw Error('ship title was not continued'); const localToggle=local.querySelector('[data-call-text-toggle]'); const localPanel=local.querySelector('[data-call-full]'); if(!localToggle||localToggle.textContent!=='Notes from the other ledger…'||!localPanel)throw Error('local title is not a toggle'); if(localPanel.hidden)localToggle.click(); if(localPanel.hidden||!localPanel.textContent.includes('Backlog title')||!localPanel.textContent.includes('Land the sample notes on local main'))throw Error('local full text'); localToggle.click(); if(!localPanel.hidden)throw Error('local full text stayed open'); const tabs=document.querySelector('#overview-section-tabs'); const callsTab=document.querySelector('#overview-tab-calls'); const landedTab=document.querySelector('#overview-tab-landed'); if(!tabs||!callsTab||!landedTab)throw Error('overview tabs missing'); if(callsTab.textContent!=="Captain's Call (3)"||landedTab.textContent!=='Just landed (2)')throw Error('tab counts '+callsTab.textContent+' / '+landedTab.textContent); const freshCount=document.querySelector('#landed-new-count'); if(!freshCount||freshCount.hidden||freshCount.textContent!=='2'||!freshCount.classList.contains('call-badge')||freshCount.parentElement?.id!=='just-landed-heading')throw Error('new landed count '+(freshCount&&freshCount.textContent)+' hidden='+(freshCount&&freshCount.hidden)); const p=primary.getBoundingClientRect(); const s=secondary.getBoundingClientRect(); if(innerWidth<=720){ if(getComputedStyle(tabs).display==='none'||tabs.getAttribute('role')!=='tablist'||callsTab.getAttribute('role')!=='tab'||callsTab.getAttribute('aria-selected')!=='true')throw Error('phone tab semantics'); if(primary.hidden||!secondary.hidden)throw Error('phone did not show Captain Call'); if(callsTab.getBoundingClientRect().height<44||landedTab.getBoundingClientRect().height<44)throw Error('tab target'); landedTab.click(); if(landedTab.getAttribute('aria-selected')!=='true'||!primary.hidden||secondary.hidden)throw Error('phone did not switch to Just landed'); const shown=secondary.getBoundingClientRect(); if(shown.width<40||shown.left<0||shown.right>innerWidth+1)throw Error('landed tab overflow'); callsTab.click(); if(primary.hidden||!secondary.hidden||callsTab.getAttribute('aria-selected')!=='true')throw Error('phone did not return to Captain Call'); } else { if(getComputedStyle(tabs).display!=='none')throw Error('desktop tabs visible'); if(primary.hidden||secondary.hidden||primary.getAttribute('role')==='tabpanel')throw Error('desktop hid a column'); if(s.width<40||Math.abs(p.width-s.width)>2||s.left<p.right-1)throw Error('secondary is not beside the first column'); if(getComputedStyle(columns).columnGap!=='22px')throw Error('column gap'); if(summary.getBoundingClientRect().bottom>p.top+1)throw Error('summary is not above the columns'); } return {overviewColumns:true,width:innerWidth}; }`);
+    await evaluate(`() => { const columns=document.querySelector('#overview-columns'); const primary=document.querySelector('#overview-primary'); const secondary=document.querySelector('#overview-secondary'); const summary=document.querySelector('#summary'); const landed=document.querySelector('#just-landed'); if(!columns||!primary||!secondary||!landed||!secondary.contains(landed)||!primary.contains(document.querySelector('#captain-call')))throw Error('overview columns'); if(landed.querySelector('[data-call-procrastinate], [data-call-key]'))throw Error('landed is not a call card'); const cards=[...landed.querySelectorAll('[data-landed-key]')]; if(cards.length!==2)throw Error('landed count '+cards.length); const ship=landed.querySelector('[data-landed-key="landed:ship-window"]'); const local=landed.querySelector('[data-landed-key="landed:local-notes"]'); const link=ship.querySelector('a.call-link'); if(!link||link.textContent!=='https://example.invalid/acme/example-app/pull/42'||link.href!==link.textContent)throw Error('pull request link'); if(!local.textContent.includes('local main')||local.querySelector('a'))throw Error('local main'); if(!ship.textContent.includes('example-app')||!local.textContent.includes('sample-notes')||!ship.textContent.includes('2026-10-01')||!ship.textContent.includes('time unknown'))throw Error('repo or when'); const shipTitle=ship.querySelector('h3'); if(!shipTitle||shipTitle.textContent!=='Ship the example-app release window'||ship.querySelector('[data-call-text-toggle]'))throw Error('ship title was not continued'); const localToggle=local.querySelector('[data-call-text-toggle]'); const localPanel=local.querySelector('[data-call-full]'); if(!localToggle||localToggle.textContent!=='Notes from the other ledger…'||!localPanel)throw Error('local title is not a toggle'); if(localPanel.hidden)localToggle.click(); if(localPanel.hidden||!localPanel.textContent.includes('Backlog title')||!localPanel.textContent.includes('Land the sample notes on local main'))throw Error('local full text'); localToggle.click(); if(!localPanel.hidden)throw Error('local full text stayed open'); const shipTitle=ship.querySelector('h3'); if(!shipTitle||shipTitle.textContent!=='Ship the example-app release window'||ship.querySelector('[data-call-text-toggle]'))throw Error('ship title was not continued'); const localToggle=local.querySelector('[data-call-text-toggle]'); const localPanel=local.querySelector('[data-call-full]'); if(!localToggle||localToggle.textContent!=='Notes from the other ledger…'||!localPanel)throw Error('local title is not a toggle'); if(localPanel.hidden)localToggle.click(); if(localPanel.hidden||!localPanel.textContent.includes('Backlog title')||!localPanel.textContent.includes('Land the sample notes on local main'))throw Error('local full text'); localToggle.click(); if(!localPanel.hidden)throw Error('local full text stayed open'); const tabs=document.querySelector('#overview-section-tabs'); const callsTab=document.querySelector('#overview-tab-calls'); const landedTab=document.querySelector('#overview-tab-landed'); if(!tabs||!callsTab||!landedTab)throw Error('overview tabs missing'); if(callsTab.textContent!=="Captain's Call (3)"||landedTab.textContent!=='Just landed (2)')throw Error('tab counts '+callsTab.textContent+' / '+landedTab.textContent); const freshCount=document.querySelector('#landed-new-count'); if(!freshCount||freshCount.hidden||freshCount.textContent!=='2'||!freshCount.classList.contains('call-badge')||freshCount.parentElement?.id!=='just-landed-heading')throw Error('new landed count '+(freshCount&&freshCount.textContent)+' hidden='+(freshCount&&freshCount.hidden)); const p=primary.getBoundingClientRect(); const s=secondary.getBoundingClientRect(); if(innerWidth<=720){ if(getComputedStyle(tabs).display==='none'||tabs.getAttribute('role')!=='tablist'||callsTab.getAttribute('role')!=='tab'||callsTab.getAttribute('aria-selected')!=='true')throw Error('phone tab semantics'); if(primary.hidden||!secondary.hidden)throw Error('phone did not show Captain Call'); if(callsTab.getBoundingClientRect().height<44||landedTab.getBoundingClientRect().height<44)throw Error('tab target'); landedTab.click(); if(landedTab.getAttribute('aria-selected')!=='true'||!primary.hidden||secondary.hidden)throw Error('phone did not switch to Just landed'); const shown=secondary.getBoundingClientRect(); if(shown.width<40||shown.left<0||shown.right>innerWidth+1)throw Error('landed tab overflow'); callsTab.click(); if(primary.hidden||!secondary.hidden||callsTab.getAttribute('aria-selected')!=='true')throw Error('phone did not return to Captain Call'); } else { if(getComputedStyle(tabs).display!=='none')throw Error('desktop tabs visible'); if(primary.hidden||secondary.hidden||primary.getAttribute('role')==='tabpanel')throw Error('desktop hid a column'); if(s.width<40||Math.abs(p.width-s.width)>2||s.left<p.right-1)throw Error('secondary is not beside the first column'); if(getComputedStyle(columns).columnGap!=='22px')throw Error('column gap'); if(summary.getBoundingClientRect().bottom>p.top+1)throw Error('summary is not above the columns'); } return {overviewColumns:true,width:innerWidth}; }`);
     await evaluate(`() => { const columns=document.querySelector('#overview-columns'); const section=document.querySelector('#secondmates-section'); const mate=section?.querySelector('.secondmate-card'); if(!mate||!mate.innerText.includes('navigator')||!mate.innerText.includes('2 open · 1 captain calls'))throw Error('second mate evidence'); if(columns.contains(section))throw Error('second mates belong outside the tab panels'); const check=()=>{ const box=section.getBoundingClientRect(); if(!mate.getClientRects().length||mate.scrollWidth>mate.clientWidth+1||box.top<columns.getBoundingClientRect().bottom-1)throw Error('second mate hidden, overflowing or above columns'); }; check(); if(innerWidth<=720){ document.querySelector('#overview-tab-landed').click(); check(); document.querySelector('#overview-tab-calls').click(); check(); } return {secondmatesVisible:true,width:innerWidth}; }`);
     await evaluate(`() => {
       const underway=document.querySelector('#underway'), charted=document.querySelector('#charted-next');
@@ -359,12 +471,51 @@ try {
       await evaluate(`() => { if(innerWidth<=720)document.querySelector('#overview-tab-landed').click(); document.querySelector('#just-landed').scrollIntoView({block:'start'}); return 'just landed ${width}'; }`);
       await browser('screenshot', path.join(proof, `just-landed-${width}.png`));
       if (width === 390) {
-        await evaluate(`() => { const tabs=document.querySelector('#overview-section-tabs'); const headerBottom=document.querySelector('.product-identity')?.getBoundingClientRect().bottom||48; tabs.scrollIntoView({block:'start'}); for(let n=0;n<4;n++){ const box=tabs.getBoundingClientRect(); const overlap=headerBottom+8-box.top; if(overlap<=1)break; let node=tabs.parentElement, moved=false; while(node){ if(node.scrollTop>0){ node.scrollTop-=overlap; moved=true; break; } node=node.parentElement; } if(!moved)break; } const box=tabs.getBoundingClientRect(); if(box.top<headerBottom+2||box.height<44||box.bottom>innerHeight-64)throw Error('tabs not in view top='+Math.round(box.top)+' header='+Math.round(headerBottom)+' height='+Math.round(box.height)); const callsTab=document.querySelector('#overview-tab-calls'); const landedTab=document.querySelector('#overview-tab-landed'); if(callsTab.textContent!=="Captain's Call (3)"||landedTab.textContent!=='Just landed (2)'||landedTab.getAttribute('aria-selected')!=='true')throw Error('tab shot'); return 'tabs in view'; }`);
+        await evaluate(`() => { const tabs=document.querySelector('#overview-section-tabs'); const box=tabs.getBoundingClientRect(); const dock=document.querySelector('.mobile-dock').getBoundingClientRect(); const view=document.querySelector('#overview-view'); if(getComputedStyle(tabs).position!=='fixed'||box.height<44||box.top<innerHeight*0.5||box.bottom>dock.top+1||Math.abs(box.bottom-dock.top)>4)throw Error('tabs not pinned bottom='+Math.round(box.bottom)+' dock='+Math.round(dock.top)+' height='+Math.round(box.height)); view.scrollTop=view.scrollHeight; const content=document.querySelector('#overview-columns').getBoundingClientRect(); if(content.bottom>box.top+1)throw Error('landed content under tab bar'); const callsTab=document.querySelector('#overview-tab-calls'); const landedTab=document.querySelector('#overview-tab-landed'); if(callsTab.textContent!=="Captain's Call (3)"||landedTab.textContent!=='Just landed (2)'||landedTab.getAttribute('aria-selected')!=='true'||tabs.getAttribute('role')!=='tablist')throw Error('tab shot'); return 'tabs pinned'; }`);
         await browser('screenshot', path.join(proof, 'overview-tabs-390.png'));
         await evaluate(`() => { document.querySelector('#overview-tab-calls').click(); return 'calls restored'; }`);
       }
     }
   }
+  await browser('resize', '900', '1000');
+  await evaluate(`() => {
+    document.querySelector('#overview-view').scrollTop = 0;
+    const columns = document.querySelector('#overview-columns');
+    const primary = document.querySelector('#overview-primary');
+    const secondary = document.querySelector('#overview-secondary');
+    const tabs = document.querySelector('#overview-section-tabs');
+    const callsTab = document.querySelector('#overview-tab-calls');
+    const landedTab = document.querySelector('#overview-tab-landed');
+    const stage = document.querySelector('.main-stage').getBoundingClientRect();
+    if (document.documentElement.scrollWidth > innerWidth + 1) throw Error('tablet page overflow');
+    if (innerWidth < 721 || innerWidth > 1099) throw Error('expected a tablet width');
+    if (getComputedStyle(tabs).display === 'none' || tabs.getAttribute('role') !== 'tablist' || getComputedStyle(tabs).position === 'fixed') throw Error('tablet tabs missing');
+    const tracks = getComputedStyle(columns).gridTemplateColumns.trim().split(/\\s+/);
+    if (tracks.length !== 1) throw Error('tablet columns ' + tracks.join(' '));
+    if (primary.hidden || !secondary.hidden) throw Error('tablet did not show one section');
+    if (primary.getBoundingClientRect().width < stage.width * 0.7) throw Error('primary is not the stage');
+    const kpis = [...document.querySelectorAll('#summary .metric-card')];
+    const kpiBoxes = kpis.map((node) => node.getBoundingClientRect());
+    if (kpis.length !== 3 || Math.abs(kpiBoxes[0].top - kpiBoxes[2].top) > 2 || kpis.some((node) => getComputedStyle(node).display !== 'block' || node.scrollWidth > node.clientWidth + 1 || node.getBoundingClientRect().right > innerWidth + 1)) throw Error('tablet kpi row');
+    const status = [...document.querySelectorAll('#call-lifecycle-filter button')];
+    if (status.some((button) => { const box = button.getBoundingClientRect(); return box.height < 44 || button.scrollWidth > button.clientWidth + 1 || box.right > innerWidth + 1 || box.left < 0; })) throw Error('tablet status bar');
+    landedTab.click();
+    if (landedTab.getAttribute('aria-selected') !== 'true' || !primary.hidden || secondary.hidden) throw Error('tablet did not switch to Just landed');
+    const shown = secondary.getBoundingClientRect();
+    if (shown.width < stage.width * 0.7 || shown.right > innerWidth + 1 || [...document.querySelectorAll('[data-landed-key]')].some((card) => card.scrollWidth > card.clientWidth + 1)) throw Error('tablet landed column');
+    callsTab.click();
+    if (primary.hidden || !secondary.hidden) throw Error('tablet did not return to Captain Call');
+    const footer = document.querySelector('#desktop-review-footer');
+    const message = footer.querySelector('#review-message');
+    const actions = [...footer.querySelectorAll('.review-actions button')];
+    const footerBox = footer.getBoundingClientRect();
+    const review = footer.querySelector('#review-panel-toggle').getBoundingClientRect();
+    if (footerBox.right > innerWidth + 1 || message.getBoundingClientRect().width < 200 || actions.some((button) => button.getBoundingClientRect().right > innerWidth + 1 || button.getBoundingClientRect().height < 44)) throw Error('tablet control bar');
+    if (review.top < footerBox.top - 1 || review.bottom > footerBox.bottom + 1 || review.right > innerWidth + 1 || review.height < 44) throw Error('tablet review toggle');
+    return { tablet: innerWidth, column: Math.round(primary.getBoundingClientRect().width) };
+  }`);
+  await browser('screenshot', path.join(proof, 'overview-tablet-900.png'));
+  stage('procrastination-reload-and-sort');
   const attemptsBefore = await readFile(path.join(home, 'answer-attempts'), 'utf8').catch(() => '');
   const backlogBefore = await readFile(path.join(home, 'data/backlog.md'), 'utf8');
   for (const width of [1280, 390]) {
@@ -424,6 +575,7 @@ try {
   await until(`document.querySelector('[data-call-key]').dataset.callKey==='decision:alpha-call' && document.querySelector('[data-call-key="decision:alpha-call"] [data-call-clock]').textContent!=='waiting for tick'`);
   await browser('screenshot', path.join(proof, 'captain-call-clocks-sort-390.png'));
   await browser('resize', '1280', '844');
+  stage('thread-send-read-reply-and-links');
   // One box: text with no option is a card thread note. Queue does not send; Send does.
   const beside = `const beside=(card)=>{ const hint=card.querySelector('[data-call-box-hint]'); if(!hint||hint.textContent!=='Pick an option to answer, or just type - Firstmate replies in the thread.')throw Error('hint: '+(hint&&hint.textContent)); if(card.querySelector('[data-call-thread-toggle]')||card.querySelector('[data-call-thread-text]'))throw Error('old thread composer'); for(const bar of card.querySelectorAll('.call-answer-bar')){ if(!bar.getClientRects().length)continue; const box=bar.parentElement.querySelector('textarea'); if(!box)throw Error('note missing'); const note=box.getBoundingClientRect(); const barBox=bar.getBoundingClientRect(); const overlap=Math.min(barBox.bottom,note.bottom)-Math.max(barBox.top,note.top); if(overlap<20)throw Error('action not beside the note: '+overlap); if(barBox.left<note.right-1)throw Error('action not to the right of the note'); if(note.width<80)throw Error('note collapsed'); if(note.height>96)throw Error('note is not a single line'); const hintBox=hint.getBoundingClientRect(); if(hintBox.top<note.bottom-1)throw Error('hint is not under the note'); const shown=[...bar.querySelectorAll('button')].filter(b=>!b.hidden&&b.getClientRects().length); if(!shown.length)throw Error('action missing'); for(const button of shown){ const r=button.getBoundingClientRect(); if(r.height<44)throw Error('short action'); if(r.width>card.clientWidth*0.55)throw Error('action is a slab'); } } };`;
   for (const width of [1280, 390]) {
@@ -476,6 +628,7 @@ try {
   await browser('screenshot', path.join(proof, 'captain-thread-replied-390.png'));
   await captureStaticReplyLinks({ browser, evaluate, base: `http://127.0.0.1:${server.address().port}`, head, proof });
   await browser('resize', '1280', '844');
+  stage('mixed-call-queue');
   // Shared queue: alpha text is a thread note, and the merge option is an answer.
   const queueWakeCount = (await readFile(path.join(home, 'wake-attempts'), 'utf8')).trim().split('\n').length;
   const queueAttempts = (await readFile(path.join(home, 'answer-attempts'), 'utf8')).trim().split('\n').length;
@@ -623,6 +776,7 @@ try {
   assert.deepEqual([queuedThread.key, queuedThread.question], ['decision:alpha-call', 'Queue rollout Tuesday']);
   assert.doesNotMatch(queuedThreadNote, /fm-bearings-answer/, 'a queued thread note is not an answer');
   await evaluate(`() => { if(window.reviewPosts)throw Error('answer batch used review delivery'); document.querySelector('#review-close').click(); const merge=document.querySelector('[data-call-key="merge:beta-merge"]'); merge.querySelector('[data-call-answer-again]').click(); const alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); if(alpha.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='compose')throw Error('thread send left alpha queued'); if(merge.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='compose')throw Error('Answer again did not return merge'); document.activeElement?.blur(); document.body.click(); return 'queue uses both paths'; }`);
+  stage('header-queue-send');
   // Active header sends the same queued card answers as Send, including at 360 and 390.
   const headerAnswersBefore = (await readFile(path.join(home, 'answer-attempts'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length;
   const headerThreadsBefore = (await readFile(path.join(home, 'thread-attempts'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length;
@@ -685,6 +839,7 @@ try {
   const headerThreadLines = (await readFile(path.join(home, 'thread-attempts'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
   assert.equal(headerAnswerLines.length - headerAnswersBefore, 1, 'header send delivers the queued answer once');
   assert.equal(headerThreadLines.length - headerThreadsBefore, 1, 'header send delivers the queued thread note once');
+  stage('landed-and-review-history');
   await browser('resize', '1280', '844');
   await evaluate(`() => { const card=document.querySelector('[data-landed-key="landed:ship-window"]'); card.scrollIntoView({block:'center'}); const box=card.querySelector('[data-landed-text]'); box.value='Follow up on the release window'; box.dispatchEvent(new Event('input',{bubbles:true})); card.querySelector('[data-landed-queue]').click(); if(card.querySelector('[data-landed-confirm]').hidden)throw Error('landed follow-up did not queue'); card.querySelector('[data-landed-send]').click(); return 'landed follow-up sent'; }`);
   await until(`document.querySelector('[data-landed-key="landed:ship-window"] [data-landed-notice]')?.textContent.includes('Question sent to Firstmate')`);
@@ -805,8 +960,9 @@ try {
     document.body.click();
     return 'restored compose after header send';
   }`);
+  stage('structured-answer-controls');
   // Phase 2: synthetic source options, merge, changed confirmation, failed retry and receipts.
-  const phase = (key, value) => until(`document.querySelector('[data-call-key="${key}"] [data-call-answer]').dataset.callAnswerPhase==='${value}'`);
+  const phase = (key, value) => until(`document.querySelector('[data-call-key="${key}"] [data-call-answer]').dataset.callAnswerPhase==='${value}'`, `answer-phase-${value}`);
   const answer = async (key, text, selection = '') => evaluate(`() => { const card=document.querySelector('[data-call-key="${key}"]'); const field=card.querySelector('[data-call-answer-text]'); field.focus(); field.value=${JSON.stringify(text)}; field.dispatchEvent(new Event('input',{bubbles:true})); ${selection ? `const radio=card.querySelector('input[value="${selection}"]'); radio.checked=true; radio.dispatchEvent(new Event('change',{bubbles:true}));` : ''} return 'draft'; }`);
   const action = (key, name) => evaluate(`() => { document.querySelector('[data-call-key="${key}"] [data-call-answer-${name}]').click(); return '${name}'; }`);
   const review = (key) => evaluate(`() => { document.querySelector('[data-call-key="${key}"] .call-answer-queue').click(); return 'review'; }`);
@@ -853,6 +1009,35 @@ try {
     await browser('screenshot', path.join(proof, `captain-lifecycle-all-${width}.png`));
   }
   await phoneShot('decision:alpha-call','sent');
+  stage('generated-hold-cosmetic-reload-and-new-cycle');
+  // Real generated hold identity survives a cosmetic repo change and reload, not a new hold.
+  const heldVersion = structured.holdVersion;
+  assert.match(heldVersion, /^[0-9a-f]{16}$/);
+  await disengage();
+  // The canonical work companion replaces in_flight; this decision's repo comes from the selected ledger.
+  alphaRepo = 'example-app-display';
+  await change();
+  await until(`document.querySelector('[data-call-key="decision:alpha-call"] .call-repo').textContent.includes('example-app-display')`);
+  await phase('decision:alpha-call', 'sent');
+  await evaluate(`() => { document.documentElement.dataset.reloadProof='waiting'; location.reload(); return 'reload generated sent cycle'; }`);
+  await settleReload(); await phase('decision:alpha-call', 'sent');
+  await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); if(!card.querySelector('[data-call-answer-text]').readOnly||card.querySelector('[data-call-answer-text]').value!=='After the synthetic demo')throw Error('cosmetic reload lost sent echo'); return 'generated sent echo retained'; }`);
+  const cycleAttempts = (await attempts()).length;
+  const cycleSentId = (await attempts()).at(-1);
+  raw.decisions_open[0].hold_set_at = new Date().toISOString();
+  await change();
+  await until(`(() => { const c=document.querySelector('[data-call-key="decision:alpha-call"]'); return c.dataset.callLifecycle==='active' && c.querySelector('[data-call-answer]').dataset.callAnswerPhase==='compose' && !c.querySelector('[data-call-answer-text]').readOnly && !c.querySelector('[data-call-answer-text]').value && !c.querySelector('input:checked') && c.querySelector('[data-call-answer-summary]').hidden && c.querySelector('[data-fm-reply]').hidden; })()`);
+  assert.equal((await attempts()).length, cycleAttempts, 'new same-key hold never replays an answer');
+  await evaluate(`() => { document.documentElement.dataset.reloadProof='waiting'; location.reload(); return 'reload re-held cycle'; }`);
+  await settleReload(); await phase('decision:alpha-call', 'compose');
+  await evaluate(`() => { const c=document.querySelector('[data-call-key="decision:alpha-call"]'); if(c.dataset.callLifecycle!=='active'||c.querySelector('[data-call-answer-text]').readOnly||c.querySelector('[data-call-answer-text]').value||c.querySelector('input:checked'))throw Error('reload resurrected old cycle'); return 'generated re-hold active on reload'; }`);
+  await answer('decision:alpha-call','After the synthetic demo','staged');
+  await review('decision:alpha-call'); await action('decision:alpha-call','send');
+  await phase('decision:alpha-call','sent');
+  const reheldAnswer = await envelopeNow();
+  assert.notEqual(reheldAnswer.holdVersion, heldVersion);
+  assert.notEqual((await attempts()).at(-1), cycleSentId, 'new reviewed answer has its own durable intake identity');
+  stage('current-cycle-receipt-and-reply');
   await writeFile(path.join(home,'receipt-state'),'received');
   await until(`document.querySelector('[data-call-key="decision:alpha-call"] [data-call-answer-receipt-text]').textContent.includes('received by Firstmate')`);
   await phoneShot('decision:alpha-call','received');
@@ -860,6 +1045,7 @@ try {
   await until(`(() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); const banner=card.querySelector('[data-fm-reply]'); const box=card.querySelector('[data-call-answer-text]'); return card.dataset.callLifecycle==='active' && card.querySelector('[data-call-answer]').dataset.callAnswerPhase==='compose' && !box.readOnly && !box.disabled && banner && !banner.hidden && banner.textContent.includes('Firstmate replied: Synthetic answer recorded'); })()`);
   await phoneShot('decision:alpha-call','replied');
   await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); if(card.dataset.callLifecycle!=='active'||card.querySelector('[data-call-answer]').dataset.callAnswerPhase!=='compose'||card.querySelector('[data-call-answer-text]').value||card.querySelector('input:checked')||card.querySelector('[data-call-answer-text]').readOnly)throw Error('old answer must not be an unsent draft'); return 'empty correction'; }`);
+  stage('changed-confirmation-and-retry');
   await answer('decision:alpha-call','A revised synthetic answer','now');
   await review('decision:alpha-call');
   raw.decisions_open[0].summary += ' A changed source condition.';
@@ -896,6 +1082,7 @@ try {
   assert.equal((await envelopeNow()).selection,'');
   assert.equal((await envelopeNow()).note,'merge - Only after the synthetic migration');
   await rm(path.join(home,'delay-answer'));
+  stage('keyboard-and-preference-controls');
   // Full text stays readable from the keyboard. The header pill is the first stop; the next Tab reaches the complete link, and the ask is not clipped.
   await browser('resize','1280','844');
   await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); card.tabIndex=-1; card.focus(); return 'keyboard start'; }`);
@@ -908,6 +1095,7 @@ try {
   await browser('emulate','--color-scheme','dark');
   await phoneShot('decision:alpha-call','dark-preference');
   await browser('emulate','--color-scheme','light');
+  stage('current-cycle-sent-and-keyed-update');
   // The refused answer remains an unsent draft. Abandon only that synthetic
   // text before the separate empty/unengaged immediate-update scenario.
   await evaluate(`() => {
@@ -924,7 +1112,29 @@ try {
   await evaluate(`() => { window.proof={}; proof.alpha=document.querySelector('[data-call-key="decision:alpha-call"]'); proof.beta=document.querySelector('[data-call-key="merge:beta-merge"]'); proof.alphaField=proof.alpha.querySelector('[data-call-answer-text]'); proof.betaField=proof.beta.querySelector('[data-call-answer-text]'); proof.rebuilds=0; new MutationObserver(ms=>proof.rebuilds+=ms.filter(m=>m.target===proof.alpha&&m.type==='childList'&&m.removedNodes.length>1).length).observe(proof.alpha,{childList:true}); return {revision:window.FM_BOOT_REVISION, noTree:!document.querySelector('#projects')}; }`);
   raw.decisions_open[0].summary = 'Changed rollout question'; await change();
   await until("proof.alpha.innerText.includes('Changed rollout question')");
+  // Isolate the engaged-card scenario from the earlier re-hold: only a real
+  // current-cycle thread send may establish Sent, never its prior pending notes.
+  const engagedCycle = server.bearings.current().cards.find(card => card.key === 'decision:alpha-call');
+  const currentQuestion = 'Clarify the current rollout question before proceeding';
+  const threadsBeforeIsolation = (await readFile(path.join(home, 'thread-attempts'), 'utf8')).trim().split('\n').filter(Boolean);
+  await evaluate(`() => { const card=document.querySelector('[data-call-key="decision:alpha-call"]'); for(const radio of card.querySelectorAll('input[type=radio]')){radio.checked=false;radio.dispatchEvent(new Event('change',{bubbles:true}));} return 'current-cycle thread, no answer selected'; }`);
+  await answer('decision:alpha-call', currentQuestion);
+  await review('decision:alpha-call'); await action('decision:alpha-call', 'send');
+  await phase('decision:alpha-call', 'compose');
+  await until(`document.querySelector('[data-call-key="decision:alpha-call"]').dataset.callLifecycle==='sent'`);
+  // Wait for the actual durable receipt projection before staging the next update.
+  await until(`(await fetch('/api/bearings').then(r=>r.json())).cards.some(c=>c.key==='decision:alpha-call' && c.holdVersion===${JSON.stringify(engagedCycle.holdVersion)} && c.sentReceipt==='pending')`);
+  const isolationThreads = (await readFile(path.join(home, 'thread-attempts'), 'utf8')).trim().split('\n').filter(Boolean);
+  assert.equal(isolationThreads.length, threadsBeforeIsolation.length + 1);
+  const isolationId = isolationThreads.at(-1);
+  const isolationBody = await readFile(path.join(home, `thread-${isolationId}.txt`), 'utf8');
+  const isolationEnvelope = JSON.parse(/```json fm-quarterdeck-thread\n([\s\S]*?)\n```/.exec(isolationBody)[1]);
+  assert.deepEqual([isolationEnvelope.key, isolationEnvelope.holdVersion, isolationEnvelope.question], ['decision:alpha-call', engagedCycle.holdVersion, currentQuestion]);
+  assert.ok(Date.parse(await readFile(path.join(home, `thread-${isolationId}.at`), 'utf8')) >= Date.parse(engagedCycle.clock.at));
+  assert.doesNotMatch(isolationBody, /fm-bearings-answer/, 'scenario isolation asks a question; it fabricates no answer');
+  await evaluate(`() => { if(document.querySelector('[data-call-key="decision:alpha-call"]').dataset.callLifecycle!=='sent')throw Error('current-cycle Sent precondition missing'); return 'durable current-cycle Sent before held update'; }`);
   await evaluate(`() => { if(proof.alpha!==document.querySelector('[data-call-key="decision:alpha-call"]')||proof.beta!==document.querySelector('[data-call-key="merge:beta-merge"]')||proof.betaField!==proof.beta.querySelector('[data-call-answer-text]')||proof.alphaField===proof.alpha.querySelector('[data-call-answer-text]')||proof.rebuilds!==1)throw Error('keyed identity/rebuild failure'); proof.alphaField=proof.alpha.querySelector('[data-call-answer-text]'); proof.rebuilds=0; proof.alphaField.focus(); proof.alphaField.value='Unsent synthetic reminder'; proof.alphaField.dispatchEvent(new Event('input',{bubbles:true})); return 'PASS unengaged keyed inner patch; unchanged node identity'; }`);
+  stage('engaged-held-update-and-resolution');
   raw.decisions_open[0].summary = 'Latest question after typing'; raw.decisions_open.push({ id: 'extra-call', key: 'extra-call', summary: 'New synthetic call', owner: '(main)', verb: 'captain-hold' });
   raw.contributions.captain.find(c=>c.task==='beta-merge').reason = 'Unengaged beta updates immediately';
   await change();
@@ -935,7 +1145,7 @@ try {
     await browser('screenshot', path.join(proof, `captain-call-held-${width}.png`));
   }
   await evaluate(`() => { proof.alpha.querySelector('[data-call-update-now]').click(); return 'local Update now'; }`);
-  await until("!proof.alpha.querySelector('[data-call-held]')");
+  await until("!proof.alpha.querySelector('[data-call-held]') && proof.alpha.dataset.callLifecycle==='active'");
   await evaluate(`() => { if(proof.rebuilds!==1||proof.alpha.querySelector('[data-call-answer-text]').value!=='Unsent synthetic reminder')throw Error('Update now must rebuild once and restore draft'); proof.alpha.querySelector('[data-call-answer-text]').focus(); return 'PASS per-card notice, copyable draft, local Update now'; }`);
   raw.decisions_open = raw.decisions_open.filter(c=>c.id!=='alpha-call'); raw.contributions.captain = raw.contributions.captain.filter(c=>c.task!=='alpha-call'); await change();
   await until("!!proof.alpha.querySelector('[data-call-held]')");
@@ -944,6 +1154,7 @@ try {
   await evaluate("() => { proof.alpha.querySelector('[data-call-answer-text]').blur(); document.getSelection().removeAllRanges(); return 'released'; }");
   await until("!!document.querySelector('[data-call-stub]')");
   await evaluate(`() => { const stub=document.querySelector('[data-call-stub]'); if(!stub.querySelector('[data-call-stub-copy]')||!stub.innerText.includes('Unsent synthetic reminder'))throw Error('resolved draft lost'); return 'PASS resolved stub with Copy'; }`);
+  stage('hidden-visible-catch-up');
   // Renew the GET lease explicitly: the longer answer matrix may outlive the boot
   // read's 60-second lease. Hidden tabs have no stream and must not invent a watcher.
   await evaluate(`async () => { await fetch('/api/bearings'); return 'renewed fixture read lease'; }`);
@@ -951,11 +1162,16 @@ try {
   await evaluate(`() => { Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange')); return 'synthetic hidden'; }`);
   raw.decisions_open[0].summary = 'Caught up from hidden'; await change();
   // One last GET lease may still watch; wait on hub evidence, not an unbounded sleep.
+  traceAwait = { label: 'hidden-model-published', started: performance.now() };
+  trace('await-start', { condition: traceAwait.label });
   for (let i=0;i<350&&!server.bearings.current().cards.some(c=>c.summary==='Caught up from hidden');i++) await new Promise(r=>setTimeout(r,100));
   assert.ok(server.bearings.current().cards.some(c=>c.summary==='Caught up from hidden'));
+  trace('await-end', { condition: traceAwait.label, outcome: 'passed', durationMs: Math.round(performance.now() - traceAwait.started) });
+  traceAwait = null;
   await evaluate(`() => { if(document.querySelector('#call-cards').innerText.includes('Caught up from hidden'))throw Error('hidden stream stayed open'); Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); return 'synthetic visible'; }`);
   await until("document.querySelector('#call-cards').innerText.includes('Caught up from hidden')");
   await evaluate(`() => { document.querySelector('#call-lifecycle-filter [data-call-lifecycle="active"]').click(); return 'active list for the default overview'; }`);
+  stage('scroll-anchor-and-phone-kpi');
   for (let i=0;i<12;i++) raw.decisions_open.push({ id:`scroll-${i}`, key:`scroll-${i}`, summary:`Synthetic scroll call ${i}`, owner:'(main)', verb:'captain-hold' });
   // The ask that was linked to alpha-call becomes its own card once that hold leaves.
   await change(); await until("document.querySelectorAll('[data-call-key]').length===16");
@@ -971,6 +1187,7 @@ try {
     await evaluate(`() => { document.querySelector('#overview-view').scrollTop=0; const kpi=(${captureKpiGeometry.toString()})(); if(innerWidth!==${width}||document.querySelector('#call-mobile-badge').hidden||document.querySelector('#call-mobile-badge').textContent!=='15'||document.documentElement.scrollWidth>innerWidth||kpi.cards.length!==3||kpi.cards.some((c,i)=>c.width<=0||Math.abs(c.top-kpi.cards[0].top)>1||c.scrollWidth>c.clientWidth+1))throw Error('phone/KPI geometry '+JSON.stringify({badge:document.querySelector('#call-mobile-badge').textContent,hidden:document.querySelector('#call-mobile-badge').hidden,kpi,states:[...document.querySelectorAll('[data-call-key]')].map(n=>[n.dataset.callKey,n.dataset.callLifecycle])})); return {width:innerWidth,kpi,calls:document.querySelectorAll('[data-call-key]').length}; }`);
     await browser('screenshot', path.join(proof, `captain-call-${width}.png`));
   }
+  stage('source-disappearance-and-route-smoke');
   // Firstmate confirmation is disappearance from bearings, not a receipt reply.
   await disengage();
   raw.contributions.captain = raw.contributions.captain.filter(c => c.task !== 'beta-merge');
@@ -990,17 +1207,21 @@ try {
   await evaluate("() => { if(!document.querySelector('#work-phase-buttons').children.length||document.documentElement.scrollWidth>innerWidth)throw Error('Work Split smoke failed'); location.hash='#expenses'; return 'Work Split intact'; }");
   await until("document.querySelector('#expenses-view').classList.contains('active')");
   await evaluate("() => { if(!document.querySelector('#expense-entries')||document.documentElement.scrollWidth>innerWidth)throw Error('Expenses smoke failed'); return 'PASS Work Split and Expenses route containment'; }");
+  stage('report');
   const report = { head, results, scheduler: server.bearings.stats(), visibility: 'synthetic visibility events; native phone/background acceptance remains pending' };
   await writeFile(path.join(proof,'captain-call-live.json'), JSON.stringify(report,null,2));
+  trace('complete', { passedEvaluations: tracePassed });
   console.log(`PASS Captain Call exact revision ${head}; proof ${proof}`);
   }
 } catch (error) {
+  stage('failure-capture');
   const snapshot = await browser('snapshot').catch(e => String(e));
   const consoleLog = await browser('console').catch(e => String(e));
   await writeFile(path.join(proof, 'captain-call-failure.json'), JSON.stringify({ head, error: String(error), results, snapshot, consoleLog, model: server.bearings.current(), scheduler: server.bearings.stats() }, null, 2));
   throw error;
 } finally {
   clearTimeout(deadline);
+  stage('cleanup');
   await browser('stop').catch(()=>{});
   await cleanupBrowserProfile(chrome, profile);
   await new Promise(resolve=>server.close(resolve));

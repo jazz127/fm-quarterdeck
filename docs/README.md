@@ -20,6 +20,7 @@ Quarterdeck is the Firstmate operational cockpit: conversations are the shell; l
 | [Feature plan](FEATURE-PLAN.md) | Present capabilities, future decisions and acceptance contracts |
 | [Firstmate integrations](FIRSTMATE-INTEGRATIONS.md) | Optional skills/mechanical helpers, deliberate activation and rollback |
 | [Instruction-to-code inventory](INSTRUCTION-TO-CODE.md) | Feature/integration instruction dependencies, safe conversions and remaining judgment/authority gates |
+| [Snapshot skills](SNAPSHOT-SKILLS.md) | Five inactive source-only reports, explicit saved-input contracts and unconditional stow-safety unknown |
 | [Toolcheck](TOOLCHECK.md) | Scoped installed-tool audit |
 | [Private Tailscale launch](tailscale-launch.md) | Optional exact-origin private Serve launch |
 | [Legacy branch inventory](dev-branch-inventory.md) / [parked work](parked-work.md) | Generic migration procedures, not installation inventories |

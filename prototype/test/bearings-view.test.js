@@ -163,7 +163,9 @@ test('linked asks render within the hold and disclose escaped reply alternatives
   const html = view.cardHtml({ type: 'decision', summary: 'Choose', chatAsks: [{ summary: '<one>', replies: ['<yes>', 'no'] }, { summary: 'Second & ask', replies: [] }] });
   assert.match(html, /call-context-row call-context-ask/);
   assert.match(html, /Also asked in chat/);
-  assert.match(html, /&lt;one&gt; · reply “&lt;yes&gt;” or “no”<br>Second &amp; ask · reply No quoted reply/);
+  assert.match(html, /&lt;one&gt; · reply “&lt;yes&gt;” or “no”<\/p>[\s\S]*Second &amp; ask · reply No quoted reply/);
+  assert.equal((html.match(/data-call-source-context/g) || []).length, 2);
+  assert.match(html, /Same-part context was not captured/);
   assert.doesNotMatch(html, /<one>|<yes>|data-call-dismiss/);
   assert.doesNotMatch(view.cardHtml({ type: 'decision', chatAsks: [] }), /Also asked in chat/);
   const reason = 'Ship the ledger change only after the captain picks a window.';
