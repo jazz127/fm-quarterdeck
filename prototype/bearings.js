@@ -86,7 +86,7 @@ export function shortHash(value) {
 }
 // Presentation compatibility: additive cycle metadata does not change the old revision.
 const withRev = (card) => {
-  const { holdVersion, ...presentation } = card;
+  const { holdVersion, holdAt, ...presentation } = card;
   return { ...card, rev: shortHash(presentation) };
 };
 const durableDate = (value) => isoDate(value) || (typeof value === "string" && /^\d{4}-\d\d-\d\d$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value ? value : null);
@@ -94,6 +94,12 @@ export function decisionClock(row) {
   const candidates = [["Updated", row.updated_at], ["Hold set", row.hold_set_at], ["Created", row.created]]
     .map(([label, value]) => ({ label, at: durableDate(value) })).filter((entry) => entry.at);
   return candidates.sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] || { label: "Created / updated", at: null };
+}
+// Receipt freshness uses the hold cycle's own instant. A date-only creation date is
+// local display evidence and can fall on the next UTC day for a host east of UTC.
+function holdCycle(row) {
+  const at = decisionClock({ ...row, created: null }).at;
+  return at && at !== decisionClock(row).at ? { holdAt: at } : {};
 }
 
 // Read only the selected home's ledger, never another owner's endpoint namespace.
@@ -511,7 +517,7 @@ function callSection(raw) {
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), answer: decisionAnswer(row, id),
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task: id, verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner: token(row.owner), repo: repos.get(id) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), ...holdCycle(row), answer: decisionAnswer(row, id),
       boardTitle: row.board_title || null,
       boardAbout: row.board_about || null,
       boardDecide: row.board_decide || null,
