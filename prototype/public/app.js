@@ -1763,13 +1763,14 @@ const freshness = Object.fromEntries(["dashboard", "quota", "lanes", "bearings"]
 }]));
 const freshLabels = { dashboard: "Fleet", quota: "Quota", lanes: "Fleet Chats", bearings: "Captain's Call" };
 let callCount = 0;
+let callSourceModel = null;
 // A missing or stale feed never reads as an empty fleet.
 const bearingsUnknown = (model) => ["loading", "unavailable"].includes(model?.state);
 const bearingsStale = (model) => Boolean(model?.stale) || model?.state === "stale";
 function renderCallBadge(model) {
   // Lifecycle comes from the card as rendered (a held card keeps its answered posture).
   const rendered = new Map((callPatcher?.applied?.cards || []).map((card) => [card.key, card]));
-  const count = (model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
+  const count = (callSourceModel?.cards || model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
     card: rendered.get(card.key) || card,
     answer: callAnswers?.state?.(card.key) || null,
     thread: callThreads?.state?.(card.key) || null,
@@ -1808,7 +1809,7 @@ function observeBearings(data) {
   item.stale = Boolean(data.stale);
   item.error = data.error || null;
   // Freshness-only events relabel the counts for the calls already shown.
-  renderCallBadge(callPatcher?.applied ? { ...callPatcher.applied, ...data } : data);
+  renderCallBadge(data);
   overviewTabs?.paint();
   renderFreshness();
 }
@@ -1889,7 +1890,7 @@ function renderCallLifecycle() {
     if (empty.textContent !== text) empty.textContent = text;
   }
   const feed = freshness.bearings;
-  renderCallBadge(feed.state ? { ...model, state: feed.state, stale: feed.stale } : model);
+  renderCallBadge(feed.state ? feed : model);
   overviewTabs?.paint();
 }
 $("#call-lifecycle-filter")?.addEventListener("click", (event) => {
@@ -1939,8 +1940,8 @@ const overviewTabs = window.overviewTabs?.createController?.({
   media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
-  onModel(model) { callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
+  onModel(model) { callSourceModel = model; callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
+  onObserved(data) { if (data.rev !== callSourceModel?.rev) return; callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
