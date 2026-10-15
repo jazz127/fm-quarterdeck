@@ -13,14 +13,10 @@ These **fm-quarterdeck source-only** skills share the deterministic
 
 ## Source-only boundary
 
-No skill in this table is projected by `firstmate-integration.mjs`. The existing
-five installable skill links remain unchanged. The unchanged installer can retain
-these tracked files as inert source in its manifest-tagged pin; normal pin
-inventory/drift coverage does not activate or project them. These new files
-are not global copies, registered hooks, installed preferences, pins or live
-integration. Future projection needs a separate installer-owned change covering
-tagging, uninstall, inventory and fmqd-toolcheck. Do not manually copy them into
-Firstmate. No stock Firstmate source or persisted namespaces change.
+The [integration owner](FIRSTMATE-INTEGRATIONS.md#inactive-snapshot-only-source-skills)
+defines installer projection, inert pin inventory and future installation
+requirements. Source presence does not activate these skills. No stock Firstmate
+source or persisted namespaces change.
 
 This first delivery is **snapshot-only, report-first**: no network, filesystem
 home reads, owner execution, lifecycle commands, action adapters, callbacks,

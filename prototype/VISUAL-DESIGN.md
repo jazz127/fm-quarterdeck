@@ -18,6 +18,7 @@ Quarterdeck uses a quiet reading workspace: warm white canvas, light content sur
 - Long titles, options, links and ids wrap so the full text stays readable on desktop and on a phone.
 - Thread disclosure follows the [card-thread contract](BEARINGS.md#card-threads).
 - Composer availability and controls follow the [answer contract](BEARINGS.md#answers).
+- Above 720px through 1000px, the desktop review composer stacks the note above wrapping action buttons and lets the footer grow to keep Review chat inside it.
 - Opening a thread shows the latest exchange above that box, the count of earlier messages, and a control that expands the same history.
 - Each card carries a small coloured dot beside the type chip, one colour per state: Active green, Queued amber, Sent blue, Procrastinated muted.
 - Both Sent labels, waiting for Firstmate to read and Firstmate is on it, use the Sent blue dot.
