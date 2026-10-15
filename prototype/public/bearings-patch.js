@@ -15,6 +15,10 @@ window.bearingsPatch = (() => {
   const INTERACTIVE = "a, button, input, textarea, select, label, summary, [contenteditable]";
   const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const keyOf = (node) => node?.getAttribute?.("data-call-key") || null;
+  // A card's update identity: its presentation rev plus its optional hold cycle, which rev
+  // omits. A cycle-only re-hold must still reach the card's controllers.
+  const cardToken = (card) => card.holdVersion ? `${card.rev}:${card.holdVersion}` : card.rev;
+  const nodeToken = (node) => { const rev = node.getAttribute("data-call-rev"), hold = node.getAttribute("data-call-hold"); return hold ? `${rev}:${hold}` : rev; };
 
   // Minimal fallback presentation; bearings-view.js supplies the product rendering.
   const fallbackView = {
@@ -130,7 +134,7 @@ window.bearingsPatch = (() => {
     for (const card of cards || []) {
       seen.add(card.key);
       if (!appliedRevs.has(card.key)) added += 1;
-      else if (appliedRevs.get(card.key) !== card.rev) changed += 1;
+      else if (appliedRevs.get(card.key) !== cardToken(card)) changed += 1;
     }
     const removed = [...appliedRevs.keys()].filter((key) => !seen.has(key)).length;
     return { added, changed, removed, total: added + changed + removed };
@@ -188,7 +192,7 @@ window.bearingsPatch = (() => {
     // Source resolution can precede the POST response. Keep the form until that
     // response is consumed so accepted words are cleared before removing it.
     const sendingKeys = () => new Set([...list.querySelectorAll('[data-call-answer-phase="sending"]')].map(form => keyOf(form.closest("[data-call-key]"))).filter(Boolean));
-    const updateToken = (model, key) => model.cards.find(card => card.key === key)?.rev ?? null;
+    const updateToken = (model, key) => { const card = model.cards.find(entry => entry.key === key); return card ? cardToken(card) : null; };
     function releaseDraftUpdate(model, key) { releasedDraftUpdates.set(key, updateToken(model, key)); }
     const heldKeys = (model = pending || applied) => {
       const keys = new Set([...tracker.keys(), ...releaseTimers.keys(), ...sendingKeys()]);
@@ -209,7 +213,7 @@ window.bearingsPatch = (() => {
       let count = 0;
       for (const node of list.querySelectorAll("[data-call-key]")) {
         const card = next.get(keyOf(node));
-        const change = !card ? "resolved" : card.rev !== node.getAttribute("data-call-rev") ? "updated" : null;
+        const change = !card ? "resolved" : cardToken(card) !== nodeToken(node) ? "updated" : null;
         let notice = node.querySelector("[data-call-held]");
         if (!change || node.classList.contains("call-card-leaving")) {
           notice?.remove(); node.removeAttribute("data-held"); node.removeAttribute("aria-busy"); continue;
@@ -245,6 +249,7 @@ window.bearingsPatch = (() => {
     function fill(node, card) {
       node.innerHTML = render.cardHtml(card);
       node.setAttribute("data-call-rev", card.rev);
+      if (card.holdVersion) node.setAttribute("data-call-hold", card.holdVersion); else node.removeAttribute("data-call-hold");
       node.setAttribute("data-call-type", card.type);
       restoreDrafts(node, card.key);
       // Per-card controllers (answer form, overflow) re-apply their own state to fresh markup.
@@ -352,7 +357,7 @@ window.bearingsPatch = (() => {
             node.classList.remove("call-card-leaving");
             node.removeAttribute("aria-hidden");
           }
-          if (node.getAttribute("data-call-rev") !== card.rev) fill(node, card);
+          if (nodeToken(node) !== cardToken(card)) fill(node, card);
         } else {
           node = createCard(card);
           stubs.get(card.key)?.remove();
@@ -390,7 +395,7 @@ window.bearingsPatch = (() => {
       }
       renderChrome(model);
       appliedRevs.clear();
-      for (const card of cards) appliedRevs.set(card.key, card.rev);
+      for (const card of cards) appliedRevs.set(card.key, cardToken(card));
       appliedRev = model.rev;
       applied = model;
       appliedSort = order;

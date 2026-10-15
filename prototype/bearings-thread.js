@@ -19,6 +19,7 @@ export const THREAD_NOTE_TAG = "fm-quarterdeck-thread";
 export const MAX_THREAD_BODY_BYTES = 4096;
 export const MAX_QUESTION_BYTES = 2000;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const HOLD_VERSION = /^[0-9a-f]{16}$/;
 const CARD_KEY = /^(?:(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}|decision:[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/[A-Za-z0-9][A-Za-z0-9._-]{0,159})$/;
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -63,16 +64,19 @@ export function threadText(value, max = MAX_ENTRY_CHARS) {
   return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned;
 }
 
+// holdVersion is optional: the hold cycle the captain reviewed, when the card had one.
 function parseBody(body) {
-  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "key,requestId,text") refuse(400, "invalid", "Ask must be exactly requestId, key and text");
+  const fields = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).filter((name) => name !== "holdVersion").sort().join(",") : "";
+  if (fields !== "key,requestId,text") refuse(400, "invalid", "Ask must be exactly requestId, key and text, with an optional holdVersion");
   if (typeof body.requestId !== "string" || !REQUEST_ID.test(body.requestId)) refuse(400, "invalid", "Ask request id must be a lowercase UUID");
+  if ("holdVersion" in body && !HOLD_VERSION.test(body.holdVersion)) refuse(400, "invalid", "Ask hold version must be the 16-hex cycle shown");
   if (!validCardKey(body.key)) refuse(400, "invalid", "Ask must name an open card");
   if (typeof body.text !== "string") refuse(400, "invalid", "Ask text must be text");
   const text = body.text.replace(/\r\n?/g, "\n").trim();
   if (!text) refuse(422, "empty", "Write a question first");
   if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text)) refuse(422, "invalid-text", "The question contains control characters");
   if (bytes(text) > MAX_QUESTION_BYTES) refuse(422, "too-long", `The question is longer than ${MAX_QUESTION_BYTES} bytes`);
-  return { requestId: body.requestId, key: body.key, text };
+  return { requestId: body.requestId, key: body.key, text, ...("holdVersion" in body ? { holdVersion: body.holdVersion } : {}) };
 }
 
 // One human line, the reply route, then the tagged fence. Backticks inside JSON strings are
@@ -171,7 +175,8 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
   };
   return {
     // A question may be asked about any open card, answerable or not. A retry of the same
-    // request id resends the identical note (idempotent in Firstmate) even after the card left.
+    // request id resends the identical note (idempotent in Firstmate) even after the card left
+    // or was re-held.
     async submit(body, model, { immediate = false } = {}) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
@@ -181,12 +186,14 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
-        return { digest, key: parsed.key, display: parsed.text, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
+        // A note reviewed on one hold cycle is never stamped with a newer one.
+        if ("holdVersion" in parsed && parsed.holdVersion !== card.holdVersion) refuse(409, "changed", "This call changed while you were reviewing; check it and review your note again");
+        return { digest, key: parsed.key, display: parsed.text, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);
       let receipt;
       try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text, { record, immediate }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
-      return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at };
+      return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at, ...(record.holdVersion ? { holdVersion: record.holdVersion } : {}) };
     },
     // The card's own history, oldest first. Inbox receipts are required; the transcript is
     // best effort and its absence is reported, never hidden.
