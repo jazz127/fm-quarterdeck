@@ -304,7 +304,7 @@ async function validateHistoricalAnswer(claim, { home, sources, ask, now, maxLin
       resolution.parsed.holdActive || !["released", "answered"].includes(owner.mode)) historicalRefused("owner-occurrence");
   const prefix = `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${claim.answer.digest}\n  Resolution mode: ${owner.mode}\n\n  Captain decision:\n`;
   const decision = answerTurn.text.split("\n").map(line => line ? `  ${line}` : "").join("\n");
-  const previous = held.body.replace(/^  Captain hold set: \S+(?:\n\n|$)/, "");
+  const previous = held.body.replace(/^  Captain hold set: \S+(?:\n\n|\n|$)/, "");
   // Native release prepends the new exact answer and preserves the prior body. This
   // checks the recorded occurrence, actual bytes and retained history, not task Done.
   if (resolution.body !== `${prefix}${decision}${previous && `\n\n${previous}`}`) historicalRefused("owner-resolution");

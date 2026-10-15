@@ -43,9 +43,10 @@ async function fixture(t, { configured = true, ledger = null } = {}) {
   await writeFile(heldFile, native.archive);
   await writeFile(resolutionFile, native.backlog);
   const parentKey = `captain-hold-sample-work-${native.occurrence}`;
+  const mode = native.mode ?? 'released';
   const parentFile = path.join(home, 'state', 'sample-fleet.status');
   const raised = `needs-decision [key=${parentKey}] [at=${(T0 + 60000) / 1000}]: captain hold sample-work: Confirm scope.\n`;
-  const resolved = `resolved [key=${parentKey}] [at=${(T0 + 240000) / 1000}]: captain hold sample-work: released\n`;
+  const resolved = `resolved [key=${parentKey}] [at=${(T0 + 240000) / 1000}]: captain hold sample-work: ${mode}\n`;
   await writeFile(parentFile, raised + resolved);
   let selection = null, calls = 0;
   const producer = async () => { calls++; return selection; };
@@ -58,7 +59,7 @@ async function fixture(t, { configured = true, ledger = null } = {}) {
   const claim = {
     request: { source, key: ask.key, rev: chatCard(ask).rev, eventId: request.id, part: 0, ref: await reference(file, 0, Buffer.byteLength(encode(request))) },
     answer: { eventId: answer.id, part: 0, digest: digest(answerText), ref: await reference(file, Buffer.byteLength(encode(request)), Buffer.byteLength(encode(answer))) },
-    owner: { home: owner, task: 'sample-work', fleet: 'sample-fleet', heldAt: at(0), occurrence: native.occurrence, parentKey, mode: 'released', resolvedAt: at(4), held: await reference(heldFile, ...native.held), resolution: await reference(resolutionFile, ...native.resolution), raised: await reference(parentFile, 0, Buffer.byteLength(raised)), resolved: await reference(parentFile, Buffer.byteLength(raised), Buffer.byteLength(resolved)) },
+    owner: { home: owner, task: 'sample-work', fleet: 'sample-fleet', heldAt: at(0), occurrence: native.occurrence, parentKey, mode, resolvedAt: at(4), held: await reference(heldFile, ...native.held), resolution: await reference(resolutionFile, ...native.resolution), raised: await reference(parentFile, 0, Buffer.byteLength(raised)), resolved: await reference(parentFile, Buffer.byteLength(raised), Buffer.byteLength(resolved)) },
   };
   return { home, root, file, records, claim, scanner, store, sourceModel, base, producer, calls: () => calls, select: value => { selection = value; }, snapshots: { source: await readFile(file), held: await readFile(heldFile), resolution: await readFile(resolutionFile), parent: await readFile(parentFile) } };
 }
@@ -107,36 +108,44 @@ test('default-off and null selection preserve ordinary unverified input/receipts
 // and the released item ahead of the next backlog section heading keeps one blank separator.
 const nativeHeader = '- [ ] sample-work - Sample work (kind: ship) (since 2030-01-02)';
 const nativeHeld = (reason, stamp) => `${nativeHeader} (hold: fm-hold-v1:${Buffer.from(reason).toString('base64')}) (hold-kind: captain)\n  Captain hold set: ${stamp}`;
-const nativeResolution = (answerText, decision) => `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${digest(answerText)}\n  Resolution mode: released\n\n  Captain decision:\n${decision}`;
+const nativeResolution = (answerText, decision, mode = 'released') => `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${digest(answerText)}\n  Resolution mode: ${mode}\n\n  Captain decision:\n${decision}`;
 const archived = item => `\n## Archived 2030-01-02\n${item}\n`;
 const queued = item => `## In flight\n\n## Queued\n${item}\n\n## Done\n`;
 const span = (text, item, separator = 0) => [Buffer.byteLength(text.slice(0, text.indexOf(item))), Buffer.byteLength(item) + 1 + separator];
-const nativeLedger = ({ cycle, laterArchive = false, retained = true }) => ({ answerText, decision }) => {
+const nativeLedger = ({ cycle, laterArchive = false, retained = true, origin = false, mode = 'released' }) => ({ answerText, decision }) => {
   const prior = nativeResolution('Previous sample retention.', '  Previous sample retention.');
-  const heldItem = cycle === 1 ? nativeHeld('Confirm the sample scope.', at(0)) : `${nativeHeld('Confirm the sample scope again.', at(0))}\n\n${prior}`;
-  const resolutionItem = `${nativeHeader}\n${nativeResolution(answerText, decision)}${cycle === 2 && retained ? `\n\n${prior}` : ''}`;
+  const previous = [origin ? '  Captain hold origin: sample-origin' : '', cycle === 2 ? prior : ''].filter(Boolean).join('\n\n');
+  const heldItem = nativeHeld(cycle === 1 ? 'Confirm the sample scope.' : 'Confirm the sample scope again.', at(0)) +
+    (previous ? `${origin ? '\n' : '\n\n'}${previous}` : '');
+  const resolutionItem = `${nativeHeader}\n${nativeResolution(answerText, decision, mode)}${previous && retained ? `\n\n${previous}` : ''}`;
   const archive = (cycle === 2 ? archived(nativeHeld('Confirm the sample scope.', at(-60))) : '') + archived(heldItem) +
     (laterArchive ? archived('- [ ] sample-other - Sample other (kind: ship) (since 2030-01-02)\n  Later sample context.') : '');
   const backlog = queued(resolutionItem);
-  return { archive, held: span(archive, heldItem, laterArchive ? 1 : 0), backlog, resolution: span(backlog, resolutionItem, 1), occurrence: cycle };
+  return { archive, held: span(archive, heldItem, laterArchive ? 1 : 0), backlog, resolution: span(backlog, resolutionItem, 1), occurrence: cycle, mode };
 };
 
 for (const [name, options] of [
   ['first cycle with no previous body', { cycle: 1 }],
   ['first cycle archived ahead of a later archive block', { cycle: 1, laterArchive: true }],
   ['second cycle retaining the earlier resolution', { cycle: 2 }],
+  ...['released', 'answered'].flatMap(mode => [
+    [`first origin-tagged cycle (${mode})`, { cycle: 1, origin: true, mode }],
+    [`second origin-tagged cycle retaining context before a later archive block (${mode})`, { cycle: 2, origin: true, laterArchive: true, mode }],
+  ]),
 ]) test(`native fm-captain-hold ledger framing admits ${name}`, async t => {
   const f = await fixture(t, { ledger: nativeLedger(options) });
   f.select(f.claim);
   await f.sourceModel.refresh();
   assert.deepEqual(f.scanner.view().warnings, []);
   assert.equal(f.sourceModel.current().cards.some(card => card.key === f.claim.request.key), false);
-  assert.deepEqual(f.sourceModel.current().chat.resolved.map(row => [row.key, row.status, row.resolutions[0].resolution]), [[f.claim.request.key, 'answered', 'released']]);
+  assert.deepEqual(f.sourceModel.current().chat.resolved.map(row => [row.key, row.status, row.resolutions[0].resolution]), [[f.claim.request.key, 'answered', options.mode ?? 'released']]);
 });
 
 for (const [name, options, alter, code] of [
   ['a second-cycle archive range that stops before retained context', { cycle: 2 }, async c => { c.owner.held = await reference(c.owner.held.file, c.owner.held.offset, Buffer.byteLength(`${nativeHeld('Confirm the sample scope again.', at(0))}\n\n`)); }, 'item-boundary'],
   ['a second-cycle resolution that drops retained context', { cycle: 2, retained: false }, async () => {}, 'owner-resolution'],
+  ['a first-cycle resolution that drops the origin', { cycle: 1, origin: true, retained: false }, async () => {}, 'owner-resolution'],
+  ['a second-cycle resolution that drops the origin and retained context', { cycle: 2, origin: true, retained: false, mode: 'answered' }, async () => {}, 'owner-resolution'],
 ]) test(`native fm-captain-hold ledger framing still rejects ${name}`, async t => {
   const f = await fixture(t, { ledger: nativeLedger(options) }), c = structuredClone(f.claim);
   await alter(c);
