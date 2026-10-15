@@ -263,7 +263,9 @@ async function historicalRange(ref, expectedFile, { line = false, item = false, 
   } finally { await handle.close(); }
 }
 function historicalItem(text, task) {
-  const lines = text.split("\n");
+  // Native items end in one newline; one ahead of a backlog section or a later note-archive
+  // block also carries one blank separator line. Neither is body content.
+  const lines = text.replace(/\n\n?$/, "").split("\n");
   const match = /^- \[([ xX])\] (\S+) - (.+)$/.exec(lines[0]);
   if (!match || match[2] !== task || lines.slice(1).some(line => /^\s*- \[[ xX]\] \S+ - |^## /.test(line))) historicalRefused("owner-item");
   return { parsed: parseBacklogTask(match[3], match[1] !== " "), body: lines.slice(1).join("\n") };
@@ -302,10 +304,10 @@ async function validateHistoricalAnswer(claim, { home, sources, ask, now, maxLin
       resolution.parsed.holdActive || !["released", "answered"].includes(owner.mode)) historicalRefused("owner-occurrence");
   const prefix = `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${claim.answer.digest}\n  Resolution mode: ${owner.mode}\n\n  Captain decision:\n`;
   const decision = answerTurn.text.split("\n").map(line => line ? `  ${line}` : "").join("\n");
-  const previous = held.body.replace(/^  Captain hold set: \S+\n\n/, "");
+  const previous = held.body.replace(/^  Captain hold set: \S+(?:\n\n|$)/, "");
   // Native release prepends the new exact answer and preserves the prior body. This
   // checks the recorded occurrence, actual bytes and retained history, not task Done.
-  if (resolution.body !== `${prefix}${decision}\n\n${previous}`) historicalRefused("owner-resolution");
+  if (resolution.body !== `${prefix}${decision}${previous && `\n\n${previous}`}`) historicalRefused("owner-resolution");
   const parentFile = path.join(home, "state", `${owner.fleet}.status`);
   const event = async ref => parseStatusLine((await historicalRange(ref, parentFile, { line: true, limit: 16 * 1024 })).replace(/\n$/, ""));
   const raised = await event(owner.raised), resolved = await event(owner.resolved);
