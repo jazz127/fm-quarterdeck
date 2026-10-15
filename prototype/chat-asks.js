@@ -471,8 +471,13 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
           let asksChanged = false, cursorMoved = false;
           for (const entry of grown) {
             const isPrimary = entry.file === recapFile;
-            const prior = (!entry.recapReset && target.cursors[entry.source]) || { ino: null, offset: 0, skip: false };
-            if (isPrimary && entry.recapReset) recapCandidate = { text: null, state: "ready" };
+            // Recap hydration rereads the bounded tail without rewinding ask
+            // intake: records past a still-valid cursor stay incremental, and a
+            // cursor before the tail window resumes in place.
+            const saved = target.cursors[entry.source];
+            const incremental = saved && saved.ino === entry.info.ino && saved.offset <= entry.info.size;
+            const prior = (entry.recapReset && (!incremental || saved.offset > Math.max(0, entry.info.size - backfillBytes)) ? null : saved) || { ino: null, offset: 0, skip: false };
+            if (isPrimary && entry.recapReset) recapCandidate = { text: null, state: prior.offset > 0 ? "limited" : "ready" };
             const backfill = prior.ino === null;
             const toolNames = new Map();
             const outcome = await readNewLines(entry.file, prior, { maxBytes: maxScanBytes, maxLineBytes, backfillBytes,
@@ -492,7 +497,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
                 const text = claudeAwaySummary(record);
                 if (text !== undefined) recapCandidate = { text: text || null, state: "ready" };
               }
-              if (line.includes("NEEDED") && applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill }, toolNames)) asksChanged = true;
+              if (line.includes("NEEDED") && applyRecord(target, record, { source: entry.source, origin: entry.origin, offset, backfill: backfill && (!incremental || offset < saved.offset) }, toolNames)) asksChanged = true;
             } });
             if (isPrimary) {
               recapStamp = { ino: entry.info.ino, size: entry.info.size, mtimeMs: entry.info.mtimeMs };
