@@ -29,7 +29,8 @@ function markerLine(line) {
 }
 
 // Quoted alternatives after the word "reply": Reply **"yes"**, reply `ship` or `hold`,
-// shortest reply: "go". Unquoted replies are ambiguous and are never guessed.
+// shortest reply: "go". Other unquoted replies are not guessed; the narrowly explicit
+// task-marked decision instruction below is handled separately.
 const REPLY = /\breply(?:\s+(?:with|exactly))?\s*:?\s*/gi;
 const QUOTED = /^[*_]{0,3}\s*(?:"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’)\s*[*_]{0,3}/;
 const SEPARATOR = /^\s*(?:,|\/|\||\bor\b)\s*/i;
@@ -72,7 +73,15 @@ export function extractAskSections(text) {
     if (!current) return;
     const raw = current.body.filter(Boolean).join("\n");
     const clipped = raw.length > MAX_ASK_CHARS ? `${raw.slice(0, MAX_ASK_CHARS - 1)}…` : raw;
-    const ask = { kind: current.kind, marker: current.marker, line: current.line, taskMarkers: taskMarkers(current.line), text: readable(clipped), replies: extractReplies(raw) };
+    const replies = extractReplies(raw);
+    // Source-authored alternatives, not default booleans from a hold kind or question.
+    // Only a single-task decision ending in this complete instruction qualifies;
+    // combined asks, arbitrary unquoted phrases and conditional prose stay unchanged.
+    const booleanReply = /(?:^|[.!?][ \t]+|\n[ \t]*)Reply[ \t]+(Yes)[ \t]+or[ \t]+(No)\.?[ \t]*$/i.exec(raw);
+    if (!replies.length && current.kind === "decision" && taskMarkers(current.line).length === 1 && taskMarkers(raw).length === 1 && booleanReply) {
+      replies.push(booleanReply[1], booleanReply[2]);
+    }
+    const ask = { kind: current.kind, marker: current.marker, line: current.line, taskMarkers: taskMarkers(current.line), text: readable(clipped), replies };
     asks.push({ ask, start: current.start, end: current.end, raw: source.slice(current.start, current.end) });
     current = null;
   };

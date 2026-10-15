@@ -20,7 +20,7 @@ import { parseBacklogTask, parseStatusLine } from "./firstmate-records.js";
 export const CHAT_ASKS_SCHEMA = "fm-quarterdeck-chat-asks.v1";
 const MAX_OPEN = 100;
 const MAX_TOMBSTONES = 5000;
-const MATCHING_VERSION = 4;
+const MATCHING_VERSION = 5;
 
 const MiB = 1024 * 1024;
 
