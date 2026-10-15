@@ -149,7 +149,7 @@ window.bearingsAnswerForm = (() => {
         clearDraft(key);
         state = { phase: "compose", holdVersion: state.holdVersion, cardRev: state.cardRev,
           heldReply: state.receipt.replyScope === "individual" && typeof state.receipt.reply === "string" ? state.receipt.reply : "",
-          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString() };
+          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString(), heldNoteId: state.noteId };
         states.set(key, state);
       }
       // The captain reviewed a different version of this call: never send it as-is.
@@ -285,10 +285,10 @@ window.bearingsAnswerForm = (() => {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
           // which keeps the card Sent until that note is acknowledged or Firstmate replies.
           update(key, null, focus ? "text" : null);
-          onAsked(key, state.holdVersion);
+          onAsked(key, state.holdVersion, body?.noteId);
           return true;
         }
-        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: state.holdVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
+        update(key, { phase: "sent", path, requestId: state.requestId, noteId: body?.noteId, holdVersion: state.holdVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
         return true;
       }
       const noun = thread ? "note" : "answer";

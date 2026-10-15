@@ -284,6 +284,7 @@ The latest of those notes sets `sentReceipt`: pending while the note is still pe
 The selected home's receipts are read at most once per 15 seconds while the call source refreshes; a failed read retains previous evidence.
 The sending tab also uses its accepted answer state immediately, including across reload.
 The latest captain note decides the posture the card shows: thread history (`kind` `ask` or `answer`, `from` `captain`, `state` waiting, received, or replied), the sending tab's answer receipt, or `sentReceipt` before that history loads.
+History order owns that choice: the sending tab's receipt counts only for the note it was accepted as (its `noteId`), so a retry that reports a later send time for a note history already lists cannot outrank a newer note, and an older note's reply is never shown for a newer one. An accepted thread note keeps the card Sent, across reloads and stale in-flight history reads, until history lists that exact note.
 A pending note stays Sent until Firstmate acknowledges it.
 An acknowledged note with no reply stays Sent.
 A reply, while the call is still open, returns the card to Active. Reply posture is not per-item content attribution: a combined submission's reply uses an attribution-gap banner, with its original source accessible separately. `sentReplyScope` is `individual` or `combined`; only an individual association supplies `sentReply`. Answer-status receipts also carry `replyScope`; ambiguous or legacy unattributed local text is not promoted into the banner. Decision cards carry `holdVersion`, the short hash of `[backlogReason || reason || summary, decisionClock(row).at]`. This read-only producer uses existing source evidence, never creates a lifecycle or changes snapshot membership. The selected home's newer valid leading `Captain hold set` stamp wins an older/missing snapshot hold stamp for `(main)` decisions only; a newer snapshot stamp still wins and no other home is read. Full durable hold reason controls identity even when the presentation has a shortened recap. Unknown clocks stay unknown, and missing/repeated clock precision cannot prove an otherwise identical re-hold.
@@ -385,6 +386,9 @@ The model must be `ready` or `stale`, and the key must be a landed card still on
 The body is at most 1 KiB, same-origin JSON, with no query.
 The text box is a follow-up, not an answer and not Procrastinate.
 Queue, then Send, posts `POST /api/bearings/thread` with `{requestId, key, text}` where `key` is `landed:<task id>`.
+Before each send the tab saves the exact words and request id in session storage (`fm-quarterdeck-landed-follow.v1:<key>`); if it cannot, nothing is sent and an error shows.
+Until Firstmate confirms that follow-up it stays queued and locked: Edit is disabled, a reload restores the same words without sending them, and only an explicit **Retry send** resends them with the same request id.
+A refusal after an unconfirmed attempt keeps that lock, because it does not prove the earlier attempt never landed; a refusal of a first attempt unlocks the box.
 Firstmate replies in that thread.
 The note says nothing was decided.
 There is no Procrastinate control on these cards.
