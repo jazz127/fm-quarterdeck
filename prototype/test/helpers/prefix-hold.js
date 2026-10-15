@@ -5,6 +5,11 @@ import path from "node:path";
 import { createSnapshotRunner, normalizeSnapshot } from "../../bearings.js";
 
 export const prefixReason = "Yes/No: archive the sample notes in an isolated sandbox. No production data touched.";
+export const binaryQuestionReasons = [
+  "Should we archive the sample notes in the isolated sandbox? Yes: archive the copies. No: keep the copies.",
+  "Should we archive the sample notes in the isolated sandbox? No: keep the copies.",
+  "Should the notes accept revised headings (the sample changed its displayed revision; its contents are identical), while still checking exact labels and dates, then run the already-approved sample preview? No: the notes and all sample previews stay paused.",
+];
 
 // Exercise the selected-home canonical decoder and supplementation, not a fabricated
 // provenance field on a normalizer input. Never reads or answers a real hold.

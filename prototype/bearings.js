@@ -291,8 +291,8 @@ async function addBacklogEvidence(output, home) {
       };
       // Only this decoder supplies complete authoritative reasons. Snapshot reason /
       // backlogReason strings alone cannot establish that provenance.
-      const prefix = recordedPrefixOptions(enriched, reasons.get(row.id));
-      return prefix.length ? { ...enriched, options: prefix } : enriched;
+      const binary = recordedBinaryOptions(enriched, reasons.get(row.id));
+      return binary.length ? { ...enriched, options: binary } : enriched;
     });
     const landedEvidence = backlogLandedEvidence(text);
     if (Array.isArray(raw.landed)) raw.landed = raw.landed.map((row) => {
@@ -332,7 +332,7 @@ export function validateSnapshot(raw) {
 // the same key the /bearings board sends to Firstmate's keyed-answer intake: the task id
 // for a decision, merge.<task> for a merge ask. Structured options, a recommendation and
 // a close mode appear only when Firstmate's row supplies them. Without supplied options,
-// recorded lettered lines or the canonical hold-prefix supplement can supply choices.
+// recorded lettered lines or the canonical binary-hold supplement can supply choices.
 // Otherwise the answer is freeform; merge asks offer the board's own "Merge now".
 export const ANSWER_SLUG = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_OPTIONS = 8;
@@ -367,14 +367,33 @@ function proseLetterOptions(row) {
 }
 // Last-resort grammar at the selected-home canonical hold boundary, before fresh
 // board enrichment. Never run this on a shortened snapshot or display field.
-function recordedPrefixOptions(row, reason) {
+function recordedBinaryOptions(row, reason) {
   if (row.options != null && (!Array.isArray(row.options) || row.options.length)) return [];
   if (proseLetterOptions(row).length) return [];
-  if (typeof reason !== "string" || !reason.startsWith("Yes/No:")) return [];
-  const action = reason.slice("Yes/No:".length).trim();
-  // A single complete action only. Ellipses, additional lines and competing reply /
-  // alternative prose are deliberately left unoffered rather than guessed.
-  if (!action || /[\r\n…]|\.\.\./.test(reason) || /\b(?:reply|or)\b/i.test(action)) return [];
+  if (typeof reason !== "string" || /[\r\n…]|\.\.\./.test(reason)) return [];
+  if (reason.startsWith("Yes/No:")) {
+    const action = reason.slice("Yes/No:".length).trim();
+    if (!action || /\b(?:reply|or)\b/i.test(action)) return [];
+  } else {
+    // A complete auxiliary-led polar question, not arbitrary question punctuation.
+    // Consequences explain the question; a No-only consequence is not a sole option.
+    const question = /^(?:should|can|could|may|might|would|will|shall|do|does|did|am|is|are|was|were|has|have|had|must)\s+([^?]+)\?([^?]*)$/i.exec(reason);
+    if (!question || /[\u0000-\u001f\u007f\u0085\u2028\u2029]|\b(?:or|if|unless|assuming|provided)\b/i.test(reason)) return [];
+    if ((question[1].match(/[A-Za-z]+(?:['-][A-Za-z]+)*/g) || []).length < 2
+      || /(?:^|\s)\(?[A-Za-z][).:]\s+/.test(question[1])) return [];
+    const tail = question[2].trim();
+    if (tail) {
+      const labels = [...tail.matchAll(/\b([A-Za-z][A-Za-z0-9_-]*):/g)];
+      if (!labels.length || labels[0].index !== 0 || labels.length > 2 || /\breply\b/i.test(tail)) return [];
+      const seen = new Set();
+      for (const [index, label] of labels.entries()) {
+        const name = label[1].toLowerCase();
+        const explanation = tail.slice(label.index + label[0].length, labels[index + 1]?.index).trim();
+        if (!/^(?:yes|no)$/.test(name) || seen.has(name) || !explanation) return [];
+        seen.add(name);
+      }
+    }
+  }
   return [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 }
 function decisionAnswer(row, task) {
