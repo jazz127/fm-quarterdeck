@@ -69,7 +69,10 @@ test("second mates disclosure supports keyboard activation, refreshes and collap
     await browser.evaluate("document.querySelector('#secondmates-toggle').focus()");
     assert.equal(await browser.evaluate("document.activeElement.id"), "secondmates-toggle");
     for (const type of ["keyDown", "keyUp"]) {
-      await browser.command("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: virtualKey });
+      await browser.command("Input.dispatchKeyEvent", {
+        type, key, code, windowsVirtualKeyCode: virtualKey,
+        ...(type === "keyDown" ? { text: key === "Enter" ? "\r" : key } : {}),
+      });
     }
   };
 
