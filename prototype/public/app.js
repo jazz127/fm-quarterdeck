@@ -1208,6 +1208,20 @@ function renderSecondmates(data) {
     </article>`).join("");
 }
 
+// Second mates start collapsed; the viewer's choice persists with the other Overview disclosures.
+function setSecondmatesOpen(open) {
+  $("#secondmates").hidden = !open;
+  $("#secondmates-toggle").setAttribute("aria-expanded", String(open));
+  $("#secondmates-toggle .secondmates-chevron").textContent = open ? "▾" : "▸";
+}
+setSecondmatesOpen(hierarchyOpen.get("secondmates") === true);
+$("#secondmates-toggle").addEventListener("click", () => {
+  const open = $("#secondmates-toggle").getAttribute("aria-expanded") !== "true";
+  setSecondmatesOpen(open);
+  hierarchyOpen.set("secondmates", open);
+  try { localStorage.setItem("fm-agentos-hierarchy-open.v1", JSON.stringify([...hierarchyOpen].slice(-1000))); } catch {}
+});
+
 function renderProjects(projects = overviewProjects) {
   overviewProjects = projects;
   if (workSplitData?.items) {
