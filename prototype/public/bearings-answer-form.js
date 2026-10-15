@@ -152,7 +152,8 @@ window.bearingsAnswerForm = (() => {
           heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString() };
         states.set(key, state);
       }
-      // The captain reviewed a different version or hold cycle of this call: never send it as-is.
+      // Unattempted reviews must be checked again after a version or cycle change;
+      // attempted sends retain their frozen payload for explicit Retry.
       if (state?.phase === "confirm" && !state.attempted && (state.cardRev !== rev || Boolean(state.holdVersion && holdVersion && state.holdVersion !== holdVersion))) {
         state = { ...state, phase: "refused", error: "This call changed while you were reviewing; check it and review your answer again." };
         states.set(key, state);
@@ -281,15 +282,15 @@ window.bearingsAnswerForm = (() => {
       } catch {}
       if (destroyed) return;
       if (response && response.status === 202) {
-        // The words now live in Firstmate's inbox; an unsent-text stub would be wrong.
+        // Clear only the accepted cycle's draft; an older retry cannot consume a newer one.
         const sentHoldVersion = (thread ? body?.holdVersion : body?.envelope?.holdVersion) || state.holdVersion;
         const currentHoldVersion = holdVersions.get(key);
         const currentCycle = !sentHoldVersion || !currentHoldVersion || sentHoldVersion === currentHoldVersion;
         if (currentCycle) clearDraft(key);
         win.dispatchEvent?.(new Event("quarterdeck-sent"));
         if (thread || !currentCycle) {
-          // Stay in compose so the one box can ask again. onAsked records the thread receipt,
-          // which keeps the card Sent until that note is acknowledged or Firstmate replies.
+          // Return to compose without locking a newer cycle. Thread receipts retain
+          // their original cycle so lifecycle consumers can classify them.
           update(key, null, focus ? "text" : null);
           if (thread) onAsked(key, sentHoldVersion);
           return true;
