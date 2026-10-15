@@ -55,7 +55,7 @@ window.callLifecycle = (() => {
   // Optional cycle evidence is independent of cosmetic presentation revisions.
   function currentHoldNote(card, note) {
     if (!card?.holdVersion) return true;
-    const updated = Date.parse(card.clock?.at), sent = Date.parse(note?.sentAt || note?.heldAt || note?.at);
+    const updated = Date.parse(card.holdAt || card.clock?.at), sent = Date.parse(note?.sentAt || note?.heldAt || note?.at);
     if (Number.isFinite(updated) && Number.isFinite(sent) && updated > sent) return false;
     if (note?.holdVersion) return note.holdVersion === card.holdVersion;
     if (note?.cardRev) return note.cardRev === card.rev;
