@@ -17,7 +17,13 @@ window.bearingsThread = (() => {
     let pollTimer = null;
     let destroyed = false;
     const stateOf = (key) => {
-      if (!states.has(key)) states.set(key, { entries: null, error: null, notice: null });
+      if (!states.has(key)) {
+        // An accepted note's identity survives a reload until history lists that note.
+        let saved = null;
+        try { saved = JSON.parse(storage?.getItem(STATE_PREFIX + key) || "null"); } catch {}
+        const asked = typeof saved?.captainNoteId === "string" && saved.captainNoteId;
+        states.set(key, { entries: null, error: null, notice: null, ...(asked ? { captainAsked: true, captainNoteId: saved.captainNoteId, holdVersion: saved.holdVersion || null } : {}) });
+      }
       return states.get(key);
     };
     const cardNode = (key) => [...list.querySelectorAll("[data-call-key]")].find((node) => keyOf(node) === key) || null;
@@ -198,12 +204,20 @@ window.bearingsThread = (() => {
         response = await fetchImpl(`/api/bearings/thread?key=${encodeURIComponent(key)}`, { cache: "no-store" });
         body = await response.json().catch(() => null);
       } catch {}
-      if (destroyed) return;
+      // A read for a pruned card's earlier state cannot settle the state that replaced it.
+      if (destroyed || states.get(key) !== state) return;
       state.loading = false;
       if (response?.ok && body && Array.isArray(body.entries)) {
         Object.assign(state, { entries: body.entries, provenance: body.provenance || [], provenanceOmitted: body.provenanceOmitted || 0, omitted: body.omitted || 0, transcript: body.transcript || null, checkedAt: body.checkedAt || null });
-        // History is the durable signal. Keep the local receipt until that history includes the ask.
-        if (body.entries.some((entry) => entry?.kind === "ask" && entry?.from === "captain")) state.captainAsked = false;
+        // History is the durable signal. Keep the local receipt until that history includes the ask:
+        // the accepted note itself when its identity is known, never an older ask.
+        const listed = [...body.entries, ...(Array.isArray(body.provenance) ? body.provenance : [])]
+          .some((entry) => entry?.from === "captain" && (state.captainNoteId ? entry.noteId === state.captainNoteId : entry.kind === "ask"));
+        if (state.captainAsked && listed) {
+          state.captainAsked = false;
+          state.captainNoteId = null;
+          try { storage?.removeItem(STATE_PREFIX + key); } catch {}
+        }
         // The first read marks replies already on the card as seen. Later replies count as new.
         if (!state.baselined) { markRead(state); state.baselined = true; }
         state.error = null;
@@ -216,10 +230,15 @@ window.bearingsThread = (() => {
 
     // The answer controller calls this after a confirmed thread note so the receipt shows at once.
     // captainAsked keeps the card Sent until the reloaded history includes that note.
-    function noteSent(key, holdVersion = null) {
+    function noteSent(key, holdVersion = null, noteId = null) {
       const state = stateOf(key);
       state.captainAsked = true;
+      state.captainNoteId = typeof noteId === "string" && noteId ? noteId : null;
       state.holdVersion = holdVersion;
+      try {
+        if (state.captainNoteId) storage?.setItem(STATE_PREFIX + key, JSON.stringify({ captainNoteId: state.captainNoteId, holdVersion }));
+        else storage?.removeItem(STATE_PREFIX + key);
+      } catch {}
       state.notice = "Question sent to Firstmate; the reply appears here";
       state.error = null;
       rerender(key);
