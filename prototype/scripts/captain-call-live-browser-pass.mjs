@@ -272,7 +272,7 @@ try {
     stage('pending-update-only');
     await capturePendingUpdates({ browser, evaluate, until, base: `http://127.0.0.1:${server.address().port}`, head, proof, raw, change, server });
   } else {
-  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
+  const recapPage = await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
   await evaluate(`async () => { for(let i=0;i<350;i++){ const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); if(document.querySelectorAll('[data-call-key]').length===4 && document.querySelectorAll('#summary .metric-card').length===3 && ask && ask.textContent.includes('Also asked in chat')) return 'linked ask ready'; await new Promise(r=>setTimeout(r,100)); } const ask=document.querySelector('[data-call-key="decision:alpha-call"]'); throw Error('calls '+document.querySelectorAll('[data-call-key]').length+' linked '+(ask&&!!ask.querySelector('.call-context-ask'))); }`);
   stage('primary-recap');
   await until(`document.querySelector('#primary-recap').textContent==='The sample checks completed.'`);
@@ -303,9 +303,14 @@ try {
       return {recapWrapping:true,width:innerWidth}; }`);
   }
   await browser('resize','1280','844');
-  await evaluate(`() => { const {field,radio}=window.recapProof; field.value='';field.dispatchEvent(new Event('input',{bubbles:true}));radio.checked=false;radio.dispatchEvent(new Event('change',{bubbles:true}));field.blur();document.body.click();return 'recap fixture draft cleared without sending'; }`);
   await appendFile(transcriptPath, JSON.stringify(awaySummary('')) + '\n');
   await until(`document.querySelector('#primary-recap').hidden && document.querySelector('#primary-recap').textContent===''`);
+  // The proof deliberately saves an option draft. A synthetic unchecked change
+  // still saves the radio's value; isolate this proof's tab-local drafts rather
+  // than letting a later reload turn its text-only thread note into an answer.
+  await acquireFixturePage(browser, `http://127.0.0.1:${server.address().port}/#overview`, head);
+  await browser('closepage', recapPage);
+  await until(`document.querySelectorAll('[data-call-key]').length===4 && !!document.querySelector('[data-call-key="decision:alpha-call"] input[value="staged"]')`);
   stage('transport-lifecycle');
   // Deterministic transport races in the real page realm, isolated from the UI's feed.
   await evaluate(`async () => {
