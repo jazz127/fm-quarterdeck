@@ -186,7 +186,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       const record = previous || (() => {
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
-        // A note reviewed on one hold cycle is never stamped with a newer one.
+        // A supplied reviewed cycle must match before stamping a new note.
         if ("holdVersion" in parsed && parsed.holdVersion !== card.holdVersion) refuse(409, "changed", "This call changed while you were reviewing; check it and review your note again");
         return { digest, key: parsed.key, display: parsed.text, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
