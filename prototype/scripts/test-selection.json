@@ -53,6 +53,7 @@
     "test/batched-call-receipts.test.js",
     "test/bearings-answer.test.js",
     "test/bearings-board-options.test.js",
+    "test/bearings-prefix-options.test.js",
     "test/bearings-clocks.test.js",
     "test/hold-identity-producer.test.js",
     "test/bearings-landed.test.js",
