@@ -74,7 +74,7 @@ test("extracted Yes and No controls use the typed answer path; text alone remain
     radio.checked = true; radio.dispatchEvent({ type: "change" });
     t.submit(key); t.part(key, "send").click(); await flush();
     assert.equal(t.fetches[0].url, "/api/bearings/answer");
-    assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection: "", note: reply });
+    assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection: "", note: reply, holdVersion: current.cards[0].holdVersion });
   }
   for (const text of ["Yes", "No", "Please explain the timing"]) {
     const t = setup(); t.patcher.update(current);
@@ -760,4 +760,54 @@ test("Send relays every queued card on its own route and those cards become Sent
   assert.equal(stateOf(first, decision()), "sent");
   assert.equal(stateOf(second, merge()), "sent");
   assert.equal(t.win.callLifecycle.cardState({ card: merge(), answer: t.answers.state(second), thread: thread(second), procrastinated: true }), "procrastinated");
+});
+
+// Two holds of one task whose only difference is a redacted report path: the same
+// presentation revision, but a different hold cycle.
+const reportCycle = (report, hold = '2026-01-02T10:00:00Z') => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: [{ id: 'alpha-call', owner: '(main)', summary: 'Pick a window', reason: `See ${report}`, hold_set_at: hold, options: [{ value: 'first', label: 'First report' }, { value: 'second', label: 'Second report' }] }],
+  contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }).cards[0];
+const cycleModel = (card) => ({ ...model([card]), rev: `${card.rev}:${card.holdVersion}` });
+
+test('a queued note on an engaged card is sent bound to the hold cycle the captain reviewed', async () => {
+  const sent = [];
+  const t = setup({ responses: [{ status: 409, body: { error: 'This call changed while you were reviewing; check it and review your note again.', code: 'changed' } }], onAsked: (...args) => sent.push(args) });
+  const key = 'decision:alpha-call', a = reportCycle('/synthetic/one/report.md'), b = reportCycle('/synthetic/one/report.md', '2026-01-02T12:00:00Z');
+  t.patcher.update(cycleModel(a));
+  const field = t.part(key, 'text'); field.focus(); field.type('Which report?'); t.submit(key);
+  // Re-held as B while the captain is still on A: the engaged card keeps showing A.
+  t.patcher.update(cycleModel(b));
+  assert.equal(t.patcher.held, true);
+  t.part(key, 'send').click(); await flush();
+  assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text: 'Which report?', holdVersion: a.holdVersion }, 'the relay can refuse a note reviewed on hold A');
+  assert.equal(t.answers.state(key).phase, 'refused');
+  assert.deepEqual(sent, [], 'a refused note never records a thread receipt');
+});
+
+test('a cycle-only update re-renders the card, so a queued note or answer reviewed on hold A is not sent as-is', async () => {
+  const key = 'decision:alpha-call', a = reportCycle('/synthetic/one/report.md'), b = reportCycle('/synthetic/two/report.md');
+  assert.equal(a.rev, b.rev); assert.notEqual(a.holdVersion, b.holdVersion);
+  for (const path of ['thread', 'answer']) {
+    const t = setup();
+    t.patcher.update(cycleModel(a));
+    const queue = () => {
+      if (path === 'answer') { const radio = t.node(key).querySelector('input[value="first"]'); radio.checked = true; radio.dispatchEvent({ type: 'change' }); }
+      else t.part(key, 'text').type('Which report?');
+      t.submit(key);
+    };
+    queue(); t.leave();
+    assert.equal(t.answers.state(key).phase, 'confirm');
+    assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+    t.patcher.update(cycleModel(b)); t.leave();
+    // Unsent note text holds the card until the captain takes the update; a chosen option does not.
+    if (path === 'thread') {
+      assert.equal(t.node(key).getAttribute('data-held'), 'true', 'the held card shows that its call changed');
+      t.node(key).querySelector('[data-call-update-now]').click();
+    }
+    assert.equal(t.node(key).getAttribute('data-call-hold'), b.holdVersion, 'the card markup names the current cycle');
+    assert.equal(t.answers.state(key).phase, 'refused', `${path}: a note reviewed on hold A needs a new review`);
+    t.submit(key); t.part(key, 'send').click(); await flush();
+    assert.equal(t.fetches.length, 1);
+    assert.equal(t.fetches[0].url, `/api/bearings/${path}`);
+    assert.equal(t.fetches[0].body.holdVersion, b.holdVersion, `${path}: the new review is bound to hold B`);
+  }
 });

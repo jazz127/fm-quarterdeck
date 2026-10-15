@@ -152,8 +152,8 @@ window.bearingsAnswerForm = (() => {
           heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString() };
         states.set(key, state);
       }
-      // The captain reviewed a different version of this call: never send it as-is.
-      if (state && ["confirm", "failed"].includes(state.phase) && state.cardRev !== rev) {
+      // The captain reviewed a different version or hold cycle of this call: never send it as-is.
+      if (state && ["confirm", "failed"].includes(state.phase) && (state.cardRev !== rev || Boolean(state.holdVersion && holdVersion && state.holdVersion !== holdVersion))) {
         state = { ...state, attempted: state.attempted || state.phase === "failed", phase: "refused", error: "This call changed while you were reviewing; check it and review your answer again." };
         states.set(key, state);
       }
@@ -272,8 +272,9 @@ window.bearingsAnswerForm = (() => {
       let response = null, body = null;
       try {
         response = await fetchImpl(thread ? "/api/bearings/thread" : "/api/bearings/answer", { method: "POST", headers: { "content-type": "application/json", ...(immediate ? { "x-quarterdeck-send-now": "1" } : {}) },
-          body: JSON.stringify(thread ? { requestId: state.requestId, key, text: state.note }
-            : { requestId: state.requestId, key, cardRev: state.cardRev, selection: state.selection, note: state.note }) });
+          // The reviewed hold cycle lets the relay refuse a send that would land on a newer one.
+          body: JSON.stringify({ ...(thread ? { requestId: state.requestId, key, text: state.note }
+            : { requestId: state.requestId, key, cardRev: state.cardRev, selection: state.selection, note: state.note }), ...(state.holdVersion ? { holdVersion: state.holdVersion } : {}) }) });
         body = await response.json().catch(() => null);
       } catch {}
       if (destroyed) return;
@@ -285,10 +286,11 @@ window.bearingsAnswerForm = (() => {
           // Stay in compose so the one box can ask again. onAsked records the thread receipt,
           // which keeps the card Sent until that note is acknowledged or Firstmate replies.
           update(key, null, focus ? "text" : null);
-          onAsked(key, state.holdVersion);
+          onAsked(key, body?.holdVersion || state.holdVersion);
           return true;
         }
-        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: state.holdVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
+        // A same-id retry resends the original note; record the cycle the relay stamped.
+        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: body?.envelope?.holdVersion || state.holdVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
         return true;
       }
       const noun = thread ? "note" : "answer";
