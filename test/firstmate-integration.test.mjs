@@ -75,10 +75,11 @@ function cli(script, home, mode, ...args) {
   return JSON.parse(result.stdout);
 }
 
-test('canonical skill directories and frontmatter declare only the five fmqd names', async () => {
+test('canonical skill sources distinguish five installable and five inactive snapshot names', async () => {
+  const inactive = ['fmqd-fleet-health', 'fmqd-cleanup-sweep', 'fmqd-pr-readiness', 'fmqd-pr-identity-guard', 'fmqd-restart-ready'];
   const root = new URL('../skills/', import.meta.url);
-  assert.deepEqual((await readdir(root)).sort(), [...skills].sort());
-  for (const name of skills) {
+  assert.deepEqual((await readdir(root)).sort(), [...skills, ...inactive].sort());
+  for (const name of [...skills, ...inactive]) {
     const body = await readFile(new URL(`${name}/SKILL.md`, root), 'utf8');
     assert.match(body, new RegExp(`^---\nname: ${name}\n`));
   }

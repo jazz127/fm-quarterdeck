@@ -14,6 +14,21 @@ A skill in source is not activated in a Firstmate home. These integrations are o
 | Tier-aware delivery | Future Firstmate integration must independently implement/validate the [branch contract](branching-and-preview-model.md) | Not implied by UI labels |
 | Durable session/source authority | Future integration needs durable primary/worker/relayed/read-only evidence | Never inferred from display names or lane tags |
 
+## Inactive snapshot-only source skills
+
+The five additional [snapshot skills](SNAPSHOT-SKILLS.md) are source-only and
+**not part of this installer's discovery projections**: `fmqd-fleet-health`,
+`fmqd-cleanup-sweep`, `fmqd-pr-readiness`, `fmqd-pr-identity-guard` and
+`fmqd-restart-ready`. They consume explicit saved read-only observations, never
+invoke owners or actions, and never authorize cleanup/publication/restart.
+Stow-safety is always UNKNOWN because stock Firstmate has no structured stow
+checkpoint. No installation, global copy, activation, hook, pin or live acceptance
+is included. A future projection requires a separate installer-owned change with
+tagging, uninstall, inventory and toolcheck coverage; do not hand-install them.
+The unchanged installer may retain their tracked bytes as inert source in its
+manifest-tagged integration pin, covered by normal pin inventory and drift checks;
+that does not project or activate these skills.
+
 ## Unified mechanical installation
 
 After operator approval, use **one** transaction from a clean reviewed revision:
