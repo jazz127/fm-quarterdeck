@@ -149,7 +149,7 @@ window.bearingsAnswerForm = (() => {
         clearDraft(key);
         state = { phase: "compose", holdVersion: state.holdVersion, cardRev: state.cardRev,
           heldReply: state.receipt.replyScope === "individual" && typeof state.receipt.reply === "string" ? state.receipt.reply : "",
-          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString(), heldNoteId: state.noteId };
+          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString(), heldNoteId: state.noteId, heldRequestId: state.requestId };
         states.set(key, state);
       }
       // The captain reviewed a different version of this call: never send it as-is.

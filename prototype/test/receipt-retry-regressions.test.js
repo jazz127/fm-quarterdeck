@@ -102,6 +102,86 @@ for (const held of [false, true]) {
   });
 }
 
+for (const saved of [
+  { phase: "sent", requestId: uuid(9), receipt: { state: "received" } },
+  { phase: "sent", requestId: uuid(9), receipt: { state: "replied", reply: "Earlier reply", replyScope: "individual" } },
+  { phase: "compose", heldReply: "Earlier reply", heldReplyScope: "individual" },
+]) {
+  test(`persisted legacy ${saved.phase === "sent" ? saved.receipt.state : "held reply"} cannot advance a newer history note`, async () => {
+    for (const listed of [false, true]) {
+      for (const kind of ["answer", "ask"]) {
+        for (const [state, expected] of [["waiting", "pending"], ["received", "acknowledged"], ["replied", "replied"]]) {
+          const tab = storage();
+          tab.setItem(`fm-quarterdeck-call-answer.v1:${card.key}`, JSON.stringify({ ...saved,
+            sentAt: "2026-10-01T12:00:00Z", heldAt: "2026-10-01T12:00:00Z" }));
+          const earlier = { ...oldAsk, kind: "answer", requestId: `quarterdeck-call:${uuid(9)}` };
+          const latest = { ...newAsk, kind, state, ...(state === "replied" ? { replyScope: "individual" } : {}) };
+          const t = mount(async () => response({ entries: [...(listed ? [earlier, oldReply] : []), latest] }), { tab });
+          await flush();
+          assert.equal(t.life.delivery(t.facts()).posture, expected, "the latest durable captain note owns its receipt");
+          assert.equal(t.life.delivery(t.facts()).reply, "", "an older receipt cannot fill a newer note's missing reply");
+          assert.equal(t.life.cardState(t.facts()), state === "replied" ? "active" : "sent");
+          t.destroy();
+        }
+      }
+    }
+  });
+}
+
+test("loaded empty history wins over unidentified legacy receipts", async () => {
+  for (const saved of [
+    { phase: "sent", requestId: uuid(9), receipt: { state: "received" } },
+    { phase: "compose", heldReply: "Unattributed reply", heldReplyScope: "individual" },
+  ]) {
+    const tab = storage();
+    tab.setItem(`fm-quarterdeck-call-answer.v1:${card.key}`, JSON.stringify(saved));
+    const t = mount(async () => response({ entries: [] }), { tab });
+    await flush();
+    assert.equal(t.life.delivery(t.facts()).posture, null);
+    assert.equal(t.life.delivery(t.facts()).reply, "");
+    t.destroy();
+  }
+});
+
+test("legacy request identity still advances its own receipt and survives held conversion and reload", async () => {
+  const tab = storage();
+  const requestId = uuid(9);
+  tab.setItem(`fm-quarterdeck-call-answer.v1:${card.key}`, JSON.stringify({ phase: "sent", requestId,
+    sentAt: newAsk.at, receipt: { state: "received" } }));
+  let entries = [{ ...newAsk, kind: "answer", requestId: `quarterdeck-call:${requestId}` }];
+  const first = mount(async (url) => url.startsWith("/api/bearings/answer/status")
+    ? response({ answers: { [requestId]: { state: "replied", reply: "Current reply", replyScope: "individual" } } })
+    : response({ entries }), { tab });
+  await flush();
+  assert.equal(first.life.delivery(first.facts()).posture, "acknowledged");
+  await first.answers.poll();
+  assert.equal(first.answers.state(card.key).phase, "compose");
+  assert.equal(first.answers.state(card.key).heldRequestId, requestId);
+  first.destroy();
+  entries = [{ ...entries[0], state: "replied", replyScope: "individual" }];
+  const second = mount(async () => response({ entries }), { tab });
+  await flush();
+  assert.equal(second.life.delivery(second.facts()).posture, "replied");
+  assert.equal(second.life.delivery(second.facts()).reply, "Current reply");
+  second.part("text").type("Fresh follow-up");
+  second.queue();
+  assert.notEqual(second.answers.state(card.key).requestId, requestId, "a new submission cannot reuse the held reply's request ID");
+  second.destroy();
+});
+
+test("a newer local receipt cannot inherit an earlier note's reply or scope", () => {
+  const t = mount(async () => response({ entries: [] }));
+  for (const replyScope of ["individual", "combined"]) {
+    const result = t.life.delivery({ card,
+      answer: { phase: "sent", noteId: newAsk.noteId, sentAt: newAsk.at, receipt: { state: "replied" } },
+      thread: { entries: [{ ...oldAsk, replyScope }, oldReply] } });
+    assert.equal(result.posture, "replied");
+    assert.equal(result.reply, "");
+    assert.equal(result.replyScope, undefined);
+  }
+  t.destroy();
+});
+
 test("an accepted thread note keeps its identity through a stale in-flight history read", async () => {
   let finishOld, finishNew;
   let reads = 0;
