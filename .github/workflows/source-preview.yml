@@ -67,6 +67,10 @@ jobs:
       - name: Browser and real-process Node suites
         id: integration
         continue-on-error: true
+        # One automatic observation: this PR's first transition away from the
+        # original candidate. Reruns, dispatches and later updates stay unobserved.
+        env:
+          FM_HISTORY_VALIDATION_OBSERVER: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.number == 105 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fm/quarterdeck-configurable-history-limits' && github.event.before == 'f3b61268fb58428c3fb7a34ab1aa446e96b01512' && github.event.after == github.event.pull_request.head.sha && github.run_attempt == 1 && '1' || '' }}
         run: npm run test:integration
         working-directory: prototype
       - name: Chromium reload, retry, history and layout gate (whole Latest EXCLUDED; opt-in only)

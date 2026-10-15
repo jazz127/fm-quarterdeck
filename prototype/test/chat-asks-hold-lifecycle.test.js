@@ -31,8 +31,9 @@ async function scanner(t, text) {
   t.after(() => rm(home, { recursive: true, force: true }));
   const file = path.join(home, 'main.jsonl'), store = memoryStateFile();
   await writeFile(file, JSON.stringify({ type: 'assistant', uuid: 'ask', message: { content: text } }) + '\n');
-  const scan = createChatAskScanner({ home, store, discover: async () => ({ sources: [{ file, source: 'claude-main-session/main', origin: 'claude' }], warnings: [] }) });
-  await scan.scan(); return { scan, store };
+  const make = () => createChatAskScanner({ home, store, discover: async () => ({ sources: [{ file, source: 'claude-main-session/main', origin: 'claude' }], warnings: [] }) });
+  const scan = make();
+  await scan.scan(); return { scan, store, make };
 }
 
 test('structured marker grammar and whole-token id linking are mechanical', async t => {
@@ -77,6 +78,70 @@ test('release/closure resolves linked local holds only with fresh ledger evidenc
   await scan.applySnapshot([], true, released);
   assert.equal(scan.asks().length, 0);
   assert.equal(Object.values((await store.read()).asks)[0].holdResolutions[0].resolution, 'released');
+});
+
+test('missing, omitted or stale ledger evidence cannot close a vanished linked ask', async t => {
+  const { scan, store } = await scanner(t, 'DECISION NEEDED: [task:held] choose');
+  await scan.applySnapshot([{ task: 'held', type: 'decision' }], true);
+  const key = scan.asks()[0].key;
+  const closed = backlogHoldRecords(hold('held', 'choose', 'x'));
+  for (const [fresh, rows, omitted] of [
+    [true, [], []],
+    [true, [], [{ kind: 'decisions-bound' }]],
+    [false, closed, []],
+  ]) {
+    assert.equal(await scan.applySnapshot([], fresh, rows, omitted), false);
+    assert.equal(scan.asks()[0].key, key);
+    assert.deepEqual((await store.read()).tombstones, {});
+    assert.deepEqual(scan.view().resolved, []);
+  }
+  assert.equal(await scan.applySnapshot([], true, closed, [{ kind: 'decisions-bound' }]), true, 'fresh ledger closure does not require full snapshot coverage');
+  assert.deepEqual(scan.asks(), []);
+  assert.equal(scan.view().resolved[0].source, 'data/backlog.md');
+});
+
+test('every linked sibling requires its own fresh closed-ledger evidence', async t => {
+  const { scan, store } = await scanner(t, 'DECISION NEEDED: [task:held-a] [task:held-b] choose');
+  const open = backlogHoldRecords(hold('held-a', 'choose') + '\n' + hold('held-b', 'choose'));
+  await scan.applySnapshot([], true, open);
+  assert.deepEqual(scan.asks()[0].linkedTasks, ['held-a', 'held-b']);
+  const a = backlogHoldRecords(hold('held-a', 'choose', 'x'));
+  await scan.applySnapshot([], true, a);
+  assert.equal(scan.asks().length, 1, 'a vanished sibling is not answered by the other closure');
+  assert.deepEqual((await store.read()).tombstones, {});
+  const b = backlogHoldRecords(hold('held-b', 'choose', 'x'));
+  await scan.applySnapshot([], false, [...a, ...b]);
+  assert.equal(scan.asks().length, 1);
+  await scan.applySnapshot([], true, [...a, ...b]);
+  assert.deepEqual(scan.asks(), []);
+  assert.deepEqual(scan.view().resolved[0].tasks, ['held-a', 'held-b']);
+});
+
+test('remote ledger rows and same-named local closure cannot answer persisted remote links', async t => {
+  for (const task of ['held', 'other/held']) {
+    const { store, make } = await scanner(t, 'DECISION NEEDED: choose a sample window');
+    // Retain legacy links without changing their ownership or guessing a reassignment.
+    await store.update(state => {
+      Object.values(state.asks)[0].linkedTasks = [task];
+      return { write: true };
+    });
+    const scan = make();
+    await scan.scan();
+    assert.deepEqual(scan.asks()[0].linkedTasks, [task]);
+    const remote = { task, closed: true, source: 'other/data/backlog.md' };
+    const scoped = { task: 'other/held', closed: true, source: 'data/backlog.md' };
+    const model = normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: [],
+      contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [],
+      quarterdeck_holds: [remote, scoped] });
+    assert.deepEqual(model.holds, [], 'the existing selected-home source and task guards reject remote ledger evidence');
+    await scan.applySnapshot(model.cards, true, model.holds, model.omitted);
+    assert.equal(scan.asks().length, 1);
+    if (task.includes('/')) {
+      await scan.applySnapshot([], true, backlogHoldRecords(hold('held', 'local window', 'x')));
+      assert.equal(scan.asks().length, 1, 'local bare id is not the remote scoped identity');
+    }
+    assert.deepEqual((await store.read()).tombstones, {});
+  }
 });
 
 test('lifecycle parser rejects duplicate ids and unscoped body prose', () => {

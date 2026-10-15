@@ -1,5 +1,6 @@
 import { shortHash } from "./bearings.js";
 import { inboxNoteState, inboxReceipts, noteWithRequestId } from "./inbox.js";
+import { receiptReply } from "./receipt-provenance.js";
 
 // Captain's Call answers (BEARINGS.md "Answers"). Quarterdeck only relays the captain's
 // explicit answer to Firstmate as an fm-bearings-answer.v1 envelope, the same context the
@@ -82,7 +83,7 @@ export function answerEnvelope({ card, selection, note }, observedRev) {
   if (card.answer.close) envelope.close = card.answer.close;
   const title = cardTitle(card);
   const provenance = card.type === "chat" ? { ask: clipBytes(`${card.marker}: ${card.summary}`.replace(/\s+/g, " "), 1024) } : { task: card.task };
-  return { ...envelope, channel: "quarterdeck", type: card.type, ...provenance, label: clipBytes(`${title} -> ${displayAnswer(selection, note)}`.replace(/\s+/g, " "), 512), cardRev: card.rev, observedRev: observedRev ?? null };
+  return { ...envelope, channel: "quarterdeck", type: card.type, ...provenance, label: clipBytes(`${title} -> ${displayAnswer(selection, note)}`.replace(/\s+/g, " "), 512), ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), cardRev: card.rev, observedRev: observedRev ?? null };
 }
 const cardTitle = (card) => card.type === "chat" ? `Chat ask ${card.answer.question}` : `${card.type === "merge" ? "Merge" : "Decision"} ${card.task}`;
 
@@ -143,7 +144,16 @@ export function createAnswerRelay({ home, note = noteWithRequestId, receipts = i
       const list = [...new Set(ids)].filter((id) => REQUEST_ID.test(id)).slice(0, 20);
       if (!list.length) return { answers: {} };
       const data = await receipts(home);
-      return { answers: Object.fromEntries(list.map((id) => [id, inboxNoteState(data, answerRequestId(id)) || { state: "unknown" }])) };
+      return { answers: Object.fromEntries(list.map((id) => {
+        const request = answerRequestId(id);
+        const state = inboxNoteState(data, request) || { state: "unknown" };
+        const note = data.handled.find(entry => entry.request_id === request) || data.pending.find(entry => entry.request_id === request);
+        if (note && state.state === "replied") {
+          const { scope } = receiptReply(data, note);
+          return [id, { ...state, replyScope: scope, ...(scope === "combined" ? { reply: "" } : {}) }];
+        }
+        return [id, state];
+      })) };
     },
   };
 }

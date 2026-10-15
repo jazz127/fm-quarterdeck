@@ -102,9 +102,14 @@ for (const combined of [false, true]) test(`${combined ? "combined" : "individua
       const updated = model.cards.find((entry) => entry.key === card.key);
       assert.equal(updated.answered, true, card.key);
       assert.equal(updated.sentReceipt, posture, card.key);
-      assert.equal(updated.sentReply, posture === "replied" ? "Both answers recorded." : undefined);
+      assert.equal(updated.sentReply, posture === "replied" && !combined ? "Both answers recorded." : undefined);
+      if (posture === "replied") assert.equal(updated.sentReplyScope, combined ? "combined" : "individual");
       const history = await f.get(`/api/bearings/thread?key=${encodeURIComponent(card.key)}`);
       assert.equal(history.entries.filter((entry) => entry.kind === "answer").length, 1);
+      if (combined) {
+        assert.ok(history.provenance.some(entry => entry.kind === "combined-submission" && entry.text.includes("fm-quarterdeck-batch")), "original sealed submission stays reachable after restart");
+        if (posture === "replied") assert.ok(history.provenance.some(entry => entry.kind === "combined-reply" && entry.text === "Both answers recorded."));
+      }
     }
     for (const card of model.cards.filter((entry) => !calls.some((call) => call.key === entry.key))) {
       assert.equal(card.answered, undefined, "unanswered calls remain independent");
