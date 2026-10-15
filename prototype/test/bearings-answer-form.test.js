@@ -199,9 +199,9 @@ test('clock ticks only change clock text and leave focused answer nodes intact',
   assert.equal(field.value, 'Tuesday');
 });
 
-test('Edit after an unconfirmed send and changed-card refusal start fresh reviews, including reload', async () => {
+test('same-cycle Edit and refusal retain request identity, including reload', async () => {
   const storage = tabStorage();
-  const t = setup({ storage, responses: [new Error('offline')] });
+  const t = setup({ storage, responses: [new Error('offline'), { status: 409, body: { error: 'This call changed; review again.' } }] });
   const key = 'decision:alpha-call'; t.patcher.update(model([decision()]));
   t.part(key, 'text').type('Tuesday'); t.submit(key); t.part(key, 'send').click(); await flush();
   const requestId = t.answers.state(key).requestId;
@@ -212,16 +212,18 @@ test('Edit after an unconfirmed send and changed-card refusal start fresh review
   t.answers.render(t.node(key)); t.answers.render(t.node(key));
   assert.equal(writes, 0, 'unchanged alerts are not rewritten');
   t.part(key, 'edit').click(); t.part(key, 'text').type('Wednesday'); t.submit(key);
-  const freshId = t.answers.state(key).requestId;
-  assert.notEqual(freshId, requestId);
+  assert.equal(t.answers.state(key).requestId, requestId);
+  assert.equal(t.answers.state(key).attempted, true);
   t.leave(); t.patcher.update(model([decision('a2')]));
   assert.equal(t.answers.state(key).phase, 'confirm', 'unfocused unsent text waits for acknowledgement');
   t.node(key).querySelector('[data-call-update-now]').click();
+  t.part(key, 'send').click(); await flush();
   assert.equal(t.answers.state(key).phase, 'refused');
-  assert.equal(t.answers.state(key).requestId, freshId);
+  assert.equal(t.answers.state(key).requestId, requestId);
   const reload = setup({ storage }); reload.patcher.update(model([decision('a2')]));
   reload.part(key, 'text').type('Thursday'); reload.submit(key);
-  assert.notEqual(reload.answers.state(key).requestId, freshId);
+  assert.equal(reload.answers.state(key).requestId, requestId);
+  assert.equal(reload.answers.state(key).attempted, true);
 });
 
 function tabStorage() {
@@ -532,7 +534,7 @@ test("unconfirmed sends retry only by click with the same request id; refusals r
   assert.equal(t.part(key, "compose").hidden, false);
   assert.equal(t.part(key, "text").readOnly, false);
   t.submit(key);
-  assert.notEqual(t.answers.state(key).requestId, t.fetches[0].body.requestId);
+  assert.equal(t.answers.state(key).requestId, t.fetches[0].body.requestId);
 });
 
 test("an empty or oversized answer is refused locally and nothing is sent", async () => {
@@ -904,6 +906,38 @@ for (const path of ['thread', 'answer']) {
   }
 
   for (const action of ['edit', 'unqueue']) {
+    for (const recovery of ['failed', 'interrupted']) {
+      test(`${path}: same-cycle ${action} reconciles the ${recovery} send with its existing request ID`, async () => {
+        const { t: original, options, notes, key, a } = uncertainCycleSend(path, recovery);
+        await flush();
+        assert.equal(notes.size, 1, 'the inbox recorded A before its acknowledgement was lost');
+        const originalBody = original.fetches[0].body;
+        let t = original;
+        if (recovery === 'interrupted') {
+          original.answers.destroy();
+          t = setup(options); t.patcher.update(cycleModel(a));
+        }
+        assert.equal(t.answers.state(key).phase, 'failed');
+        if (action === 'edit') t.part(key, 'edit').click();
+        else t.answers.unqueue(key);
+        if (recovery === 'interrupted') {
+          t.answers.destroy();
+          t = setup(options); t.patcher.update(cycleModel(a));
+        }
+        t.submit(key);
+        assert.equal(t.answers.state(key).requestId, originalBody.requestId);
+        assert.equal(t.answers.state(key).attempted, true);
+        assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+        if (action === 'edit') { t.part(key, 'send').click(); await flush(); }
+        else assert.equal(await t.answers.sendQueued(), true);
+        assert.deepEqual(t.fetches.at(-1).body, originalBody, 'unchanged words keep the entire attempted payload');
+        assert.equal(notes.size, 1, 'the same-cycle send reconciles the original inbox note instead of duplicating it');
+        assert.equal(t.patcher.drafts.text(key), '');
+        if (path === 'answer') assert.equal(t.answers.state(key).phase, 'sent');
+        else assert.equal(t.answers.state(key), null);
+      });
+    }
+
     test(`${path}: ${action} starts a fresh review on B without reusing A's attempted request`, async () => {
       const { t, notes, key, b, rehold } = uncertainCycleSend(path);
       await flush(); rehold(); applyCycle(t, b);

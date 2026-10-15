@@ -249,7 +249,9 @@ window.bearingsAnswerForm = (() => {
       const cap = thread ? MAX_QUESTION_BYTES : MAX_ANSWER_BYTES;
       const measured = thread ? answer.note : display(answer.selection, answer.note);
       if (bytes(measured) > cap) { update(key, { ...previous, phase: "refused", error: `The ${thread ? "note" : "answer"} is longer than ${cap} bytes; shorten it.` }, "text"); return; }
-      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion: holdVersions.get(key) || null, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: uuid(), attempted: false }, "send");
+      const holdVersion = holdVersions.get(key) || null;
+      const sameCycle = (previous.holdVersion || null) === holdVersion;
+      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: (sameCycle && previous.requestId) || uuid(), attempted: sameCycle && previous.attempted === true }, "send");
     }
 
     function clearDraft(key) {
