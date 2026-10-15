@@ -4,7 +4,7 @@ window.overviewTabs = (() => {
   const ORDER = ["calls", "landed", "underway", "charted"];
   const LABELS = { calls: "Captain's Call", landed: "Just landed", underway: "Underway", charted: "Charted Next" };
 
-  function createController({ root, tabs, panels, secondary = null, counts = {}, storage = null, media = null, doc = document } = {}) {
+  function createController({ root, tabs, panels, secondary = null, counts = {}, freshness = () => null, storage = null, media = null, doc = document } = {}) {
     if (!tabs || !panels?.calls || !panels?.landed) return { paint() {}, select() {}, destroy() {} };
     const order = ORDER.filter(name => panels[name]);
     let selected = "calls";
@@ -28,6 +28,8 @@ window.overviewTabs = (() => {
         else root.removeAttribute("data-overview-tab");
       }
       if (secondary) secondary.hidden = narrow && selected === "calls";
+      // Every section reads the same bearings feed; a missing or stale feed is not zero.
+      const feed = freshness();
       for (const name of order) {
         const button = buttonFor(name);
         const panel = panels[name];
@@ -35,7 +37,8 @@ window.overviewTabs = (() => {
         const count = Number(counts[name]?.());
         const n = Number.isSafeInteger(count) && count >= 0 ? count : 0;
         if (button) {
-          button.textContent = `${LABELS[name]} (${n})`;
+          const label = feed?.state === "loading" || feed?.state === "unavailable" ? feed.state : feed?.stale || feed?.state === "stale" ? `${n} · stale` : String(n);
+          button.textContent = `${LABELS[name]} (${label})`;
           if (narrow) {
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", String(name === selected));

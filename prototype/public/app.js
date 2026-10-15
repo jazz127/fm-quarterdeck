@@ -1763,9 +1763,14 @@ const freshness = Object.fromEntries(["dashboard", "quota", "lanes", "bearings"]
 }]));
 const freshLabels = { dashboard: "Fleet", quota: "Quota", lanes: "Fleet Chats", bearings: "Captain's Call" };
 let callCount = 0;
+// A missing or stale feed never reads as an empty fleet.
+const bearingsUnknown = (model) => ["loading", "unavailable"].includes(model?.state);
+const bearingsStale = (model) => Boolean(model?.stale) || model?.state === "stale";
 function renderCallBadge(model) {
+  // Lifecycle comes from the card as rendered (a held card keeps its answered posture).
+  const rendered = new Map((callPatcher?.applied?.cards || []).map((card) => [card.key, card]));
   const count = (model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
-    card,
+    card: rendered.get(card.key) || card,
     answer: callAnswers?.state?.(card.key) || null,
     thread: callThreads?.state?.(card.key) || null,
     procrastinated: Boolean(callProcrastinate?.parked?.(card.key)),
@@ -1773,9 +1778,10 @@ function renderCallBadge(model) {
   for (const id of ["#call-badge", "#call-mobile-badge"]) {
     const badge = $(id);
     if (!badge) continue;
-    badge.textContent = String(count);
-    badge.hidden = count === 0;
-    badge.setAttribute("aria-label", `${count} Captain's Calls`);
+    const unknown = bearingsUnknown(model), stale = bearingsStale(model);
+    badge.textContent = unknown ? "?" : stale ? `${count} · stale` : String(count);
+    badge.hidden = !unknown && !stale && count === 0;
+    badge.setAttribute("aria-label", unknown ? `Captain's Calls ${model.state}` : `${count} Captain's Calls${stale ? " · stale" : ""}`);
   }
   if (count > callCount) $("#sr-announcer").textContent = `${count} Captain's Calls need your attention`;
   callCount = count;
@@ -1801,6 +1807,9 @@ function observeBearings(data) {
   item.lastSuccess = data.observedAt ? Date.parse(data.observedAt) : null;
   item.stale = Boolean(data.stale);
   item.error = data.error || null;
+  // Freshness-only events relabel the counts for the calls already shown.
+  renderCallBadge(callPatcher?.applied ? { ...callPatcher.applied, ...data } : data);
+  overviewTabs?.paint();
   renderFreshness();
 }
 // Answer and overflow controllers re-apply their per-card state after every patcher fill.
@@ -1879,7 +1888,8 @@ function renderCallLifecycle() {
     empty.hidden = !text;
     if (empty.textContent !== text) empty.textContent = text;
   }
-  renderCallBadge(model);
+  const feed = freshness.bearings;
+  renderCallBadge(feed.state ? { ...model, state: feed.state, stale: feed.stale } : model);
   overviewTabs?.paint();
 }
 $("#call-lifecycle-filter")?.addEventListener("click", (event) => {
@@ -1923,13 +1933,14 @@ const overviewTabs = window.overviewTabs?.createController?.({
   panels: { calls: $("#overview-primary"), landed: $("#just-landed"), underway: $("#underway"), charted: $("#charted-next") },
   secondary: $("#overview-secondary"),
   counts: { calls: () => callPatcher?.applied?.cards?.length || 0, landed: () => landedBoard?.newCount?.() ?? 0, underway: () => workBoard?.count("underway") || 0, charted: () => workBoard?.count("charted") || 0 },
+  freshness: () => freshness.bearings,
   storage: localStorage,
   // Phone and tablet share one column and the section tabs. Two columns start at 1100px.
   media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
   onModel(model) { callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { callPatcher.observe(data); workBoard?.observe(data); observeBearings(data); },
+  onObserved(data) { callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
@@ -1946,7 +1957,9 @@ function renderFreshness() {
   const expired = key !== "bearings" && item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
   const revisionStopped = key === "bearings" && item.connection === "revision";
   const disconnected = key === "bearings" && ["disconnected", "reconnecting"].includes(item.connection);
-  const condition = revisionStopped ? "updating" : disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
+  // A failed snapshot is a feed condition, not a broken connection.
+  const feed = key !== "bearings" ? null : item.state === "unavailable" ? "unavailable" : item.stale ? "stale" : null;
+  const condition = revisionStopped ? "updating" : disconnected ? "disconnected" : feed || (item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting");
   const last = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : "No successful reading yet";
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");
@@ -1957,7 +1970,7 @@ function renderFreshness() {
   el.title = full;
   el.setAttribute("aria-label", full);
   const pill = $("#fleet-state");
-  pill.classList.toggle("offline", condition === "disconnected" || condition === "stale" || condition === "updating");
+  pill.classList.toggle("offline", ["unavailable", "disconnected", "stale", "updating"].includes(condition));
   $("#fleet-state b").textContent = condition;
   pill.title = full;
   pill.setAttribute("aria-label", full);

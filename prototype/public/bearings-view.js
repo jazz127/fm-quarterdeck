@@ -316,14 +316,14 @@ window.bearingsView = (() => {
   function emptyHtml(model) {
     if (model.state === "loading") return "Checking for Captain's Calls…";
     if (model.state === "unavailable") return `Captain's Call unavailable${model.error ? ` · ${escape(model.error)}` : ""}`;
-    const text = model.coverage?.provenClear ? "Nothing needs your action right now" : `No decision is recorded · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)}`;
-    return `${model.stale || model.state === "stale" ? "Last known calls · " : ""}${text}`;
+    if (model.stale || model.state === "stale") return "Last known calls · No calls at the last successful reading; current calls are unknown.";
+    return model.coverage?.provenClear ? "Nothing needs your action right now" : `No decision is recorded · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)}`;
   }
   function coverageText(model) {
     const parts = [];
     if (model.state === "loading") parts.push("Checking Firstmate…");
     else if (model.state === "unavailable") parts.push(`Unavailable${model.error ? ` · ${model.error}` : ""}`);
-    else parts.push(`${model.stale || model.state === "stale" ? "Stale · last known calls" : "Firstmate"} · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)} · ${age(model.checkedAt)}`);
+    else parts.push(`${model.stale || model.state === "stale" ? "Stale · last known calls" : "Firstmate"} · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)} · last success ${age(model.observedAt)}`);
     if (model.stale && model.error) parts.push(model.error);
     for (const omitted of model.omitted || []) {
       if (omitted.kind === "deferred-holds" && count(omitted.count)) parts.push(`+${omitted.count} later-dated or blocked calls not shown`);

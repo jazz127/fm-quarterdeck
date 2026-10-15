@@ -55,14 +55,17 @@ def snapshot(base, age):
     data = probe(base + '/api/bearings')
     if not isinstance(data, dict) or data.get('schema') != 'fm-quarterdeck-call.v1':
         reject("Captain's Call snapshot not ready")
-    if data.get('stale') is True or data.get('state') == 'stale':
+    # The server marks an unwatched good reading stale at its own age ceiling
+    # without an error; this check's age limit below judges that reading.
+    aged = data.get('state') == 'stale' and data.get('stale') is True and not data.get('error')
+    if (data.get('stale') is True or data.get('state') == 'stale') and not aged:
         reject("Captain's Call snapshot stale")
     if data.get('error'):
         reject("Captain's Call snapshot error")
     # No viewers means no run yet; loading is a valid idle snapshot.
     if data.get('state') == 'loading':
         return
-    if data.get('state') != 'ready':
+    if data.get('state') != 'ready' and not aged:
         reject("Captain's Call snapshot not ready")
     try:
         stamp = datetime.datetime.fromisoformat(data['generatedAt'].replace('Z', '+00:00'))
