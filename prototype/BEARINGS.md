@@ -14,8 +14,8 @@ retain the scoped card identity; neither changes a Firstmate hold.
 Parking refuses an update that would exceed its existing state-size bound and preserves
 the previously readable state.
 
-- Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run.
-- It never creates calls from backlog, meta or status records, and writes nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The snapshot's own documented observational cache refresh is the only fleet-side write, the same as a plain `/bearings`.
+- Filed calls come from exactly one Firstmate interface: `$FM_HOME/bin/fm-bearings-snapshot.sh --json` (never `--include-prs`), with `FM_HOME` set, nice 10, a 45 s process-group kill, 2 MiB stdout and 4 KiB stderr caps. Concurrent callers share one run. Snapshot children set `FM_SSH_BIN=/usr/bin/false` and `FM_SNAPSHOT_BUDGET=1`: remote homes come from Firstmate's validated parent-side ledger cache with at most one second for remote collection, so a dashboard read never stages tracked jobs in other homes. Firstmate owns that cache's refresh; a home without a valid cached ledger stays unmeasured. The 45 s outer budget is unchanged.
+- Quarterdeck never creates calls from backlog, meta or status records; its supplementary reads write nothing under `FM_HOME`. After the snapshot, a read-only, 2 MiB bounded read of the selected home's `data/backlog.md` supplements only existing `(main)` decisions by exact task id: durable clocks, a missing hold reason, and the backlog `(repo:)` name when the snapshot has no repository for that call. The same read supplements `(main)` landed rows with `(repo:)` and the newest `(done|merged|reported YYYY-MM-DD)`. A repository path is reduced to its final segment. Reasons come only from the versioned `fm-hold-v1` base64 field on unchecked captain holds (16 KiB decoded cap), never body prose; duplicate ids, malformed encodings and invalid UTF-8 are rejected. Source reasons win on the stored `reason` field. No other home's records are inspected. The snapshot may prepare its own parent cache directory, but the disabled transport cannot fetch fresh remote ledgers or overwrite cached ones; Quarterdeck does not refresh other homes.
 - Each snapshot run may also read the selected home's `.lavish/bearings-board.html` when that path is a regular file of at most 1 MiB. The read is UTF-8 text. Quarterdeck takes the JSON inside `<script id="bearings-data" type="application/json">` and checks `schema` `fm-bearings-board.v1`, a non-empty `home`, a timestamp `generated`, and an array `captains_call`. A raw `<` in that block is rejected, matching the builder's `\u003c` escape, so the block cannot be closed early. The page is never executed. A missing file, symlink, oversized file, bad encoding, or failed check leaves options on the snapshot path below. How a fresh card becomes choices is owned by Answers.
 - Validation fails closed: `schema` must be `fm-bearings.v1`, and `decisions_open`, `omitted` and `contributions` (`captain[]`, `known`, `checked`, `proven_clear`) must have the expected types. A missing home or script, a failed run or invalid output never synthesizes calls: with a previous good model it stays visible as `state: "stale"`; without one the model is `state: "unavailable"` with no cards.
 
@@ -27,7 +27,7 @@ the previously readable state.
 { schema, rev, state, observedAt, checkedAt, generatedAt, stale, error, cards[], coverage, omitted[], landed[], underway[], charted[], workCoverage }
 ```
 
-- `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed) or `unavailable`.
+- `state`: `loading` (no run yet), `ready`, `stale` (last good calls; `error` says why the latest run failed, or is null when only the age ceiling expired) or `unavailable`.
 - `observedAt`: when these calls were last produced. `checkedAt`: the latest run attempt. `generatedAt`: the snapshot clock.
 - `cards[]`, in snapshot order:
   - `decision:<task>` for each `decisions_open` row: `{key, type:"decision", task, verb, summary, title?, reason?, url, owner, repo, answer, rev}`. Optional title/reason retain source evidence for chat-ask linking; a missing main-home reason may be supplemented from the guarded ledger field above. Credentials appear only as decisions.
@@ -35,12 +35,18 @@ the previously readable state.
   - `landed:<task>` for each snapshot `landed` row: `{key, type:"landed", task, what, repo, owner, url, artifact, clock, rev}`. See Just landed.
   - `answer` is `null` (answer in chat) or `{question, options[{value,label,hint}], recommend, close, freeform:true}`; see Answers.
   - `rev` is a 16-hex sha256 presentation hash; [Lifecycle](#lifecycle) owns its relationship to hold-cycle identity and defines its metadata exclusions.
-- `coverage`: `{known, checked, complete, provenClear, captainOmitted, unmeasuredHomes}`. Say "Nothing needs your action right now" only when `provenClear`; otherwise "No decision is recorded · checked X of Y".
+- `coverage`: `{known, checked, complete, provenClear, captainOmitted, unmeasuredHomes}`. On a current empty reading, say "Nothing needs your action right now" only when `provenClear`; otherwise "No decision is recorded · checked X of Y". Missing and stale readings follow [Feed health](#feed-health).
 - `omitted[]`: `{kind:"deferred-holds", count}` (blocked, dated or aged holds not shown), `{kind:"decisions-bound", shown, total}`, `{kind:"invalid-rows", count}`, and `{kind:"invalid-landed", count}` when a landed row is dropped.
 - Model `rev` hashes `cards`, `coverage`, `omitted`, and `landed` when any landed card is present. It never hashes the snapshot clock, so an unchanged Captain's Call is never pushed again. An empty landed list leaves the hash unchanged.
 - Privacy: `repo` is a basename, report and checkout paths are never served, and absolute paths inside free text are reduced to `…/<last segment>`.
 
 Sections are pluggable (`SECTIONS` in `bearings.js`). The served model enables `call`, `landed`, `underway` and `charted` on the same snapshot and transport.
+
+## Feed health
+
+`GET /api/health` stays HTTP 200 with `ok:true` for service readiness and adds `status:"ok"|"degraded"` plus `bearings:{rev,state,observedAt,checkedAt,stale,error,ageMs,maxAgeMs,remoteCollection:"cache"}`. Only a ready, current reading reports `ok`; loading, unavailable and stale readings are `degraded`. A health read never starts or waits for a run. `ageMs` counts from the last successful observation, never the latest failed attempt, and is null before one.
+
+The Overview Captain's Call badge and the Just landed badge show `?` while the feed is loading or unavailable, label stale counts (`2 · stale`), and hide a zero badge only for a current reading. Phone and tablet tabs show `(loading)` or `(unavailable)` instead of zero and label stale counts; current readings retain zero counts in the tabs. The fleet pill reads `unavailable` or `stale` for those feed conditions. Freshness-only events relabel the counts already shown without re-rendering cards; [Lifecycle](#lifecycle) owns Captain's Call badge membership and classification. A stale empty section says the current calls or landings are unknown rather than claiming none. The call coverage footer gives the last-success age. Captain's Call and Just landed disclose that remote homes use cached readings.
 
 ## Card clocks and sorting
 
@@ -52,11 +58,11 @@ Each card has `clock:{label,at}`. Decision clocks use the newest durable `update
 
 - Runs happen only while someone watches: an open stream, or a `GET /api/bearings` within the last 60 s. With nobody watching there are no watchers, timers or runs.
 - While watched, a run is requested by: `fs.watch` of `data/backlog.md` and `state/*.meta` (non-recursive, so the snapshot's cache subdirectory never triggers); a 10 s mtime/size fingerprint of the same names as a backstop; the age ceiling; and the first watcher when the cache is older than 60 s.
-- Requests are debounced 2 s. Run starts are at least `FM_BEARINGS_MIN_GAP_MS` apart (default 30000, floor 15000). `FM_BEARINGS_MAX_AGE_MS` (default 300000, floor 60000) bounds model age while watched. One run at a time; a request during a run queues one follow-up.
+- Requests are debounced 2 s. Run starts are at least `FM_BEARINGS_MIN_GAP_MS` apart (default 30000, floor 15000). `FM_BEARINGS_MAX_AGE_MS` (default 300000, floor 60000) bounds model age while watched. The last good model is marked stale once its age reaches that ceiling plus one 10 s tick (the time the watched cadence takes to start its refresh), including when nobody watches, unless a refresh that started within that time is still running. One run at a time; a request during a run queues one follow-up.
 
 ## Transport
 
-- `GET /api/bearings?since=<rev>` returns `{unchanged:true, rev, state, observedAt, checkedAt, stale, error}` when `rev` still matches, else the full model. Reads come from cache and never wait for a run. Previews proxy it.
+- `GET /api/bearings?since=<rev>` returns `{unchanged:true, rev, state, observedAt, checkedAt, stale, error, ageMs, maxAgeMs}` when `rev` still matches, else the full model. Reads come from cache and never wait for a run. Previews proxy it.
 - `GET /api/bearings/stream` (host only; 404 through a preview path; 503 beyond 16 streams per process): `text/event-stream`, `no-store`, `x-accel-buffering: no`, never gzipped.
   - On connect: `retry: 3000`, `event: hello {servedCommit}`, then `event: model` with `id: <rev>` unless `Last-Event-ID` already equals the current `rev`, in which case `event: observed`.
   - `event: model` (with `id`) when the calls change; `event: observed` with freshness fields after a run that changed nothing.
@@ -65,6 +71,7 @@ Each card has `clock:{label,at}`. Decision clocks use the newest durable `update
 - The client keeps one `EventSource` per visible tab and closes it on `hidden` and `pagehide`. Becoming visible fetches `?since` first, then reopens. On a stream error it runs the review config recheck, polls `?since` every 15 s, and retries the stream after 3 s, 10 s, then 30 s. `bye` reconnects at once. A `hello` whose served commit differs from the page's boot revision shows the existing "Quarterdeck updated" notice and rebinds this document's live transport to that commit. A server `revision` event shows the same notice, marks Captain's Call freshness updating, and retries with the same backoff until a hello restores the feed. Reload stays available and is not automatic. The server still closes a stream whose checkout no longer matches its boot commit.
 - A refused `EventSource` construction uses the same bounded retry and HTTP polling fallback as an asynchronous stream error, rather than abandoning live updates.
 - Late HTTP responses and queued events from closed streams cannot overwrite a newer read or pushed model. Suspension invalidates pending reads and reconnect continuations, including `pagehide` while the document still reports visible; a stopped controller cannot reopen from an earlier lifecycle.
+- The app accepts a freshness-only observation only when its `rev` matches the latest received model, before dispatching it to the section controllers or updating badges, tabs, recap, activity or the freshness pill.
 
 ## Engagement hold
 
@@ -281,7 +288,7 @@ All shows every open card in the current sort, with the dot distinguishing them.
 There is no separate answered or procrastinated group heading.
 Card nodes, threads, drafts, and correction controls stay in place when a filter hides them.
 If hiding the card would strand focus, focus moves to that state's button.
-The Overview count badge counts Active cards, the ones waiting on the captain.
+The Overview count badge counts Active cards in the latest received source model, using each card's rendered lifecycle while its update is held. A resolved card retained on screen no longer counts. Freshness observations and lifecycle redraws keep that source membership.
 
 `answered-calls.js` still classifies open cards from the existing inbox's pending and handled notes.
 An answer note matches its validated `fm-bearings-answer.v1` envelope (schema, channel, type and exact question/intake key).
@@ -357,8 +364,7 @@ On a phone, through 720px, those tabs are a fixed bar at the bottom of the viewp
 From 721px through 1099px the tabs stay in the page under the summary.
 Captain's Call N counts every open card, including filtered cards.
 Just landed N counts landings whose current rev is not the acknowledged rev.
-The Just landed heading shows that same count in the Captain's Call count badge and hides the badge when it is 0, the same way the Overview Captain's Call badge hides when none are waiting.
-The phone tab still shows Just landed (0) when none are new, the same way Captain's Call (0) stays visible.
+The Just landed heading badge shows that same count; [Feed health](#feed-health) owns badge visibility and tab labels.
 The chosen tab is remembered for that viewer in localStorage under `fm-quarterdeck-overview-tab.v1`.
 From 1100px wide, Overview keeps both columns, with the same 22px gap, and does not show the tabs.
 The source is the same guarded snapshot.
