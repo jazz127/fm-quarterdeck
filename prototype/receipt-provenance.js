@@ -2,7 +2,7 @@
 // Optional hold metadata comes from the existing card; this module creates no cycles.
 export function currentCardNote(card, envelope = {}, at = null) {
   if (!card?.holdVersion) return true;
-  const updated = Date.parse(card.clock?.at), sent = Date.parse(at);
+  const updated = Date.parse(card.holdAt || card.clock?.at), sent = Date.parse(at);
   if (Number.isFinite(updated) && Number.isFinite(sent) && updated > sent) return false;
   if (envelope.holdVersion) return envelope.holdVersion === card.holdVersion;
   if (envelope.cardRev) return envelope.cardRev === card.rev;
