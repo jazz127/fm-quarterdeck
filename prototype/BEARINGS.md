@@ -503,8 +503,11 @@ no decision. One combined note receives one inbox acknowledgement and reply. Rec
 
 Pending submissions remain visible on cards and in the review queue. **Send** in the
 message composer submits its drafts urgently and flushes already saved pending work.
-Batch queue sends submit card items concurrently so they share the window. A page close
-or reload cannot cancel saved server work; tab storage also keeps uncertain client sends
+Batch queue sends submit card items concurrently so they share the window; an urgent
+flush (including the composer's direct flush) first waits for card answers and thread
+notes the server is still receiving, bounded by the same debounce deadline, so one Send
+within that window stays one inbox note. A page close or reload cannot cancel saved
+server work; tab storage also keeps uncertain client sends
 for an explicit same-ID retry. Unsubmitted drafts still belong to the browser tab.
 
 The home-scoped `*.inbox-*.json` outbox stores sealed membership before calling

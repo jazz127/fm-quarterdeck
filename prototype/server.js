@@ -1179,6 +1179,8 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     for (const event of ["finish", "close"]) response.once(event, () => { responseDone = true; finishUse(); });
     try {
       const url = new URL(request.url || "/", "http://localhost");
+      const arrived = request.method === "POST" && ["/api/bearings/answer", "/api/bearings/thread"].includes(url.pathname) ? inboxBatcher.arrive() : undefined;
+      if (arrived) response.once("close", arrived);
       const preview = previewPath(url.pathname);
       const commit = await syncRevision();
       if (!commit) { await sendJson(request, response, 503, { error: "Serving revision unavailable" }); return; }
@@ -1512,7 +1514,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         // A request spanning a fast-forward is refused rather than answered under a mixed identity.
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         try {
-          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
+          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1", arrived });
           // A chat ask has no Firstmate hold to close it; the confirmed relay resolves it here.
           if (accepted.envelope?.type === "chat") await bearingsSource.resolveChat?.(accepted.key, "answered", { requestId: accepted.requestId }).catch(() => {});
           await sendJson(request, response, 202, accepted);
@@ -1615,7 +1617,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         let body = null;
         try { body = JSON.parse(text); } catch {}
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
-        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" })); }
+        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1", arrived })); }
         catch (error) {
           if (!(error instanceof ThreadRefused)) throw error;
           await sendJson(request, response, error.status, { error: error.message, code: error.code });
