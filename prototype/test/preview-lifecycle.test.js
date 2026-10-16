@@ -297,6 +297,21 @@ test("transient startup health remains Starting until proof or deadline, never a
   await wait(() => f.lifecycle.status("dev-one").state === "ready");
 });
 
+test("a process reaped mid-probe is absent; denied access to a present process stays unknown", async () => {
+  const fail = (code) => Promise.reject(Object.assign(new Error(code), { code }));
+  // Linux surfaces a reap between /proc lookup and readlink as EACCES; the
+  // second stat read is the fresh existence recheck.
+  const probe = (recheck) => {
+    let stats = 0;
+    return { read: async (file) => file.endsWith("/stat") && ++stats > 1 ? recheck() : "1 (node) S", link: () => fail("EACCES"), get stats() { return stats; } };
+  };
+  const reaped = probe(() => fail("ENOENT"));
+  assert.equal(await processIdentity(4242, reaped), null);
+  assert.equal(reaped.stats, 2);
+  await assert.rejects(processIdentity(4242, probe(async () => "1 (node) S")), /Process identity unknown/);
+  await assert.rejects(processIdentity(4242, probe(() => fail("EIO"))), /Process identity unknown/);
+});
+
 test("malformed process identity is unknown, not absent evidence authorizing a new child", () => {
   assert.equal(sameIdentity({}, {}), false);
   assert.equal(sameIdentity({ pid: 1 }, { pid: 1 }), false);

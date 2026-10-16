@@ -44,17 +44,21 @@ export async function proveCheckout(root, relative, commit, primary) {
   return checkout;
 }
 
-export async function processIdentity(pid) {
+const ABSENT = ["ENOENT", "ESRCH"];
+export async function processIdentity(pid, { read = readFile, link = readlink } = {}) {
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
   try {
     const [stat, boot, cwd, command, environment] = await Promise.all([
-      readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8"),
-      readlink(`/proc/${pid}/cwd`), readFile(`/proc/${pid}/cmdline`, "utf8"), readFile(`/proc/${pid}/environ`, "utf8"),
+      read(`/proc/${pid}/stat`, "utf8"), read("/proc/sys/kernel/random/boot_id", "utf8"),
+      link(`/proc/${pid}/cwd`), read(`/proc/${pid}/cmdline`, "utf8"), read(`/proc/${pid}/environ`, "utf8"),
     ]);
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     return { pid, start: fields[19], boot: boot.trim(), cwd, command, generation: environment.split("\0").find((s) => s.startsWith("FM_PREVIEW_GENERATION="))?.split("=")[1] || "" };
   } catch (error) {
-    if (["ENOENT", "ESRCH"].includes(error.code)) return null;
+    if (ABSENT.includes(error.code)) return null;
+    // Linux reports EACCES from /proc/<pid>/cwd when the process is reaped
+    // mid-probe. Only a fresh probe proving the PID is gone makes it absent.
+    if (await read(`/proc/${pid}/stat`, "utf8").then(() => false, (again) => ABSENT.includes(again.code))) return null;
     throw new Error("Process identity unknown; operator reconciliation required");
   }
 }
