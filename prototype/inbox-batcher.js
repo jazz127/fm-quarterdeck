@@ -14,13 +14,13 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   // for them, so concurrent items from one Send share a note instead of sealing early.
   let arriving = 0, arrivalTimer;
   const quiet = [];
-  const releaseArrivals = () => {
+  const releaseArrivals = (expired = false) => {
     clearTimeout(arrivalTimer);
     arrivalTimer = undefined;
-    for (const resolve of quiet.splice(0)) resolve();
+    for (const resolve of quiet.splice(0)) resolve(expired);
   };
   const scheduleArrivalDeadline = () => {
-    if (!timer && !arrivalTimer && quiet.length) arrivalTimer = setTimeout(releaseArrivals, delayMs);
+    if (!timer && !arrivalTimer && quiet.length) arrivalTimer = setTimeout(() => releaseArrivals(true), delayMs);
   };
   function arrive() {
     let open = true;
@@ -101,23 +101,27 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
     arrivalTimer = undefined;
     timer = setTimeout(() => {
       timer = undefined;
-      releaseArrivals();
+      releaseArrivals(true);
       void flushSaved().catch(() => {});
     }, Math.min(delayMs, Math.max(0, Math.min(...state.batches.filter((batch) => !batch.receipt).map((batch) => (batch.at || Date.now()) + delayMs + 2000 - Date.now())))));
     timer.unref?.();
   };
   async function flush() {
-    await received();
-    return flushSaved();
+    while (true) {
+      const expired = await received();
+      if (await flushSaved(!expired)) return;
+    }
   }
-  async function flushSaved() {
+  async function flushSaved(waitForArrivals = false) {
     return locked(async () => {
       await ready;
+      if (waitForArrivals && arriving) return false;
       clearTimeout(timer);
       timer = undefined;
       scheduleArrivalDeadline();
       for (const batch of state.batches.filter((entry) => entry.receipt)) settle(batch);
       for (const batch of state.batches.filter((entry) => !entry.receipt)) {
+        if (waitForArrivals && arriving) { schedule(); return false; }
         // Seal before delivery. New arrivals cannot join an uncertain submitted batch.
         batch.sealed = true;
         await save();
@@ -132,6 +136,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
           throw error;
         }
       }
+      return true;
     }).catch((error) => {
       // A failed earlier batch or disk/lock operation must also release later HTTP
       // callers. Their payloads stay saved; each client can retry visibly.
