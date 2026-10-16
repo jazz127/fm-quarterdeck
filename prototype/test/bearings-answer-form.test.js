@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
 import { normalizeSnapshot } from "../bearings.js";
 import { composeCallModel, extractAsks } from "../chat-asks.js";
+import { prefixHold, prefixReason, binaryQuestionReasons } from "./helpers/prefix-hold.js";
 
 const sources = await Promise.all(["bearings-patch.js", "bearings-view.js", "bearings-answer-form.js", "bearings-overflow.js", "call-lifecycle.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
 const flush = async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
@@ -82,6 +83,54 @@ test("extracted Yes and No controls use the typed answer path; text alone remain
     assert.equal(t.fetches[0].url, "/api/bearings/thread");
     assert.equal(t.fetches[0].body.text, text);
   }
+});
+
+test("canonical prefix and binary-question radios require Queue/Send; typed Yes/Proceed/No stay thread notes", async () => {
+  for (const reason of [prefixReason, ...binaryQuestionReasons]) {
+    const { model: current } = await prefixHold({ reason }), key = "decision:sample-call";
+    for (const selection of ["yes", "no"]) {
+      const t = setup(); t.patcher.update(current);
+      assert.equal(t.node(key).querySelectorAll('input[type="radio"]').length, 2, reason);
+      assert.ok(t.node(key).textContent.includes(reason), "full reason stays visible");
+      const radio = t.node(key).querySelector(`input[value="${selection}"]`);
+      radio.checked = true; radio.dispatchEvent({ type: "change" });
+      assert.equal(t.fetches.length, 0, "selection alone never sends");
+      t.submit(key);
+      assert.equal(t.answers.state(key).phase, "confirm");
+      assert.equal(t.fetches.length, 0, "Queue alone never sends");
+      t.part(key, "send").click(); await flush();
+      assert.equal(t.fetches.length, 1);
+      assert.equal(t.fetches[0].url, "/api/bearings/answer");
+      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection, note: "" });
+    }
+    for (const text of ["Yes", "Proceed", "No"]) {
+      const t = setup(); t.patcher.update(current); t.part(key, "text").type(text);
+      t.submit(key); assert.equal(t.fetches.length, 0);
+      t.part(key, "send").click(); await flush();
+      assert.equal(t.fetches[0].url, "/api/bearings/thread");
+      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text });
+    }
+    assert.equal(current.cards[0].backlogReason, reason);
+  }
+});
+
+test("canonical question choice arrival preserves the engaged same-hold draft until accepted", async () => {
+  const { model: current, raw } = await prefixHold({ reason: binaryQuestionReasons[1] });
+  const earlier = structuredClone(raw); delete earlier.decisions_open[0].options;
+  const before = { ...normalizeSnapshot(earlier), state: "ready" };
+  assert.equal(before.cards[0].holdVersion, current.cards[0].holdVersion);
+  const t = setup(), key = current.cards[0].key; t.patcher.update(before);
+  const field = t.part(key, "text"); field.focus(); field.type("Keep this draft");
+  t.patcher.update(current);
+  assert.equal(t.patcher.held, true);
+  assert.equal(t.document.activeElement, field);
+  assert.equal(t.part(key, "text").value, "Keep this draft");
+  assert.equal(t.node(key).querySelector('input[value="yes"]'), null);
+  t.node(key).querySelector("[data-call-update-now]").click();
+  assert.equal(t.part(key, "text").value, "Keep this draft");
+  assert.ok(t.node(key).querySelector('input[value="yes"]'));
+  assert.ok(t.node(key).querySelector('input[value="no"]'));
+  assert.equal(t.fetches.length, 0);
 });
 
 test("arrival of explicit Yes/No choices holds the engaged card and preserves focus and draft", () => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +11,7 @@ const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 // Use the default server/composed source and guarded inbox adapter, not an injected
 // bearings source. Only the Firstmate executables and their data are synthetic.
-async function fixture(t) {
+async function fixture(t, { revisionSnapshot = async () => "a".repeat(40) } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "qd-call-receipts-"));
   const home = path.join(directory, "home");
   for (const dir of ["bin", "data", "state"]) await mkdir(path.join(home, dir), { recursive: true });
@@ -38,7 +39,7 @@ else if (process.argv[2] === "note") {
   async function restart() {
     if (server) await new Promise((resolve) => server.close(resolve));
     server = createServer({ FM_HOME: home, FM_QUARTERDECK_STATE_PATH: path.join(directory, "state.json"), CLAUDE_CONFIG_DIR: path.join(directory, "claude") }, {
-      revisionResolver: { initial: "a".repeat(40), snapshot: async () => "a".repeat(40) },
+      revisionResolver: { initial: "a".repeat(40), snapshot: revisionSnapshot },
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${server.address().port}`;
@@ -57,7 +58,7 @@ else if (process.argv[2] === "note") {
   const receipts = async () => JSON.parse(await readFile(path.join(home, "receipts.json"), "utf8"));
   const saveReceipts = async (data) => writeFile(path.join(home, "receipts.json"), JSON.stringify(data));
   await restart();
-  return { get, post, restart, receipts, saveReceipts };
+  return { get, post, restart, receipts, saveReceipts, server: () => server, base: () => base };
 }
 
 for (const combined of [false, true]) test(`${combined ? "combined" : "individual"} submissions retain per-call answers through pending, acknowledgement and reply`, async (t) => {
@@ -144,4 +145,53 @@ for (const combined of [false, true]) test(`${combined ? "combined" : "individua
     assert.equal(acknowledged.cards.find((card) => card.key === calls[0].key).sentReceipt, "acknowledged");
     assert.equal(acknowledged.cards.find((card) => card.key === calls[1].key).sentReceipt, "replied");
   }
+});
+
+for (const directFlush of [false, true]) for (const refused of [false, true]) test(`one urgent Send${directFlush ? " with a direct composer flush" : ""} of queued cards wakes the inbox once when ${refused ? "a refused" : "one"} item is still being received`, async (t) => {
+  let releaseRevision, pauseRevision = false;
+  const revisionWait = new Promise((resolve) => { releaseRevision = resolve; });
+  const f = await fixture(t, { revisionSnapshot: async () => {
+    if (pauseRevision) { pauseRevision = false; await revisionWait; }
+    return "a".repeat(40);
+  } });
+  const calls = (await f.get("/api/bearings")).cards.filter((card) => card.type === "decision").slice(0, 2);
+  assert.equal(calls.length, 2);
+  const headers = { origin: f.base(), "content-type": "application/json", "x-quarterdeck-send-now": "1" };
+  // The thread note's request has reached the server; its body is still in transit.
+  const threadBody = JSON.stringify({ requestId: uuid(2), key: refused ? "decision:no-such-call" : calls[1].key, text: "Which window is safer?" });
+  const started = new Promise((resolve) => f.server().once("request", resolve));
+  const slow = http.request(f.base() + "/api/bearings/thread", { method: "POST", headers: { ...headers, "content-length": Buffer.byteLength(threadBody) } });
+  const slowResponse = new Promise((resolve, reject) => {
+    slow.on("response", (response) => { let text = ""; response.on("data", (chunk) => { text += chunk; }); response.on("end", () => resolve({ status: response.statusCode, body: JSON.parse(text) })); });
+    slow.on("error", reject);
+  });
+  pauseRevision = directFlush;
+  slow.flushHeaders();
+  await started;
+  const answer = fetch(f.base() + "/api/bearings/answer", { method: "POST", headers, body: JSON.stringify({ requestId: uuid(1), key: calls[0].key, cardRev: calls[0].rev, selection: "", note: "Tuesday" }) })
+    .then(async (response) => ({ status: response.status, body: await response.json() }));
+  for (let n = 0; n < 200; n++) {
+    if ((await f.get("/api/inbox/pending")).items.length || (await f.receipts()).pending.length) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const flushing = directFlush ? f.post("/api/inbox/send-now", {}) : Promise.resolve();
+  if (directFlush) await new Promise((resolve) => setTimeout(resolve, 100));
+  const ended = Date.now();
+  releaseRevision();
+  slow.end(threadBody);
+  const [answered, asked] = await Promise.all([answer, slowResponse, flushing]);
+  assert.equal(answered.status, 202, JSON.stringify(answered.body));
+  const notes = (await f.receipts()).pending;
+  assert.equal(notes.length, 1, "one Send of queued cards produces one inbox note and wake");
+  if (refused) {
+    // The refusal releases the urgent flush rather than leaving it to the three-second window.
+    assert.equal(asked.status, 409, JSON.stringify(asked.body));
+    assert.ok(Date.now() - ended < 2000);
+    assert.equal(notes[0].request_id, `quarterdeck-call:${uuid(1)}`);
+    return;
+  }
+  assert.equal(asked.status, 202, JSON.stringify(asked.body));
+  assert.equal(answered.body.noteId, asked.body.noteId);
+  assert.deepEqual(taggedEnvelope(notes[0].body, "fm-quarterdeck-batch").items.map((item) => item.requestId),
+    [`quarterdeck-call:${uuid(1)}`, `quarterdeck-thread:${calls[1].key}:${uuid(2)}`]);
 });
