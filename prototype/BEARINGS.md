@@ -8,9 +8,8 @@ Code: `bearings.js` (server), `bearings-answer.js` (answer relay), `public/beari
 
 Stock child-home decisions retain their exact `home/task` identity when the snapshot's
 `owner` and local `key` agree. Identical local task names in different homes remain
-separate cards. These calls show the existing answer-in-chat hint: a child hold is not
-a selected-home keyed answer. Their thread notes and Quarterdeck-only procrastination
-retain the scoped card identity; neither changes a Firstmate hold.
+separate cards. Other-home decisions are read-only and show that they must be
+answered in their own home; they expose no answer, thread-note or procrastination controls.
 Parking refuses an update that would exceed its existing state-size bound and preserves
 the previously readable state.
 

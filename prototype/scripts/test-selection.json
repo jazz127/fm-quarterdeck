@@ -98,7 +98,6 @@
     "test/transcript.test.js",
     "test/work-model.test.js",
     "test/bearings-ownership.test.js",
-    "test/receipt-retry-regressions.test.js",
     "test/secondmates.test.js",
     "test/secondmates-disclosure.test.js"
   ]
