@@ -11,12 +11,15 @@ const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function fixture(t, options = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "qd-outbox-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const deliveries = [];
   const setup = { home: path.join(directory, "home"), statePath: path.join(directory, "state.json"), delayMs: 100,
     deliver: async (home, id, text) => { deliveries.push({ id, text }); return { id: "2000000000-note", request_id: id, saved: true, announced: true }; }, ...options };
   const batcher = createInboxBatcher(setup);
-  t.after(() => batcher.close());
+  t.after(async () => {
+    batcher.close();
+    await batcher.note.lookup("");
+    await rm(directory, { recursive: true, force: true });
+  });
   return { batcher, setup, deliveries };
 }
 const card = { key: "decision:example-task", type: "decision", task: "example-task", rev: "a".repeat(16), answer: { question: "example-task", options: [] } };
@@ -196,4 +199,21 @@ test("urgent waits follow a debounce deadline extended by subsequent saves", { t
   assert.equal(f.deliveries.length, 1, "all three items saved within five seconds share one inbox wake");
   assert.ok(receipts.slice(0, 3).every((receipt) => receipt.id === receipts[0].id));
   assert.deepEqual(taggedEnvelope(f.deliveries[0].text, "fm-quarterdeck-batch").items.map((item) => item.requestId), ids);
+});
+
+test("a sibling arriving after the initial flush check joins the unsealed answer", { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 2000000000000 });
+  const f = await fixture(t, { delayMs: 3000 });
+  const answerId = "quarterdeck-call:" + uuid(1), threadId = "quarterdeck-thread:" + card.key + ":" + uuid(2);
+  const answered = f.batcher.note(f.setup.home, answerId, "Tuesday");
+  await f.batcher.note.lookup(answerId);
+  const flushing = f.batcher.flush();
+  await Promise.resolve();
+  const arrived = f.batcher.arrive();
+  t.after(arrived);
+  const asked = f.batcher.note(f.setup.home, threadId, "Which window?", { immediate: true, arrived });
+  const [answerReceipt, threadReceipt] = await Promise.all([answered, asked, flushing]);
+  assert.equal(f.deliveries.length, 1, "a sibling received before sealing shares the queued Send's inbox wake");
+  assert.equal(answerReceipt.id, threadReceipt.id);
+  assert.deepEqual(taggedEnvelope(f.deliveries[0].text, "fm-quarterdeck-batch").items.map((item) => item.requestId), [answerId, threadId]);
 });
