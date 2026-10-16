@@ -103,14 +103,14 @@ test("canonical prefix and binary-question radios require Queue/Send; typed Yes/
       t.part(key, "send").click(); await flush();
       assert.equal(t.fetches.length, 1);
       assert.equal(t.fetches[0].url, "/api/bearings/answer");
-      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection, note: "" });
+      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection, note: "", holdVersion: current.cards[0].holdVersion });
     }
     for (const text of ["Yes", "Proceed", "No"]) {
       const t = setup(); t.patcher.update(current); t.part(key, "text").type(text);
       t.submit(key); assert.equal(t.fetches.length, 0);
       t.part(key, "send").click(); await flush();
       assert.equal(t.fetches[0].url, "/api/bearings/thread");
-      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text });
+      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text, holdVersion: current.cards[0].holdVersion });
     }
     assert.equal(current.cards[0].backlogReason, reason);
   }
