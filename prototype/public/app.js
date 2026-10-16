@@ -1914,7 +1914,7 @@ const callPatcher = window.bearingsPatch?.createCallPatcher({
   onApply(model) { const keys = model.cards.map((card) => card.key); callAnswers?.prune(keys); callOverflow?.prune(keys); callDismiss?.prune(keys); callThreads?.prune(keys); callText?.prune(keys); renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); },
 });
 // Queued answers join the review panel's queue; its Send sends them with the notes.
-callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, holdVersion) => { callThreads?.noteSent(key, holdVersion); renderCallLifecycle(); } });
+callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, holdVersion, noteId) => { callThreads?.noteSent(key, holdVersion, noteId); renderCallLifecycle(); } });
 if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: (options) => callAnswers.sendQueued(options), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
 callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
 callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });

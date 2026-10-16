@@ -107,6 +107,14 @@ test('answerable cards render a form: freeform only without options, options wit
   assert.match(linked, /data-call-reply="&lt;hold&gt;"/);
 });
 
+test('a merge card captions its recorded reason as a merge reason, not a hold reason', () => {
+  const caption = (card) => view.cardHtml(card).match(/<p class="call-meta call-recap-source">([^<]*)<\/p>/)?.[1];
+  assert.equal(caption({ key: 'merge:beta-merge', task: 'beta-merge', type: 'merge', reason: 'checks green; merge approval needed' }), 'Recorded merge reason');
+  assert.equal(caption({ key: 'merge:beta-merge', task: 'beta-merge', type: 'merge' }), 'Recorded merge reason');
+  assert.equal(caption({ key: 'decision:alpha-call', task: 'alpha-call', type: 'decision', summary: 'Pick', reason: 'Pick the alpha rollout window' }), 'Recorded hold reason');
+  assert.equal(caption({ key: 'merge:beta-merge', task: 'beta-merge', type: 'merge', reason: 'checks green', boardDecide: 'Merge PR 7?' }), 'Source question / action');
+});
+
 test('lettered choices render as one radio group with the description under each letter', () => {
   const html = view.cardHtml({ key: 'decision:alpha-call', task: 'alpha-call', type: 'decision', summary: 'Choose', answer: { question: 'alpha-call', options: [
     { value: 'a', label: 'a', hint: 'Staged rollout — fewer users' },

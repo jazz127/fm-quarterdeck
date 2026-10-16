@@ -3,6 +3,8 @@
 // and never Procrastinate.
 window.bearingsLanded = (() => {
   const MAX_BYTES = 2000;
+  const STATE_PREFIX = "fm-quarterdeck-landed-follow.v1:";
+  const UNCONFIRMED = "Firstmate did not confirm the follow-up; retry sends the same follow-up once";
   const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const bytes = (text) => new TextEncoder().encode(text).length;
   const clockText = (clock) => window.bearingsView?.clockText?.(clock) || (clock?.at ? `Landed: ${clock.at}` : "Landed: unknown");
@@ -44,7 +46,7 @@ window.bearingsLanded = (() => {
       </form>`;
   }
 
-  function createController({ list, toggle, badge, invalid, onChange = () => {}, doc = document, fetchImpl = (...args) => globalThis.fetch(...args), timers = globalThis, uuid = () => globalThis.crypto.randomUUID(), pollMs = 15000 } = {}) {
+  function createController({ list, toggle, badge, invalid, onChange = () => {}, doc = document, storage = (() => { try { return window.sessionStorage; } catch { return null; } })(), fetchImpl = (...args) => globalThis.fetch(...args), timers = globalThis, uuid = () => globalThis.crypto.randomUUID(), pollMs = 15000 } = {}) {
     if (!list) return { update() {}, destroy() {}, count() { return 0; }, newCount() { return 0; } };
     const text = window.bearingsView?.createTextController?.({ list, keyAttribute: "data-landed-key" });
     const drafts = new Map();
@@ -53,10 +55,20 @@ window.bearingsLanded = (() => {
     let acks = {};
     let reviewing = false;
     let pollTimer = null;
+    let destroyed = false;
+    // An attempted follow-up is saved before it is sent. Until Firstmate confirms it, a reload
+    // restores the same words and request id, queued for an explicit Retry send.
     const draftOf = (key) => {
-      if (!drafts.has(key)) drafts.set(key, { text: "", phase: "draft", requestId: null, error: "", notice: "" });
+      if (!drafts.has(key)) {
+        let saved = null;
+        try { saved = JSON.parse(storage?.getItem(STATE_PREFIX + key) || "null"); } catch {}
+        const restored = typeof saved?.text === "string" && typeof saved?.requestId === "string";
+        drafts.set(key, { text: restored ? saved.text : "", phase: restored ? "queued" : "draft", requestId: restored ? saved.requestId : null,
+          attempted: restored, error: restored ? UNCONFIRMED : "", notice: "" });
+      }
       return drafts.get(key);
     };
+    const forget = (key) => { try { storage?.removeItem(STATE_PREFIX + key); } catch {} };
     const historyOf = (key) => {
       if (!histories.has(key)) histories.set(key, { entries: [], open: false });
       return histories.get(key);
@@ -81,8 +93,9 @@ window.bearingsLanded = (() => {
       const queued = draft.phase === "queued" || draft.phase === "sending";
       box.disabled = queued;
       if (queue) queue.hidden = queued;
-      if (send) { send.hidden = !queued; send.disabled = draft.phase === "sending"; }
-      if (edit) { edit.hidden = !queued; edit.disabled = draft.phase === "sending"; }
+      if (send) { send.hidden = !queued; send.disabled = draft.phase === "sending"; send.textContent = draft.attempted && draft.phase !== "sending" ? "Retry send" : "Send"; }
+      // An unconfirmed attempt may already be in Firstmate's inbox: its words stay locked.
+      if (edit) { edit.hidden = !queued; edit.disabled = draft.phase === "sending" || Boolean(draft.attempted); }
       if (confirm) confirm.hidden = !queued;
       if (preview) preview.textContent = draft.text;
       if (error) { error.hidden = !draft.error; error.textContent = draft.error || ""; }
@@ -267,6 +280,7 @@ window.bearingsLanded = (() => {
     function queue(node) {
       const key = node.getAttribute("data-landed-key");
       const draft = draftOf(key);
+      if (draft.phase !== "draft" || draft.attempted) return;
       const text = (node.querySelector("[data-landed-text]")?.value || "").replace(/\r\n?/g, "\n").trim();
       draft.text = text;
       draft.notice = "";
@@ -279,10 +293,20 @@ window.bearingsLanded = (() => {
     async function send(node) {
       const key = node.getAttribute("data-landed-key");
       const draft = draftOf(key);
-      if (!key || draft.phase === "sending" || !draft.text) return;
+      if (!key || draft.phase !== "queued" || !draft.text) return;
+      const uncertain = Boolean(draft.attempted);
+      draft.requestId ||= uuid();
+      try {
+        if (!storage) throw new Error("unavailable");
+        storage.setItem(STATE_PREFIX + key, JSON.stringify({ requestId: draft.requestId, text: draft.text }));
+      } catch {
+        draft.error = "Could not save this follow-up in this tab; it was not sent";
+        paintPhase(node, key);
+        return;
+      }
       draft.phase = "sending";
       draft.error = "";
-      draft.requestId ||= uuid();
+      draft.attempted = true;
       paintPhase(node, key);
       try {
         const response = await fetchImpl("/api/bearings/thread", {
@@ -291,25 +315,30 @@ window.bearingsLanded = (() => {
           body: JSON.stringify({ requestId: draft.requestId, key, text: draft.text }),
         });
         const body = await readJson(response);
+        if (destroyed) return;
         if (!response.ok) {
-          const retry = response.status >= 500;
+          // A refusal after an unconfirmed attempt does not prove that attempt never landed.
+          const retry = response.status >= 500 || uncertain;
           draft.phase = retry ? "queued" : "draft";
-          if (!retry) draft.requestId = null;
-          draft.error = retry ? "Firstmate did not confirm the follow-up; retry sends the same follow-up once" : (body.error || "The follow-up was refused");
+          if (!retry) { draft.requestId = null; draft.attempted = false; forget(key); }
+          draft.error = retry ? (uncertain && response.status < 500 ? `${body.error || "The follow-up was refused"}; retry sends the same follow-up once` : UNCONFIRMED) : (body.error || "The follow-up was refused");
           paintPhase(node, key);
           return;
         }
         draft.phase = "draft";
         draft.text = "";
         draft.requestId = null;
+        draft.attempted = false;
+        forget(key);
         draft.notice = "Question sent to Firstmate";
         globalThis.dispatchEvent?.(new Event("quarterdeck-sent"));
         draft.error = "";
         paintPhase(node, key);
         await loadHistory(key);
       } catch {
+        if (destroyed) return;
         draft.phase = "queued";
-        draft.error = "Firstmate did not confirm the follow-up; retry sends the same follow-up once";
+        draft.error = UNCONFIRMED;
         paintPhase(node, key);
       }
     }
@@ -322,6 +351,7 @@ window.bearingsLanded = (() => {
       if (event.target.closest("[data-landed-edit]")) {
         event.preventDefault();
         const draft = draftOf(node.getAttribute("data-landed-key"));
+        if (draft.phase === "sending" || draft.attempted) return;
         draft.phase = "draft";
         paintPhase(node, node.getAttribute("data-landed-key"));
         return;
@@ -345,7 +375,8 @@ window.bearingsLanded = (() => {
       const box = event.target?.closest?.("[data-landed-text]");
       const node = box?.closest?.("[data-landed-key]");
       if (!box || !node) return;
-      draftOf(node.getAttribute("data-landed-key")).text = box.value;
+      const draft = draftOf(node.getAttribute("data-landed-key"));
+      if (draft.phase === "draft" && !draft.attempted) draft.text = box.value;
     };
     list.addEventListener("click", onClick);
     list.addEventListener("submit", onSubmit);
@@ -372,6 +403,7 @@ window.bearingsLanded = (() => {
       count: () => cards().length,
       newCount,
       destroy() {
+        destroyed = true;
         text?.destroy?.();
         timers.clearInterval?.(pollTimer);
         list.removeEventListener("click", onClick);

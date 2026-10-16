@@ -149,7 +149,7 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
 **What can be answered** (`card.answer`, built by `bearings.js`):
 
 - `question` is the board's intake key: the task id for a decision, `merge.<task>` for a merge ask. A key that fails the intake's slug shape (`[A-Za-z0-9._-]{1,128}`) gives `answer: null`, and the card keeps "Answer in chat" plus a private note-to-self.
-- Decision `options` and `recommend` come from a fresh matching board card when one exists, and otherwise from optional snapshot fields `options[{value,label,hint}]` and `recommend_value`. `close` (`done`|`release`) comes only from the snapshot row. The board card is the `captains_call` item whose `key` equals the decision task id. A `decision` item wins over a `credential` item with the same key. Merge-type board cards are ignored. The reserved `reconcile` choice is dropped before validation and is never offered. The board is skipped for that hold when `generated` is before the hold's latest durable update (`updated_at`, `hold_set_at`, or `created`, newest first). A date-only update is UTC midnight. One invalid remaining option (bad slug, duplicate, missing label, more than 8) voids the board set, and the snapshot row is used instead. A decision with no fresh board card and no snapshot options stays freeform, except for the lettered lines below. Snapshot `reconcile` still voids that row's own options. `recommend` must name an option that remains.
+- Decision `options` and `recommend` come from a fresh matching board card when one exists, and otherwise from optional snapshot fields `options[{value,label,hint}]` and `recommend_value`. `close` (`done`|`release`) comes only from the snapshot row. The board card is the `captains_call` item whose `key` equals the decision task id. A `decision` item wins over a `credential` item with the same key. Merge-type board cards are ignored. The reserved `reconcile` choice is dropped before validation and is never offered. The board is skipped for that hold when `generated` is before the hold's latest durable update (`updated_at`, `hold_set_at`, or `created`, newest first). A date-only update is UTC midnight. One invalid remaining option (bad slug, duplicate, missing label, more than 8) voids the board set, and the snapshot row is used instead. A decision with no fresh board card and no snapshot options stays freeform, except for the explicit recorded grammars below. Snapshot `reconcile` still voids that row's own options. `recommend` must name an option that remains.
 - A decision with no snapshot `options` array can take explicit lettered lines from its recorded reason, summary, or title.
   A linked decision ask supplies those lines only when the filed card still has no options, and the longest linked set wins.
   When two recorded fields offer the same number of letters, a backlog reason wins, then reason, summary, title, and backlog title.
@@ -162,6 +162,12 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
   Merge cards do not gain these lines.
   A present snapshot `options` array, even when invalid, does not fall through to lettered lines.
   Board and snapshot options still win.
+- Last, the selected-home ledger supplement recognizes binary choices only from a complete decoded canonical `fm-hold-v1` captain reason, before fresh board enrichment:
+  - The existing exact `Yes/No:` prefix requires a nonempty single-line action; ellipses, extra lines and competing `Reply` or `or` prose refuse it.
+  - A complete single-line polar question can begin with `Should`, `Can`, `Could`, `May`, `Might`, `Would`, `Will`, `Shall`, `Do`, `Does`, `Did`, `Am`, `Is`, `Are`, `Was`, `Were`, `Has`, `Have`, `Had` or `Must` (case-insensitive), followed by at least two word tokens and exactly one `?`. It may end there or have nonempty consequences labeled only `Yes:` and/or `No:`, each at most once, in either order. For example, `Should we archive the sample copies? Yes: archive them. No: keep them.` and `Should we archive the sample copies? No: keep them.` both offer **Yes and No**. A No-only explanation is not a sole offered answer and does not determine what either answer authorizes.
+  - This is a conservative lexical grammar, not arbitrary English understanding: question controls/line separators, truncation/ellipses, extra questions, inline lettered alternatives, `or` alternatives, conditional `if`/`unless`/`assuming`/`provided` prose, unlabeled trailing prose, duplicate/empty or other colon-labeled consequences and trailing Reply instructions refuse question fallback. Quoted/example/mid-prose questions and nonpolar questions such as `Which sample should we archive?` do not qualify. Unsupported forms remain unoffered rather than guessed.
+  - Both forms supply the existing `{value:"yes",label:"Yes"}` / `{value:"no",label:"No"}` model. Structured and recorded lettered choices retain precedence, invalid supplied options refuse fallback, and fresh matching board enrichment remains unchanged. Only this canonical decoder establishes completeness: snapshot `reason`/`backlogReason`, summary, title or body alone never qualifies. The complete reason and context stay visible.
+  - No producer field, chat scan/version, clock, task, holdVersion, recommendation, close mode, answer schema, routing or receipt contract changes. Radios plus explicit Queue/Send use the existing guarded answer envelope; unselected typed Yes/Proceed/No remain thread notes. Recognition grants no action, completion, deployment or hold-release authority.
 - A merge ask offers the board's single **Merge now** option (`merge`), never a recommendation.
   Only an exact, note-free `merge` is a merge order.
   A selected Merge now with a typed note is relayed with empty `selection` and `note:"merge - <typed note>"`, so keyed intake reads instruction text.
@@ -291,6 +297,8 @@ The latest of those notes sets `sentReceipt`: pending while the note is still pe
 The selected home's receipts are read at most once per 15 seconds while the call source refreshes; a failed read retains previous evidence.
 The sending tab also uses its accepted answer state immediately, including across reload.
 The latest captain note decides the posture the card shows: thread history (`kind` `ask` or `answer`, `from` `captain`, `state` waiting, received, or replied), the sending tab's answer receipt, or `sentReceipt` before that history loads.
+History order owns that choice: the sending tab's receipt counts only for the note it was accepted as (its `noteId`), so a retry that reports a later send time for a note history already lists cannot outrank a newer note, and an older note's reply is never shown for a newer one. Legacy answer receipts without `noteId` resolve it from a current history entry whose `requestId` is `quarterdeck-call:<requestId>`; if identity cannot be established, loaded history wins, including an empty history. Returning an answered box to compose retains that receipt's note and request identities with its held reply.
+An accepted thread note keeps the card Sent, across reloads and stale in-flight history reads, until history lists that exact note. Its `noteId` and hold version persist in tab session storage under `fm-quarterdeck-call-thread.v1:<key>` until then.
 A pending note stays Sent until Firstmate acknowledges it.
 An acknowledged note with no reply stays Sent.
 A reply, while the call is still open, returns the card to Active. Reply posture is not per-item content attribution: a combined submission's reply uses an attribution-gap banner, with its original source accessible separately. `sentReplyScope` is `individual` or `combined`; only an individual association supplies `sentReply`. Answer-status receipts also carry `replyScope`; ambiguous or legacy unattributed local text is not promoted into the banner. Decision cards carry `holdVersion`, the short hash of `[backlogReason || reason || summary, decisionClock(row).at]`. This read-only producer uses existing source evidence, never creates a lifecycle or changes snapshot membership. The selected home's newer valid leading `Captain hold set` stamp wins an older/missing snapshot hold stamp for `(main)` decisions only; a newer snapshot stamp still wins and no other home is read. Full durable hold reason controls identity even when the presentation has a shortened recap. Unknown clocks stay unknown, and missing/repeated clock precision cannot prove an otherwise identical re-hold.
@@ -391,6 +399,9 @@ The model must be `ready` or `stale`, and the key must be a landed card still on
 The body is at most 1 KiB, same-origin JSON, with no query.
 The text box is a follow-up, not an answer and not Procrastinate.
 Queue, then Send, posts `POST /api/bearings/thread` with `{requestId, key, text}` where `key` is `landed:<task id>`.
+Before each send the tab saves the exact words and request id in session storage (`fm-quarterdeck-landed-follow.v1:<key>`); if it cannot, nothing is sent and an error shows.
+Until Firstmate confirms that follow-up it stays queued and locked: Edit is disabled, a reload restores the same words without sending them, and only an explicit **Retry send** resends them with the same request id.
+A network failure or `5xx` leaves delivery unconfirmed. A refusal after an unconfirmed attempt keeps that lock, because it does not prove the earlier attempt never landed; a `4xx` refusal of a first attempt unlocks the box.
 Firstmate replies in that thread.
 The note says nothing was decided.
 There is no Procrastinate control on these cards.
@@ -402,7 +413,7 @@ The one text box opens a thread scoped to one card when no option is selected.
 Its stable id is the card key (`decision:<task>`, `merge:<task>`, `chat:<16 hex>`, `landed:<task>`).
 There is no model call: Quarterdeck relays the captain's note and joins existing records; Firstmate answers.
 
-- **Asking** (`public/bearings-answer-form.js` sends; `public/bearings-thread-panel.js` shows the history): text with no option selected is the thread note.
+- **Asking on open calls** (`public/bearings-answer-form.js` sends; `public/bearings-thread-panel.js` shows the history): text with no option selected is the thread note. [Just landed](#just-landed) owns landed follow-up editing and retry behavior.
   Queue, Send and Edit are the same controls as an answer, and typing in the box holds updates.
   A thread note is at most 2000 UTF-8 bytes.
   **Send** posts `POST /api/bearings/thread` with exactly `{requestId, key, text}`.
@@ -429,7 +440,7 @@ There is no model call: Quarterdeck relays the captain's note and joins existing
   Opening the thread, or clicking the history, marks the loaded replies read.
   A polite status announces the new replies.
   Reply counts are tab-local, not a Firstmate acknowledgement.
-  Thread history state is memory for the tab.
+  Thread entries and read markers stay in memory for the tab; accepted-note receipts follow [Lifecycle](#lifecycle).
   The box's draft and an unconfirmed send persist with the answer state (`fm-quarterdeck-call-answer.v1:<key>`, including `path:"thread"`), and reload never resends.
   Threads of cards that leave are forgotten.
 - **`POST /api/bearings/thread`** (host only; 404 through a preview path): same-origin JSON with no query, at most 4 KiB, served revision unchanged (409 `revision`). Body exactly `{requestId, key, text}`: a lowercase UUID, a card key, and at most 2000 UTF-8 bytes without control characters other than line breaks. The key must be an open card (409 `gone`); answerable or not does not matter. The process remembers 200 request ids, so a retry resends the identical note even after the card left, and reusing an id for different words is 409. Delivery is `fm-inbox.sh note --request-id quarterdeck-thread:<key>:<requestId>` (the same guarded, idempotent path answers and review notes use; a key that would overflow the 128-character id grammar is replaced by `h-<16 hex>` of it). `202 {state:"accepted", requestId, key, noteId, replay, sentAt}`; unconfirmed is `502 unconfirmed`.
@@ -460,7 +471,7 @@ Firstmate also asks the captain things in chat without filing a captain hold, so
   - a confirmed answer (`202`);
   - `POST /api/bearings/dismiss`;
   - fresh selected-home ledger evidence that every linked hold is answered/released/closed;
-  - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes).
+  - a later Firstmate ask repeating the same marker and any normalized suggested reply, even when its explanatory prose changes (identical normalized ask text also supersedes). Asks whose marker lines carry different `[task:<id>]` markers are independent and never supersede each other through a shared reply.
 
   Hold closure records `resolvedBy:"answered"`, `resolutionSource:"data/backlog.md"`, task ids and recorded resolution modes. Unchecked captain holds override historical resolution prose; snapshot disappearance never proves closure, even when fresh and complete. Missing or stale ledger evidence cannot close an ask; snapshot omissions do not invalidate fresh closed-ledger evidence. Resolved keys are tombstoned and never revived. On upgrading the matching rules, the scanner resets only cursors once and replays the bounded newest 4 MiB window to repair existing open cards; existing open reply extraction is refreshed, while dismissals and answer tombstones are preserved.
 - **Model:** `chat:{state, error, open, linked, omitted, behind, sources[{source, backfillOmittedBytes}], resolved[{key,status:"answered",resolvedAt,tasks,source,resolutions}]}` is part of the content revision. `chatCheckedAt` is freshness only. The model `rev` hashes the composed cards, coverage, omissions, chat coverage, and landed cards when any are present.
@@ -498,8 +509,11 @@ no decision. One combined note receives one inbox acknowledgement and reply. Rec
 
 Pending submissions remain visible on cards and in the review queue. **Send** in the
 message composer submits its drafts urgently and flushes already saved pending work.
-Batch queue sends submit card items concurrently so they share the window. A page close
-or reload cannot cancel saved server work; tab storage also keeps uncertain client sends
+Batch queue sends submit card items concurrently so they share the window; an urgent
+flush (including the composer's direct flush) first waits for card answers and thread
+notes the server is still receiving, bounded by the same debounce deadline, so one Send
+within that window stays one inbox note. A page close or reload cannot cancel saved
+server work; tab storage also keeps uncertain client sends
 for an explicit same-ID retry. Unsubmitted drafts still belong to the browser tab.
 
 The home-scoped `*.inbox-*.json` outbox stores sealed membership before calling
