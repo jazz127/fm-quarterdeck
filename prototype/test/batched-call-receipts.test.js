@@ -11,7 +11,7 @@ const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 // Use the default server/composed source and guarded inbox adapter, not an injected
 // bearings source. Only the Firstmate executables and their data are synthetic.
-async function fixture(t) {
+async function fixture(t, { revisionSnapshot = async () => "a".repeat(40) } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "qd-call-receipts-"));
   const home = path.join(directory, "home");
   for (const dir of ["bin", "data", "state"]) await mkdir(path.join(home, dir), { recursive: true });
@@ -39,7 +39,7 @@ else if (process.argv[2] === "note") {
   async function restart() {
     if (server) await new Promise((resolve) => server.close(resolve));
     server = createServer({ FM_HOME: home, FM_QUARTERDECK_STATE_PATH: path.join(directory, "state.json"), CLAUDE_CONFIG_DIR: path.join(directory, "claude") }, {
-      revisionResolver: { initial: "a".repeat(40), snapshot: async () => "a".repeat(40) },
+      revisionResolver: { initial: "a".repeat(40), snapshot: revisionSnapshot },
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${server.address().port}`;
@@ -147,8 +147,13 @@ for (const combined of [false, true]) test(`${combined ? "combined" : "individua
   }
 });
 
-for (const refused of [false, true]) test(`one urgent Send of queued cards wakes the inbox once when ${refused ? "a refused" : "one"} item is still being received`, async (t) => {
-  const f = await fixture(t);
+for (const directFlush of [false, true]) for (const refused of [false, true]) test(`one urgent Send${directFlush ? " with a direct composer flush" : ""} of queued cards wakes the inbox once when ${refused ? "a refused" : "one"} item is still being received`, async (t) => {
+  let releaseRevision, pauseRevision = false;
+  const revisionWait = new Promise((resolve) => { releaseRevision = resolve; });
+  const f = await fixture(t, { revisionSnapshot: async () => {
+    if (pauseRevision) { pauseRevision = false; await revisionWait; }
+    return "a".repeat(40);
+  } });
   const calls = (await f.get("/api/bearings")).cards.filter((card) => card.type === "decision").slice(0, 2);
   assert.equal(calls.length, 2);
   const headers = { origin: f.base(), "content-type": "application/json", "x-quarterdeck-send-now": "1" };
@@ -160,6 +165,7 @@ for (const refused of [false, true]) test(`one urgent Send of queued cards wakes
     slow.on("response", (response) => { let text = ""; response.on("data", (chunk) => { text += chunk; }); response.on("end", () => resolve({ status: response.statusCode, body: JSON.parse(text) })); });
     slow.on("error", reject);
   });
+  pauseRevision = directFlush;
   slow.flushHeaders();
   await started;
   const answer = fetch(f.base() + "/api/bearings/answer", { method: "POST", headers, body: JSON.stringify({ requestId: uuid(1), key: calls[0].key, cardRev: calls[0].rev, selection: "", note: "Tuesday" }) })
@@ -168,9 +174,12 @@ for (const refused of [false, true]) test(`one urgent Send of queued cards wakes
     if ((await f.get("/api/inbox/pending")).items.length || (await f.receipts()).pending.length) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  const flushing = directFlush ? f.post("/api/inbox/send-now", {}) : Promise.resolve();
+  if (directFlush) await new Promise((resolve) => setTimeout(resolve, 100));
   const ended = Date.now();
+  releaseRevision();
   slow.end(threadBody);
-  const [answered, asked] = await Promise.all([answer, slowResponse]);
+  const [answered, asked] = await Promise.all([answer, slowResponse, flushing]);
   assert.equal(answered.status, 202, JSON.stringify(answered.body));
   const notes = (await f.receipts()).pending;
   assert.equal(notes.length, 1, "one Send of queued cards produces one inbox note and wake");

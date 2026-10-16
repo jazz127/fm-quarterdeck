@@ -85,10 +85,17 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   const schedule = () => {
     clearTimeout(timer);
     if (closed || !state.batches.some((batch) => !batch.receipt)) return;
-    timer = setTimeout(() => { void flush().catch(() => {}); }, Math.min(delayMs, Math.max(0, Math.min(...state.batches.filter((batch) => !batch.receipt).map((batch) => (batch.at || Date.now()) + delayMs + 2000 - Date.now())))));
+    timer = setTimeout(() => {
+      for (const resolve of quiet.splice(0)) resolve();
+      void flushSaved().catch(() => {});
+    }, Math.min(delayMs, Math.max(0, Math.min(...state.batches.filter((batch) => !batch.receipt).map((batch) => (batch.at || Date.now()) + delayMs + 2000 - Date.now())))));
     timer.unref?.();
   };
   async function flush() {
+    await received();
+    return flushSaved();
+  }
+  async function flushSaved() {
     return locked(async () => {
       await ready;
       clearTimeout(timer);
@@ -134,7 +141,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       return { pending };
     });
     arrived();
-    if (immediate && result.pending) void received().then(flush).catch(() => {});
+    if (immediate && result.pending) void flush().catch(() => {});
     return result.receipt || result.pending;
   }
   note.lookup = async (id) => locked(async () => { await ready; return find(id)?.items.find((item) => item.id === id)?.record; });
