@@ -12,26 +12,28 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   const waiters = new Map();
   // Submissions a route has started receiving but not yet saved. An urgent flush waits
   // for them, so concurrent items from one Send share a note instead of sealing early.
-  let arriving = 0;
+  let arriving = 0, arrivalTimer;
   const quiet = [];
+  const releaseArrivals = () => {
+    clearTimeout(arrivalTimer);
+    arrivalTimer = undefined;
+    for (const resolve of quiet.splice(0)) resolve();
+  };
+  const scheduleArrivalDeadline = () => {
+    if (!timer && !arrivalTimer && quiet.length) arrivalTimer = setTimeout(releaseArrivals, delayMs);
+  };
   function arrive() {
     let open = true;
     arriving++;
     return () => {
       if (!open) return;
       open = false;
-      if (--arriving === 0) for (const resolve of quiet.splice(0)) resolve();
+      if (--arriving === 0) releaseArrivals();
     };
   }
   const received = () => arriving ? new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(deadline);
-      const index = quiet.indexOf(done);
-      if (index !== -1) quiet.splice(index, 1);
-      resolve();
-    };
-    const deadline = setTimeout(done, delayMs);
-    quiet.push(done);
+    quiet.push(resolve);
+    scheduleArrivalDeadline();
   }) : Promise.resolve();
   const readState = async (strict = false) => {
     try {
@@ -93,9 +95,13 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   };
   const schedule = () => {
     clearTimeout(timer);
-    if (closed || !state.batches.some((batch) => !batch.receipt)) return;
+    timer = undefined;
+    if (closed || !state.batches.some((batch) => !batch.receipt)) { scheduleArrivalDeadline(); return; }
+    clearTimeout(arrivalTimer);
+    arrivalTimer = undefined;
     timer = setTimeout(() => {
-      for (const resolve of quiet.splice(0)) resolve();
+      timer = undefined;
+      releaseArrivals();
       void flushSaved().catch(() => {});
     }, Math.min(delayMs, Math.max(0, Math.min(...state.batches.filter((batch) => !batch.receipt).map((batch) => (batch.at || Date.now()) + delayMs + 2000 - Date.now())))));
     timer.unref?.();
@@ -108,6 +114,8 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
     return locked(async () => {
       await ready;
       clearTimeout(timer);
+      timer = undefined;
+      scheduleArrivalDeadline();
       for (const batch of state.batches.filter((entry) => entry.receipt)) settle(batch);
       for (const batch of state.batches.filter((entry) => !entry.receipt)) {
         // Seal before delivery. New arrivals cannot join an uncertain submitted batch.
@@ -174,5 +182,5 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       requestId: item.id, text: item.display || item.record?.display || item.text, key: item.record?.key || null,
     })));
   }
-  return { note, arrive, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); } };
+  return { note, arrive, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); timer = undefined; scheduleArrivalDeadline(); } };
 }
