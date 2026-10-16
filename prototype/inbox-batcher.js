@@ -10,6 +10,20 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   const file = `${statePath}.inbox-${scope}.json`;
   let state = { schema: "fm-quarterdeck-outbox.v1", batches: [] }, serial = Promise.resolve(), timer, closed = false;
   const waiters = new Map();
+  // Submissions a route has started receiving but not yet saved. An urgent flush waits
+  // for them, so concurrent items from one Send share a note instead of sealing early.
+  let arriving = 0;
+  const quiet = [];
+  function arrive() {
+    let open = true;
+    arriving++;
+    return () => {
+      if (!open) return;
+      open = false;
+      if (--arriving === 0) for (const resolve of quiet.splice(0)) resolve();
+    };
+  }
+  const received = () => arriving ? new Promise((resolve) => quiet.push(resolve)) : Promise.resolve();
   const readState = async (strict = false) => {
     try {
       const info = await lstat(file);
@@ -101,7 +115,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       throw error;
     });
   }
-  async function note(_home, id, text, { record, display, immediate = false } = {}) {
+  async function note(_home, id, text, { record, display, immediate = false, arrived = () => {} } = {}) {
     const result = await locked(async () => {
       await ready;
       let batch = find(id);
@@ -119,7 +133,8 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       schedule();
       return { pending };
     });
-    if (immediate && result.pending) void flush().catch(() => {});
+    arrived();
+    if (immediate && result.pending) void received().then(flush).catch(() => {});
     return result.receipt || result.pending;
   }
   note.lookup = async (id) => locked(async () => { await ready; return find(id)?.items.find((item) => item.id === id)?.record; });
@@ -143,5 +158,5 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       requestId: item.id, text: item.display || item.record?.display || item.text, key: item.record?.key || null,
     })));
   }
-  return { note, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); } };
+  return { note, arrive, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); } };
 }

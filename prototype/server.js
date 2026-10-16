@@ -1504,6 +1504,10 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       if (url.pathname === "/api/bearings/answer" && request.method === "POST") {
         if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
+        // Count this item before reading it, so an urgent sibling waits to share its note.
+        // Saving releases it; a refused or abandoned request releases it when it closes.
+        const arrived = inboxBatcher.arrive();
+        response.once("close", arrived);
         if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
         let text = "";
         for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > MAX_ANSWER_BODY_BYTES) { await sendJson(request, response, 413, { error: "Answer too large", code: "too-long" }); return; } }
@@ -1512,7 +1516,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         // A request spanning a fast-forward is refused rather than answered under a mixed identity.
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         try {
-          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" });
+          const accepted = await answerRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1", arrived });
           // A chat ask has no Firstmate hold to close it; the confirmed relay resolves it here.
           if (accepted.envelope?.type === "chat") await bearingsSource.resolveChat?.(accepted.key, "answered", { requestId: accepted.requestId }).catch(() => {});
           await sendJson(request, response, 202, accepted);
@@ -1609,13 +1613,15 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       if (url.pathname === "/api/bearings/thread" && request.method === "POST") {
         if (preview) { await sendJson(request, response, 404, { error: "Preview route not allowed" }); return; }
         if (!authorized(request)) { await sendJson(request, response, 403, { error: "Unauthorized origin", code: "origin" }); return; }
+        const arrived = inboxBatcher.arrive();
+        response.once("close", arrived);
         if (url.search || !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) { await sendJson(request, response, 415, { error: "JSON required", code: "invalid" }); return; }
         let text = "";
         for await (const chunk of request) { text += chunk; if (Buffer.byteLength(text) > MAX_THREAD_BODY_BYTES) { await sendJson(request, response, 413, { error: "Question too large", code: "too-long" }); return; } }
         let body = null;
         try { body = JSON.parse(text); } catch {}
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
-        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1" })); }
+        try { await sendJson(request, response, 202, await threadRelay.submit(body, bearingsSource.current(), { immediate: request.headers["x-quarterdeck-send-now"] === "1", arrived })); }
         catch (error) {
           if (!(error instanceof ThreadRefused)) throw error;
           await sendJson(request, response, error.status, { error: error.message, code: error.code });

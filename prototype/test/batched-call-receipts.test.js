@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -57,7 +58,7 @@ else if (process.argv[2] === "note") {
   const receipts = async () => JSON.parse(await readFile(path.join(home, "receipts.json"), "utf8"));
   const saveReceipts = async (data) => writeFile(path.join(home, "receipts.json"), JSON.stringify(data));
   await restart();
-  return { get, post, restart, receipts, saveReceipts };
+  return { get, post, restart, receipts, saveReceipts, server: () => server, base: () => base };
 }
 
 for (const combined of [false, true]) test(`${combined ? "combined" : "individual"} submissions retain per-call answers through pending, acknowledgement and reply`, async (t) => {
@@ -144,4 +145,44 @@ for (const combined of [false, true]) test(`${combined ? "combined" : "individua
     assert.equal(acknowledged.cards.find((card) => card.key === calls[0].key).sentReceipt, "acknowledged");
     assert.equal(acknowledged.cards.find((card) => card.key === calls[1].key).sentReceipt, "replied");
   }
+});
+
+for (const refused of [false, true]) test(`one urgent Send of queued cards wakes the inbox once when ${refused ? "a refused" : "one"} item is still being received`, async (t) => {
+  const f = await fixture(t);
+  const calls = (await f.get("/api/bearings")).cards.filter((card) => card.type === "decision").slice(0, 2);
+  assert.equal(calls.length, 2);
+  const headers = { origin: f.base(), "content-type": "application/json", "x-quarterdeck-send-now": "1" };
+  // The thread note's request has reached the server; its body is still in transit.
+  const threadBody = JSON.stringify({ requestId: uuid(2), key: refused ? "decision:no-such-call" : calls[1].key, text: "Which window is safer?" });
+  const started = new Promise((resolve) => f.server().once("request", resolve));
+  const slow = http.request(f.base() + "/api/bearings/thread", { method: "POST", headers: { ...headers, "content-length": Buffer.byteLength(threadBody) } });
+  const slowResponse = new Promise((resolve, reject) => {
+    slow.on("response", (response) => { let text = ""; response.on("data", (chunk) => { text += chunk; }); response.on("end", () => resolve({ status: response.statusCode, body: JSON.parse(text) })); });
+    slow.on("error", reject);
+  });
+  slow.flushHeaders();
+  await started;
+  const answer = fetch(f.base() + "/api/bearings/answer", { method: "POST", headers, body: JSON.stringify({ requestId: uuid(1), key: calls[0].key, cardRev: calls[0].rev, selection: "", note: "Tuesday" }) })
+    .then(async (response) => ({ status: response.status, body: await response.json() }));
+  for (let n = 0; n < 200; n++) {
+    if ((await f.get("/api/inbox/pending")).items.length || (await f.receipts()).pending.length) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const ended = Date.now();
+  slow.end(threadBody);
+  const [answered, asked] = await Promise.all([answer, slowResponse]);
+  assert.equal(answered.status, 202, JSON.stringify(answered.body));
+  const notes = (await f.receipts()).pending;
+  assert.equal(notes.length, 1, "one Send of queued cards produces one inbox note and wake");
+  if (refused) {
+    // The refusal releases the urgent flush rather than leaving it to the three-second window.
+    assert.equal(asked.status, 409, JSON.stringify(asked.body));
+    assert.ok(Date.now() - ended < 2000);
+    assert.equal(notes[0].request_id, `quarterdeck-call:${uuid(1)}`);
+    return;
+  }
+  assert.equal(asked.status, 202, JSON.stringify(asked.body));
+  assert.equal(answered.body.noteId, asked.body.noteId);
+  assert.deepEqual(taggedEnvelope(notes[0].body, "fm-quarterdeck-batch").items.map((item) => item.requestId),
+    [`quarterdeck-call:${uuid(1)}`, `quarterdeck-thread:${calls[1].key}:${uuid(2)}`]);
 });
