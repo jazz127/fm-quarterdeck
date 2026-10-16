@@ -240,9 +240,10 @@ test("the Just landed heading badge and phone tab count only unacknowledged land
   assert.equal(heading.contains(badge), true);
   assert.equal(landedTab.textContent, "Just landed (1)");
   const retained = list.querySelector('[data-landed-key="landed:ship-window"]');
-  board.observe({ state: "stale", stale: true, error: "Snapshot timed out" });
+  board.observe({ state: "stale", stale: true, error: "Bearings snapshot timed out" });
   assert.equal(badge.textContent, "1 · stale");
-  assert.equal(list.querySelector('[data-landed-key="landed:ship-window"]'), retained, "freshness preserves the landing form");
+  assert.equal(badge.getAttribute("aria-label"), "1 new landing · stale");
+  assert.equal(list.querySelector('[data-landed-key="landed:ship-window"]'), retained, "a freshness event keeps the rendered landing");
   board.observe({ state: "ready", stale: false, error: null });
   assert.equal(badge.textContent, "1");
   const ack = list.querySelector('[data-landed-key="landed:ship-window"]').querySelector('[data-landed-ack]');
@@ -294,4 +295,42 @@ test('four phone sections preserve landed navigation and expose only the selecte
   matches.value = false; media.change();
   for (const panel of [calls,landed,underway,charted,secondary]) assert.equal(panel.hidden, false);
   controller.destroy();
+});
+
+test("phone tab counts distinguish missing and stale bearings from an empty fleet", () => {
+  const dom = callDom();
+  const { context, root, tabs, calls, landed } = mount(dom);
+  let model = { state: "unavailable" };
+  const controller = context.window.overviewTabs.createController({ root, tabs, panels: { calls, landed }, counts: { calls: () => 0, landed: () => 0 }, freshness: () => model, doc: dom.document });
+  const callTab = tabs.querySelector('[data-overview-tab="calls"]');
+  const landedTab = tabs.querySelector('[data-overview-tab="landed"]');
+  assert.equal(callTab.textContent, "Captain's Call (unavailable)");
+  assert.equal(landedTab.textContent, "Just landed (unavailable)");
+  model = { state: "loading" };
+  controller.paint();
+  assert.equal(callTab.textContent, "Captain's Call (loading)");
+  model = { state: "stale", stale: true };
+  controller.paint();
+  assert.equal(landedTab.textContent, "Just landed (0 · stale)");
+  model = { state: "ready", stale: false };
+  controller.paint();
+  assert.equal(callTab.textContent, "Captain's Call (0)");
+  controller.destroy();
+});
+
+test("a stale empty Just landed list does not claim there are no recent completions", () => {
+  const dom = callDom();
+  const { context, landed } = mount(dom);
+  const list = dom.document.createElement("div");
+  const empty = dom.document.createElement("p");
+  empty.setAttribute("data-landed-empty", "");
+  list.append(empty);
+  landed.append(list);
+  const board = context.window.bearingsLanded.createController({ list, doc: dom.document, timers: fakeTimers(), fetchImpl: async () => ({ ok: true, json: async () => ({ acks: {}, entries: [] }) }) });
+  board.update({ state: "ready", stale: false, landed: [], omitted: [] });
+  assert.match(empty.textContent, /No recent completions/);
+  board.update({ state: "stale", stale: true, error: "Bearings snapshot timed out", landed: [], omitted: [] });
+  assert.doesNotMatch(empty.textContent, /No recent completions/);
+  assert.match(empty.textContent, /stale/);
+  board.destroy();
 });

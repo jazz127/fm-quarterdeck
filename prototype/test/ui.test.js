@@ -11,6 +11,7 @@ import { htmlModel } from './helpers/html-model.mjs';
 const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
 const script = `${extraction}\n${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${(await readFile(new URL("../public/app.js", import.meta.url), "utf8")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "")}`;
 const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+const overviewTabsScript = await readFile(new URL("../public/overview-tabs.js", import.meta.url), "utf8");
 
 test("opt-in compact headers preserve Quota markup and expose full descriptions", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
@@ -55,14 +56,14 @@ test("live model and observation feed the patcher, badge and independent Overvie
   assert.equal(app.run('window.callObservations.length'), 1);
   assert.match(app.node('#view-freshness').title, /Snapshot failed/);
   app.run("window.callHooks.onConnection({state:'reconnecting'})");
-  assert.equal(app.node('#fleet-state b').textContent, 'stale');
-  app.run("window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Snapshot timed out'})");
+  assert.equal(app.node('#fleet-state b').textContent, 'disconnected');
+  app.run("window.callHooks.onConnection({state:'connected'}); window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Snapshot timed out'})");
   assert.equal(app.node('#call-badge').textContent, '?');
   assert.equal(app.node('#call-badge').hidden, false);
   assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
   app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()})");
   assert.equal(app.node('#call-badge').hidden, true);
-    app.run("freshness.bearings.lastSuccess = Date.now() - 3600000; freshness.bearings.error = null; freshness.bearings.stale = false; freshness.bearings.refreshing = false; window.callHooks.onConnection({state:'revision'})");
+  app.run("freshness.bearings.lastSuccess = Date.now() - 3600000; freshness.bearings.error = null; freshness.bearings.stale = false; freshness.bearings.refreshing = false; window.callHooks.onConnection({state:'revision'})");
   const stopped = app.node('#view-freshness');
   assert.equal(app.node('#fleet-state b').textContent, 'updating');
   assert.notEqual(app.node('#fleet-state b').textContent, 'fresh');
@@ -474,9 +475,10 @@ function ui({ bearingsView = undefined, fetchImpl = () => new Promise(() => {}),
           removeAttribute(name) { attrs.delete(name); },
           hasAttribute(name) { return attrs.has(name); },
           closest() { return null; },
+          contains(target) { return target === node; },
           getBoundingClientRect() { return { top: 0, bottom: 100, height: 100 }; },
           querySelectorAll() { return []; },
-          querySelector() { return null; },
+          querySelector(childSelector) { return selector === "#overview-section-tabs" ? document.querySelector(childSelector) : null; },
           focus() { document.activeElement = node; },
         };
         nodes.set(selector, node);
@@ -509,6 +511,7 @@ function ui({ bearingsView = undefined, fetchImpl = () => new Promise(() => {}),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (id) => clearTimeout(id),
   });
+  vm.runInContext(overviewTabsScript, context);
   vm.runInContext(script, context);
   return { run: (code) => vm.runInContext(code, context), node: (id) => document.querySelector(id),
     hashchange: (hash) => windowListeners.get("hashchange")?.({ newURL: `http://localhost/${hash}` }),
@@ -3417,4 +3420,108 @@ test("expense renderer emits every mobile label beside its ledger value", () => 
   assert.deepEqual(html.all('td').map(cell => cell.attrs['data-label']), labels);
   assert.deepEqual(html.all('.expense-cell-label').map(label => label.textContent), labels);
   assert.deepEqual(html.all('td').map((cell, index) => cell.textContent.trim()), labels.map((label, index) => label + values[index]));
+});
+
+test("Captain's Call badge and pill distinguish missing and stale bearings from an empty fleet", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.node('.workspace').dataset.view = 'overview';
+  app.run("window.callHooks.onModel({rev:'missing',state:'unavailable',cards:[],stale:false,error:'Bearings snapshot timed out'})");
+  assert.equal(app.node('#call-badge').textContent, '?');
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#call-badge').getAttribute('aria-label'), "Captain's Calls unavailable");
+  assert.equal(app.node('#fleet-state b').textContent, 'unavailable');
+  assert.equal(app.node('#fleet-state').classList.contains('offline'), true);
+  app.run("window.callHooks.onModel({rev:'first',state:'ready',cards:[{key:'decision:a'}],stale:false,error:null,observedAt:new Date().toISOString()}); callPatcher.applied = {rev:'first',state:'ready',cards:[{key:'decision:a'}]}");
+  assert.equal(app.node('#call-badge').textContent, '1');
+  assert.equal(app.node('#fleet-state b').textContent, 'fresh');
+  app.run("window.callHooks.onObserved({rev:'first',state:'stale',stale:true,error:null,observedAt:new Date(Date.now() - 300000).toISOString()})");
+  assert.equal(app.node('#call-badge').textContent, '1 · stale', 'a freshness-only event relabels the held count');
+  assert.equal(app.node('#call-badge').getAttribute('aria-label'), "1 Captain's Calls · stale");
+  assert.equal(app.node('#fleet-state b').textContent, 'stale');
+  app.run("window.callHooks.onObserved({rev:'first',state:'ready',stale:false,error:null,observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run("window.callHooks.onModel({rev:'empty',state:'ready',cards:[],stale:false,error:null,observedAt:new Date().toISOString()}); callPatcher.applied = {rev:'empty',state:'ready',cards:[]}");
+  assert.equal(app.node('#call-badge').hidden, true, 'only a current empty reading hides the badge');
+  app.run("window.callHooks.onObserved({rev:'empty',state:'stale',stale:true,error:'Bearings snapshot timed out',observedAt:new Date().toISOString()})");
+  assert.equal(app.node('#call-badge').hidden, false);
+  assert.equal(app.node('#call-badge').textContent, '0 · stale');
+});
+
+test("Captain's Call badge uses the rendered card's lifecycle and ignores cards no longer in the source", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.run("callPatcher.applied = {cards:[{key:'decision:held',answered:true},{key:'decision:removed'}]}; renderCallBadge({state:'ready',cards:[{key:'decision:held'},{key:'decision:fresh'}]})");
+  assert.equal(app.node('#call-badge').textContent, '1');
+  app.run("renderCallBadge({state:'stale',stale:true,cards:[{key:'decision:held'},{key:'decision:fresh'}]})");
+  assert.equal(app.node('#call-badge').textContent, '1 · stale');
+});
+
+test("Captain's Call source membership survives observations and lifecycle redraws with held cards", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.node('.workspace').dataset.view = 'overview';
+  app.run(`callPatcher.applied = {rev:'old',state:'ready',cards:[
+    {key:'decision:removed'}, {key:'decision:held',answered:true}, {key:'decision:fresh'}
+  ]}; window.callHooks.onModel(callPatcher.applied)`);
+  for (const id of ['#call-badge', '#call-mobile-badge']) assert.equal(app.node(id).textContent, '2');
+  app.node('#sr-announcer').textContent = '';
+  app.run(`window.callHooks.onModel({rev:'current',state:'ready',stale:false,cards:[
+    {key:'decision:held',answered:false}, {key:'decision:fresh'}
+  ]})`);
+  const badges = () => ['#call-badge', '#call-mobile-badge'].map(id => app.node(id));
+  for (const badge of badges()) assert.equal(badge.textContent, '1', 'BEARINGS.md rendered lifecycle excludes the held Sent call; R1 excludes the resolved call');
+  app.run("window.callHooks.onObserved({rev:'current',state:'stale',stale:true})");
+  for (const badge of badges()) assert.equal(badge.textContent, '1 · stale', 'freshness must not recount the resolved held call');
+  app.run('renderCallLifecycle()');
+  for (const badge of badges()) assert.equal(badge.textContent, '1 · stale', 'lifecycle redraws must keep source membership and stale status');
+  assert.equal(app.node('#sr-announcer').textContent, '', 'a freshness update does not invent new active calls');
+  app.run("window.callHooks.onObserved({rev:'current',state:'ready',stale:false})");
+  for (const badge of badges()) assert.equal(badge.textContent, '1');
+  app.run("window.callHooks.onModel({rev:'empty',state:'ready',stale:false,cards:[]})");
+  for (const badge of badges()) {
+    assert.equal(badge.textContent, '0');
+    assert.equal(badge.hidden, true);
+  }
+  app.run("window.callHooks.onObserved({rev:'empty',state:'stale',stale:true}); renderCallLifecycle()");
+  for (const badge of badges()) {
+    assert.equal(badge.textContent, '0 · stale');
+    assert.equal(badge.hidden, false, 'BEARINGS.md keeps stale zero badges visible');
+  }
+});
+
+test("superseded freshness observations cannot relabel the latest model's badges, tabs or pill", async () => {
+  const app = ui();
+  await new Promise(resolve => queueMicrotask(resolve));
+  app.node('.workspace').dataset.view = 'overview';
+  app.run(`window.callHooks.onModel({rev:'old',state:'stale',stale:true,cards:[]});
+    callPatcher.applied = {rev:'current',state:'ready',stale:false,cards:[{key:'decision:fresh'}],observedAt:new Date().toISOString(),primaryRecap:{text:'Current recap'}};
+    window.callHooks.onModel(callPatcher.applied)`);
+  const labels = { calls: "Captain's Call (1)", landed: 'Just landed (0)', underway: 'Underway (0)', charted: 'Charted Next (0)' };
+  const assertCurrent = () => {
+    for (const id of ['#call-badge', '#call-mobile-badge']) assert.equal(app.node(id).textContent, '1', 'R2 keeps freshness attached to the current model revision');
+    for (const [name, label] of Object.entries(labels)) assert.equal(app.node(`[data-overview-tab="${name}"]`).textContent, label);
+    assert.equal(app.node('#fleet-state b').textContent, 'fresh');
+    assert.equal(app.node('#fleet-state').classList.contains('offline'), false);
+    assert.match(app.node('#view-freshness').title, /^Captain's Call · fresh/);
+    assert.equal(app.node('#primary-recap').textContent, 'Current recap');
+  };
+  assertCurrent();
+  const previousTitle = app.node('#view-freshness').title;
+  for (const state of ['stale', 'unavailable']) {
+    app.run(`window.callHooks.onObserved({rev:'old',state:'${state}',stale:true,error:'Old snapshot failed',primaryRecap:{text:'Old recap'}})`);
+    assertCurrent();
+    assert.equal(app.node('#view-freshness').title, previousTitle);
+    assert.equal(app.run('window.callObservations.length'), 0, 'superseded events never reach the patcher');
+  }
+  app.run("window.callHooks.onObserved({rev:'current',state:'stale',stale:true,observedAt:new Date().toISOString(),primaryRecap:{text:'Current recap'}})");
+  assert.equal(app.run('window.callObservations.length'), 1, 'matching observations still reach the patcher');
+  for (const id of ['#call-badge', '#call-mobile-badge']) assert.equal(app.node(id).textContent, '1 · stale');
+  for (const [name, label] of Object.entries(labels)) assert.equal(app.node(`[data-overview-tab="${name}"]`).textContent, label.replace(')', ' · stale)'));
+  assert.equal(app.node('#fleet-state b').textContent, 'stale', 'BEARINGS.md exposes current feed staleness');
+  app.run("window.callHooks.onObserved({rev:'old',state:'ready',stale:false})");
+  assert.equal(app.node('#call-badge').textContent, '1 · stale', 'an older ready observation cannot clear current staleness');
+  assert.equal(app.node('#fleet-state b').textContent, 'stale');
+  app.run("window.callHooks.onObserved({rev:'current',state:'ready',stale:false,observedAt:new Date().toISOString(),primaryRecap:{text:'Current recap'}})");
+  assertCurrent();
 });

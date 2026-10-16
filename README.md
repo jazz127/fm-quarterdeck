@@ -57,7 +57,7 @@ The server defaults to `127.0.0.1:4173`. From the same host:
 
 ```bash
 curl http://127.0.0.1:4173/api/health
-# ok is HTTP readiness; status and bearings report fleet-feed health.
+# ok is HTTP readiness; status and bearings report Captain's Call feed health.
 # Open http://127.0.0.1:4173 in your chosen browser.
 ```
 
@@ -70,7 +70,7 @@ For a remote host, use a private SSH tunnel on the desktop (`ssh -N -L 4173:127.
 | `CLAUDE_CONFIG_DIR` | server user's `~/.claude` | Absolute Claude Code config directory; only this home's encoded `projects/` directory is read for the primary session |
 | `FM_REFRESH_MS` | `0` | Manual KPI/dashboard refresh; automatic interval must be at least 5000 ms |
 | `FM_BEARINGS_MIN_GAP_MS` | `30000` | Minimum snapshot start gap while watched; floor 15000 ms |
-| `FM_BEARINGS_MAX_AGE_MS` | `300000` | Snapshot age ceiling while watched; floor 60000 ms |
+| `FM_BEARINGS_MAX_AGE_MS` | `300000` | Snapshot age ceiling; floor 60000 ms; [refresh and staleness cadence](prototype/BEARINGS.md#cadence) |
 | `FM_QUOTA_MAX_AGE` | `5m` | quota-axi reading reuse age: a positive integer with `s`, `m` or `h`, at most 5 minutes; unset, invalid, zero or over-limit values fall back to the default |
 | `FM_HISTORY_MAX_FILE_BYTES` / `FM_HISTORY_MAX_TOTAL_BYTES` / `FM_HISTORY_MAX_LINE_BYTES` / `FM_HISTORY_MAX_FILES` / `FM_HISTORY_MAX_RECORDS` / `FM_HISTORY_MAX_MESSAGES` | Existing reader defaults | Optional startup safety bounds; non-negative safe integers, zero is not unlimited; [defaults and consumer precedence](prototype/SESSION-WINDOW.md#startup-history-limit-configuration) |
 | `FM_STATUS_PATH` | synthetic `prototype/data/fleet.json` | Fallback only without selected home |
@@ -129,7 +129,7 @@ Without Lavish delivery, accepted batches are durably recorded in ignored `proto
 
 For Firstmate inbox replies, review history prefers a string `body` (including an empty string), falls back to legacy string `text`, and retains replied status with no message when neither field is a string.
 
-Local inbox submissions use a short durable [debounce](prototype/BEARINGS.md#inbox-debounce) shared with card answers and thread notes. Pending submissions remain visible; Send in the composer bypasses the window. Saved server outbox items survive page close and resume after restart. Combined notes retain every original item and share one Firstmate acknowledgement/reply.
+Local inbox submissions share a durable outbox with card answers and thread notes. See [Inbox debounce](prototype/BEARINGS.md#inbox-debounce) for Send timing, pending visibility, recovery and combined receipt semantics.
 
 Review queue, drafts and receipt-backed history stay in this tab's session storage across reloads; send before closing. Thirty is the per-request entry limit, not a limit on retained batches. Storage failure is visible. Uncertain deliveries keep their exact payload and ID across revision changes: local retries first reconcile the original durable receipt, retaining its provenance. Only a rejected unaccepted local batch offers an explicit target-rechecked conversion to a new version-bound ID. Keep the same receipt-store owner accessible across restarts. Lavish has no receipt-reconciliation adapter; unresolved old-version deliveries retain their identity and require operator reconciliation. The composer has one Send action for queued notes and the current message. Its existing Annotate action sits beside Queue and Send above 720px, including tablets, and in the Message/Review header at phone widths; resizing keeps the same control and draft. Clear messages in Review removes only delivered history in this tab; drafts, pending/uncertain submissions, durable receipts and the primary session stay intact. The phone Message/Review pane and desktop composer share delivery semantics; background interaction is locked only in Review mode. [Layout acceptance](prototype/LAYOUT-CORRECTION.md) separates geometry from guarded intake proof.
 

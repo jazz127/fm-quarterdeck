@@ -107,6 +107,14 @@ test('answerable cards render a form: freeform only without options, options wit
   assert.match(linked, /data-call-reply="&lt;hold&gt;"/);
 });
 
+test('a merge card captions its recorded reason as a merge reason, not a hold reason', () => {
+  const caption = (card) => view.cardHtml(card).match(/<p class="call-meta call-recap-source">([^<]*)<\/p>/)?.[1];
+  assert.equal(caption({ key: 'merge:beta-merge', task: 'beta-merge', type: 'merge', reason: 'checks green; merge approval needed' }), 'Recorded merge reason');
+  assert.equal(caption({ key: 'merge:beta-merge', task: 'beta-merge', type: 'merge' }), 'Recorded merge reason');
+  assert.equal(caption({ key: 'decision:alpha-call', task: 'alpha-call', type: 'decision', summary: 'Pick', reason: 'Pick the alpha rollout window' }), 'Recorded hold reason');
+  assert.equal(caption({ key: 'merge:beta-merge', task: 'beta-merge', type: 'merge', reason: 'checks green', boardDecide: 'Merge PR 7?' }), 'Source question / action');
+});
+
 test('lettered choices render as one radio group with the description under each letter', () => {
   const html = view.cardHtml({ key: 'decision:alpha-call', task: 'alpha-call', type: 'decision', summary: 'Choose', answer: { question: 'alpha-call', options: [
     { value: 'a', label: 'a', hint: 'Staged rollout — fewer users' },
@@ -131,8 +139,11 @@ test('honest empty states and coverage disclose stale, missing and omitted evide
   assert.equal(view.emptyHtml({ state: 'ready', coverage: { checked: 2, known: 5 } }), 'No decision is recorded · checked 2 of 5');
   assert.match(view.emptyHtml({ state: 'loading' }), /Checking/);
   assert.match(view.emptyHtml({ state: 'unavailable', error: '<script>' }), /unavailable · &lt;script&gt;/);
-  assert.match(view.emptyHtml({ state: 'stale', coverage: { provenClear: true } }), /Last successful|last successful/);
-  assert.doesNotMatch(view.emptyHtml({ state: 'stale', coverage: { provenClear: true } }), /right now/);
+  assert.match(view.emptyHtml({ state: 'stale', coverage: { provenClear: true } }), /Last known calls/);
+  assert.doesNotMatch(view.emptyHtml({ state: 'stale', stale: true, coverage: { provenClear: true } }), /right now/, 'a stale reading never claims current clearance');
+  assert.match(view.emptyHtml({ state: 'stale', stale: true, coverage: { provenClear: true } }), /current calls are unknown/);
+  const lastSuccess = view.coverageText({ state: 'stale', stale: true, error: null, observedAt: new Date(Date.now() - 600000).toISOString(), checkedAt: new Date().toISOString(), coverage: { checked: 1, known: 1 } });
+  assert.match(lastSuccess, /last success 10m ago/, 'the footer ages from the last success, not the latest failed attempt');
   const text = view.coverageText({ state: 'stale', stale: true, error: 'Snapshot failed', coverage: { checked: 2, known: 5, captainOmitted: 2, unmeasuredHomes: 1 }, omitted: [{ kind: 'deferred-holds', count: 3 }, { kind: 'decisions-bound', shown: 20, total: 30 }, { kind: 'invalid-rows', count: 1 }] });
   for (const phrase of ['Stale', 'checked 2 of 5', 'Snapshot failed', '+3 later-dated or blocked calls not shown', '20 of 30 decisions shown', '1 invalid calls withheld', '2 merge calls not shown', '1 homes unmeasured']) assert.ok(text.includes(phrase), phrase);
 });

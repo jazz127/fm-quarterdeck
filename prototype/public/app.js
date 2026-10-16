@@ -1793,9 +1793,14 @@ const freshness = Object.fromEntries(["dashboard", "quota", "lanes", "bearings"]
 }]));
 const freshLabels = { dashboard: "Fleet", quota: "Quota", lanes: "Fleet Chats", bearings: "Captain's Call" };
 let callCount = 0;
+let callSourceModel = null;
+// A missing or stale feed never reads as an empty fleet.
+const bearingsUnknown = (model) => ["loading", "unavailable"].includes(model?.state);
+const bearingsStale = (model) => Boolean(model?.stale) || model?.state === "stale";
 function renderCallBadge(model) {
-  const rendered = new Map((callPatcher?.applied?.cards || []).map(card => [card.key, card]));
-  const count = (model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
+  // Lifecycle comes from the card as rendered (a held card keeps its answered posture).
+  const rendered = new Map((callPatcher?.applied?.cards || []).map((card) => [card.key, card]));
+  const count = (callSourceModel?.cards || model?.cards || []).filter((card) => (window.callLifecycle?.cardState({
     card: rendered.get(card.key) || card,
     answer: callAnswers?.state?.(card.key) || null,
     thread: callThreads?.state?.(card.key) || null,
@@ -1804,8 +1809,7 @@ function renderCallBadge(model) {
   for (const id of ["#call-badge", "#call-mobile-badge"]) {
     const badge = $(id);
     if (!badge) continue;
-    const unknown = ["loading", "unavailable"].includes(model?.state);
-    const stale = model?.stale || model?.state === "stale";
+    const unknown = bearingsUnknown(model), stale = bearingsStale(model);
     badge.textContent = unknown ? "?" : stale ? `${count} · stale` : String(count);
     badge.hidden = !unknown && !stale && count === 0;
     badge.setAttribute("aria-label", unknown ? `Captain's Calls ${model.state}` : `${count} Captain's Calls${stale ? " · stale" : ""}`);
@@ -1834,7 +1838,8 @@ function observeBearings(data) {
   item.lastSuccess = data.observedAt ? Date.parse(data.observedAt) : null;
   item.stale = Boolean(data.stale);
   item.error = data.error || null;
-  renderCallBadge(callPatcher?.applied ? { ...callPatcher.applied, ...data } : data);
+  // Freshness-only events relabel the counts for the calls already shown.
+  renderCallBadge(data);
   overviewTabs?.paint();
   renderFreshness();
 }
@@ -1914,7 +1919,8 @@ function renderCallLifecycle() {
     empty.hidden = !text;
     if (empty.textContent !== text) empty.textContent = text;
   }
-  renderCallBadge(model);
+  const feed = freshness.bearings;
+  renderCallBadge(feed.state ? feed : model);
   overviewTabs?.paint();
 }
 $("#call-lifecycle-filter")?.addEventListener("click", (event) => {
@@ -1938,7 +1944,7 @@ const callPatcher = window.bearingsPatch?.createCallPatcher({
   onApply(model) { const keys = model.cards.map((card) => card.key); callAnswers?.prune(keys); callOverflow?.prune(keys); callDismiss?.prune(keys); callThreads?.prune(keys); callText?.prune(keys); renderCallLifecycle(); window.quarterdeckReviewQueue?.refresh(); },
 });
 // Queued answers join the review panel's queue; its Send sends them with the notes.
-callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, noteId, holdVersion) => { callThreads?.noteSent(key, noteId, holdVersion); renderCallLifecycle(); } });
+callAnswers = callPatcher && window.bearingsAnswerForm?.createAnswerController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => { renderCallLifecycle(); callPatcher.refreshPending(); window.quarterdeckReviewQueue?.refresh(); }, onAsked: (key, holdVersion, noteId) => { callThreads?.noteSent(key, holdVersion, noteId); renderCallLifecycle(); } });
 if (callAnswers) window.quarterdeckCallQueue = { list: () => callAnswers.queued(), send: (options) => callAnswers.sendQueued(options), remove: (key) => callAnswers.unqueue(key), refresh: () => renderCallLifecycle() };
 callThreads = callPatcher && window.bearingsThread?.createThreadController({ list: $("#call-cards"), drafts: callPatcher.drafts, onChange: () => renderCallLifecycle() });
 callText = callPatcher && window.bearingsView?.createTextController?.({ list: $("#call-cards") });
@@ -1964,8 +1970,8 @@ const overviewTabs = window.overviewTabs?.createController?.({
   media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
 const callLive = window.bearingsLive?.createBearingsLive({
-  onModel(model) { callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { callPatcher.observe(data); landedBoard?.observe?.(data); workBoard?.observe(data); observeBearings(data); },
+  onModel(model) { callSourceModel = model; callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
+  onObserved(data) { if (data.rev !== callSourceModel?.rev) return; callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
@@ -1982,7 +1988,9 @@ function renderFreshness() {
   const expired = key !== "bearings" && item.lastSuccess && Date.now() - item.lastSuccess > Math.max(60000, 2 * refreshMs);
   const revisionStopped = key === "bearings" && item.connection === "revision";
   const disconnected = key === "bearings" && ["disconnected", "reconnecting"].includes(item.connection);
-  const condition = revisionStopped ? "updating" : key === "bearings" && item.state === "unavailable" ? "unavailable" : key === "bearings" && item.stale ? "stale" : disconnected || item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting";
+  // A failed snapshot is a feed condition, not a broken connection.
+  const feed = key !== "bearings" ? null : item.state === "unavailable" ? "unavailable" : item.stale ? "stale" : null;
+  const condition = revisionStopped ? "updating" : disconnected ? "disconnected" : feed || (item.error ? "disconnected" : item.stale || expired ? "stale" : item.refreshing ? "refreshing" : item.lastSuccess ? "fresh" : "waiting");
   const last = item.lastSuccess ? `Last success ${new Date(item.lastSuccess).toLocaleString()}` : "No successful reading yet";
   const duration = item.refreshing ? ` · running ${((Date.now() - item.started) / 1000).toFixed(1)}s` : item.duration === null ? "" : ` · ${item.duration}ms`;
   const el = $("#view-freshness");

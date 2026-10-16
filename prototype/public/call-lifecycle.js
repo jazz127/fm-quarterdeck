@@ -54,7 +54,7 @@ window.callLifecycle = (() => {
   // Optional cycle evidence is independent of cosmetic presentation revisions.
   function currentHoldNote(card, note) {
     if (!card?.holdVersion) return true;
-    const updated = Date.parse(card.clock?.at), sent = Date.parse(note?.sentAt || note?.heldAt || note?.at);
+    const updated = Date.parse(card.holdAt || card.clock?.at), sent = Date.parse(note?.sentAt || note?.heldAt || note?.at);
     if (Number.isFinite(updated) && Number.isFinite(sent) && updated > sent) return false;
     if (note?.holdVersion) return note.holdVersion === card.holdVersion;
     if (note?.cardRev) return note.cardRev === card.rev;
@@ -67,6 +67,7 @@ window.callLifecycle = (() => {
     const entries = Array.isArray(thread?.entries) ? thread.entries : null;
     const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer") && currentHoldNote(card, entry)) : [];
     const latest = captain.length ? captain[captain.length - 1] : null;
+    const localNoteId = (noteId, requestId) => noteId || captain.find((entry) => requestId && entry.requestId === `quarterdeck-call:${requestId}`)?.noteId;
     let posture = latest ? entryPosture(latest) : null;
     let reply = posture === "replied" ? replyFor(latest, entries) : "";
     let replyScope = latest?.replyScope;
@@ -74,29 +75,37 @@ window.callLifecycle = (() => {
     if (answer?.phase === "sent" && currentHoldNote(card, answer)) {
       const local = receiptPosture(answer.receipt?.state);
       const localReply = local === "replied" && answer.receipt?.replyScope === "individual" ? replyText(answer.receipt?.reply) : "";
-      const answerIsLatest = !latest || Boolean(answer.noteId && answer.noteId === latest.noteId);
-      const answerInHistory = Boolean(answer.noteId && captain.some((entry) => entry.noteId === answer.noteId));
-      const answerIsNewer = !answerInHistory && Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
+      // History order owns the receipt: a retry's later clock never promotes a note history already lists.
+      const noteId = localNoteId(answer.noteId, answer.requestId);
+      const answerListed = Boolean(noteId && captain.some((entry) => entry.noteId === noteId));
+      const answerIsLatest = noteId ? !latest || noteId === latest.noteId : !entries;
+      const answerIsNewer = noteId && !answerListed && Boolean(answer.sentAt && latest?.at && String(answer.sentAt) > String(latest.at));
       if (answerIsLatest || answerIsNewer) {
         if (!posture || POSTURE_RANK[local] > POSTURE_RANK[posture] || answerIsNewer) {
           posture = local;
-          replyScope = answer.receipt?.replyScope || replyScope;
-          reply = localReply;
+          replyScope = answer.receipt?.replyScope || (answerIsLatest ? replyScope : undefined);
+          reply = local === "replied" && replyScope !== "combined" ? (localReply || (answerIsLatest ? reply : "")) : "";
         }
       }
     }
 
     const held = answer?.heldReply != null && currentHoldNote(card, answer) && answer?.phase !== "sent" && !["confirm", "sending", "failed"].includes(answer?.phase);
-    const heldInHistory = Boolean(answer?.heldNoteId && captain.some((entry) => entry.noteId === answer.heldNoteId));
-    if (held && (!latest
-      || (!heldInHistory && answer.heldAt && latest.at && String(answer.heldAt) > String(latest.at))
-      || (answer.heldNoteId && answer.heldNoteId === latest.noteId && posture !== "replied"))) {
+    const heldNoteId = localNoteId(answer?.heldNoteId, answer?.heldRequestId);
+    const heldListed = Boolean(heldNoteId && captain.some((entry) => entry.noteId === heldNoteId));
+    if (held && heldNoteId && !heldListed && answer.heldAt && latest?.at && String(answer.heldAt) > String(latest.at)) {
       posture = "replied";
       replyScope = answer.heldReplyScope;
       reply = replyScope === "individual" ? replyText(answer.heldReply) : "";
+    } else if (held && posture !== "pending" && posture !== "acknowledged" && (heldNoteId ? !latest || heldNoteId === latest.noteId : !entries)) {
+      posture = "replied";
+      replyScope = replyScope || answer.heldReplyScope;
+      reply = replyScope === "combined" ? "" : reply || (answer.heldReplyScope === "individual" ? replyText(answer.heldReply) : "");
     }
 
-    if ((!card?.holdVersion || thread?.holdVersion === card.holdVersion) && thread?.captainNoteId && !captain.some((entry) => entry.noteId === thread.captainNoteId)) {
+    // A thread send the history does not list yet is newer than the reply already on the card.
+    // Once history lists that exact note, its own entry owns the receipt.
+    const askListed = Boolean(thread?.captainNoteId && captain.some((entry) => entry.noteId === thread.captainNoteId));
+    if (thread?.captainAsked === true && !askListed && (!card?.holdVersion || thread.holdVersion === card.holdVersion)) {
       posture = "pending";
       reply = "";
     }

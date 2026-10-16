@@ -246,7 +246,7 @@ window.bearingsView = (() => {
     const reasonContext = card.boardTitle && card.boardDecide && recordedReason && recordedReason !== card.boardDecide && recordedReason !== card.boardDetail
       ? `<div class="call-context-row call-context-ask"><dt>Recorded hold reason</dt><dd>${escape(recordedReason)}</dd></div>` : "";
     const detailHtml = reasonContext + (card.boardDetail ? `<div class="call-context-row call-context-ask"><dt>Recorded context</dt><dd>${escape(card.boardDetail)}</dd></div>` : "");
-    const sourceLabel = card.boardDecide ? "Source question / action" : decisionText(card) ? "Recorded hold reason" : merge ? "Recorded merge reason" : "Recorded description";
+    const sourceLabel = card.boardDecide ? "Source question / action" : merge ? "Recorded merge reason" : decisionText(card) ? "Recorded hold reason" : "Recorded description";
     const completeContext = [card.boardDecide, decisionText(card)].some(text => typeof text === "string" && text.trim() && !sourceShortened(text));
     const contextGap = !merge && !completeContext
       ? `<p class="call-source-gap">${sourceShortened(ask) ? "The source did not provide a complete question or response context. This description does not establish whether action is needed now." : "No separate question or response guidance was supplied with this description. Ask Firstmate to clarify; do not infer approval or that no action is needed."}</p>` : "";
@@ -317,8 +317,7 @@ window.bearingsView = (() => {
     if (model.state === "loading") return "Checking for Captain's Calls…";
     if (model.state === "unavailable") return `Captain's Call unavailable${model.error ? ` · ${escape(model.error)}` : ""}`;
     if (model.stale || model.state === "stale") return "Last known calls · No calls at the last successful reading; current calls are unknown.";
-    const text = model.coverage?.provenClear ? "Nothing needs your action right now" : `No decision is recorded · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)}`;
-    return text;
+    return model.coverage?.provenClear ? "Nothing needs your action right now" : `No decision is recorded · checked ${count(model.coverage?.checked)} of ${count(model.coverage?.known)}`;
   }
   function coverageText(model) {
     const parts = [];
