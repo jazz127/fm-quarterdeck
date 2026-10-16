@@ -267,7 +267,12 @@ test("real fixed child proves health, exits on controller crash, and stale owner
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/api/review`)).json()).version, commit);
   const exited = new Promise((r) => owner.once("exit", r)); owner.kill("SIGKILL"); await exited;
   const deadline = Date.now() + 6000;
-  while (await processIdentity(evidence.pid)) { if (Date.now() > deadline) throw new Error("Orphan did not exit after IPC disconnect"); await new Promise((r) => setTimeout(r, 25)); }
+  // Identity fields can become unreadable before Linux removes an exiting PID.
+  // Wait for absence, preserving the production probe's fail-closed contract.
+  while (await readFile(`/proc/${evidence.pid}/stat`, "utf8").then(() => true, (error) => {
+    if (["ENOENT", "ESRCH"].includes(error.code)) return false;
+    throw error;
+  })) { if (Date.now() > deadline) throw new Error("Orphan did not exit after IPC disconnect"); await new Promise((r) => setTimeout(r, 25)); }
   recovered = new PreviewLifecycle(registered, options); await recovered.ready;
   assert.equal(recovered.problem, undefined); assert.equal(recovered.owned, null);
   assert.equal(recovered.status("main").state, "ready");
