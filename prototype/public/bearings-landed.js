@@ -4,6 +4,7 @@
 window.bearingsLanded = (() => {
   const MAX_BYTES = 2000;
   const STATE_PREFIX = "fm-quarterdeck-landed-follow.v1:";
+  const UNCONFIRMED = "Firstmate did not confirm the follow-up; retry sends the same follow-up once";
   const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const bytes = (text) => new TextEncoder().encode(text).length;
   const clockText = (clock) => window.bearingsView?.clockText?.(clock) || (clock?.at ? `Landed: ${clock.at}` : "Landed: unknown");
@@ -55,16 +56,19 @@ window.bearingsLanded = (() => {
     let reviewing = false;
     let pollTimer = null;
     let destroyed = false;
+    // An attempted follow-up is saved before it is sent. Until Firstmate confirms it, a reload
+    // restores the same words and request id, queued for an explicit Retry send.
     const draftOf = (key) => {
       if (!drafts.has(key)) {
         let saved = null;
         try { saved = JSON.parse(storage?.getItem(STATE_PREFIX + key) || "null"); } catch {}
         const restored = typeof saved?.text === "string" && typeof saved?.requestId === "string";
         drafts.set(key, { text: restored ? saved.text : "", phase: restored ? "queued" : "draft", requestId: restored ? saved.requestId : null,
-          attempted: restored, error: restored ? "Firstmate did not confirm the follow-up; retry sends the same follow-up once" : "", notice: "" });
+          attempted: restored, error: restored ? UNCONFIRMED : "", notice: "" });
       }
       return drafts.get(key);
     };
+    const forget = (key) => { try { storage?.removeItem(STATE_PREFIX + key); } catch {} };
     const historyOf = (key) => {
       if (!histories.has(key)) histories.set(key, { entries: [], open: false });
       return histories.get(key);
@@ -90,7 +94,8 @@ window.bearingsLanded = (() => {
       box.disabled = queued;
       if (queue) queue.hidden = queued;
       if (send) { send.hidden = !queued; send.disabled = draft.phase === "sending"; send.textContent = draft.attempted && draft.phase !== "sending" ? "Retry send" : "Send"; }
-      if (edit) { edit.hidden = !queued; edit.disabled = draft.phase === "sending" || draft.attempted; }
+      // An unconfirmed attempt may already be in Firstmate's inbox: its words stay locked.
+      if (edit) { edit.hidden = !queued; edit.disabled = draft.phase === "sending" || Boolean(draft.attempted); }
       if (confirm) confirm.hidden = !queued;
       if (preview) preview.textContent = draft.text;
       if (error) { error.hidden = !draft.error; error.textContent = draft.error || ""; }
@@ -180,7 +185,7 @@ window.bearingsLanded = (() => {
       const fresh = newCount();
       if (badge) {
         const unknown = ["loading", "unavailable"].includes(model.state);
-        const stale = model.stale || model.state === "stale";
+        const stale = Boolean(model.stale) || model.state === "stale";
         badge.textContent = unknown ? "?" : stale ? `${fresh} · stale` : String(fresh);
         badge.hidden = !unknown && !stale && fresh === 0;
         badge.setAttribute("aria-label", unknown ? `Just landed ${model.state}` : `${fresh} new landing${fresh === 1 ? "" : "s"}${stale ? " · stale" : ""}`);
@@ -306,17 +311,18 @@ window.bearingsLanded = (() => {
       const key = node.getAttribute("data-landed-key");
       const draft = draftOf(key);
       if (!key || draft.phase !== "queued" || !draft.text) return;
-      const uncertain = draft.attempted;
-      draft.phase = "sending";
-      draft.error = "";
+      const uncertain = Boolean(draft.attempted);
+      draft.requestId ||= uuid();
       try {
+        if (!storage) throw new Error("unavailable");
         storage.setItem(STATE_PREFIX + key, JSON.stringify({ requestId: draft.requestId, text: draft.text }));
       } catch {
-        draft.phase = "queued";
-        draft.error = "Could not save this follow-up in the tab; this attempt was not sent";
+        draft.error = "Could not save this follow-up in this tab; it was not sent";
         paintPhase(node, key);
         return;
       }
+      draft.phase = "sending";
+      draft.error = "";
       draft.attempted = true;
       paintPhase(node, key);
       try {
@@ -328,14 +334,11 @@ window.bearingsLanded = (() => {
         const body = await readJson(response);
         if (destroyed) return;
         if (!response.ok) {
+          // A refusal after an unconfirmed attempt does not prove that attempt never landed.
           const retry = response.status >= 500 || uncertain;
           draft.phase = retry ? "queued" : "draft";
-          if (!retry) {
-            draft.requestId = null;
-            draft.attempted = false;
-            try { storage.removeItem(STATE_PREFIX + key); } catch {}
-          }
-          draft.error = retry ? `${body.error || "Firstmate did not confirm the follow-up"}; retry sends the same follow-up once` : (body.error || "The follow-up was refused");
+          if (!retry) { draft.requestId = null; draft.attempted = false; forget(key); }
+          draft.error = retry ? (uncertain && response.status < 500 ? `${body.error || "The follow-up was refused"}; retry sends the same follow-up once` : UNCONFIRMED) : (body.error || "The follow-up was refused");
           paintPhase(node, key);
           return;
         }
@@ -343,7 +346,7 @@ window.bearingsLanded = (() => {
         draft.text = "";
         draft.requestId = null;
         draft.attempted = false;
-        try { storage.removeItem(STATE_PREFIX + key); } catch {}
+        forget(key);
         draft.notice = "Question sent to Firstmate";
         globalThis.dispatchEvent?.(new Event("quarterdeck-sent"));
         draft.error = "";
@@ -352,7 +355,7 @@ window.bearingsLanded = (() => {
       } catch {
         if (destroyed) return;
         draft.phase = "queued";
-        draft.error = "Firstmate did not confirm the follow-up; retry sends the same follow-up once";
+        draft.error = UNCONFIRMED;
         paintPhase(node, key);
       }
     }
@@ -412,6 +415,7 @@ window.bearingsLanded = (() => {
 
     return {
       update(next) { model = next || model; render(); },
+      // Freshness-only events relabel the same landings without re-rendering them.
       observe(next) { if (next?.rev === model.rev) { model = { ...model, ...next }; paintChrome(); } },
       count: () => cards().length,
       newCount,

@@ -43,10 +43,14 @@ function isLater(later, earlier) {
     (later.offset === earlier.offset && later.recordId === earlier.recordId && later.part > earlier.part);
   return Boolean(later.at && earlier.at && later.at > earlier.at);
 }
+// Explicit [task:<id>] markers that differ name independent calls, so a shared generic
+// reply such as Yes/No is not a repeat. Unmarked asks keep reply-based supersession.
+const markedForDifferentTasks = (later, earlier) => Boolean(later.taskMarkers?.length && earlier.taskMarkers?.length) &&
+  [...later.taskMarkers].sort().join("\n") !== [...earlier.taskMarkers].sort().join("\n");
 function repeatsAsk(later, earlier) {
   if (later.marker !== earlier.marker) return false;
   const replies = new Set(later.replies.map(normalizeReply).filter(Boolean));
-  return earlier.replies.some(reply => replies.has(normalizeReply(reply))) ||
+  return (!markedForDifferentTasks(later, earlier) && earlier.replies.some(reply => replies.has(normalizeReply(reply)))) ||
     normalizeReply(later.text) === normalizeReply(earlier.text);
 }
 
@@ -263,7 +267,9 @@ async function historicalRange(ref, expectedFile, { line = false, item = false, 
   } finally { await handle.close(); }
 }
 function historicalItem(text, task) {
-  const lines = text.split("\n");
+  // Native items end in one newline; one ahead of a backlog section or a later note-archive
+  // block also carries one blank separator line. Neither is body content.
+  const lines = text.replace(/\n\n?$/, "").split("\n");
   const match = /^- \[([ xX])\] (\S+) - (.+)$/.exec(lines[0]);
   if (!match || match[2] !== task || lines.slice(1).some(line => /^\s*- \[[ xX]\] \S+ - |^## /.test(line))) historicalRefused("owner-item");
   return { parsed: parseBacklogTask(match[3], match[1] !== " "), body: lines.slice(1).join("\n") };
@@ -302,10 +308,10 @@ async function validateHistoricalAnswer(claim, { home, sources, ask, now, maxLin
       resolution.parsed.holdActive || !["released", "answered"].includes(owner.mode)) historicalRefused("owner-occurrence");
   const prefix = `  Resolution recorded by fm-captain-hold.\n  Decision digest: ${claim.answer.digest}\n  Resolution mode: ${owner.mode}\n\n  Captain decision:\n`;
   const decision = answerTurn.text.split("\n").map(line => line ? `  ${line}` : "").join("\n");
-  const previous = held.body.replace(/^  Captain hold set: \S+\n\n/, "");
+  const previous = held.body.replace(/^  Captain hold set: \S+(?:\n\n|\n|$)/, "");
   // Native release prepends the new exact answer and preserves the prior body. This
   // checks the recorded occurrence, actual bytes and retained history, not task Done.
-  if (resolution.body !== `${prefix}${decision}\n\n${previous}`) historicalRefused("owner-resolution");
+  if (resolution.body !== `${prefix}${decision}${previous && `\n\n${previous}`}`) historicalRefused("owner-resolution");
   const parentFile = path.join(home, "state", `${owner.fleet}.status`);
   const event = async ref => parseStatusLine((await historicalRange(ref, parentFile, { line: true, limit: 16 * 1024 })).replace(/\n$/, ""));
   const raised = await event(owner.raised), resolved = await event(owner.resolved);
@@ -471,6 +477,9 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
           let asksChanged = false, cursorMoved = false;
           for (const entry of grown) {
             const isPrimary = entry.file === recapFile;
+            // Recap hydration rereads the bounded tail without rewinding ask
+            // intake: records past a still-valid cursor stay incremental, and a
+            // cursor before the tail window resumes in place.
             const saved = target.cursors[entry.source];
             const incremental = saved && saved.ino === entry.info.ino && saved.offset <= entry.info.size;
             const prior = (entry.recapReset && (!incremental || saved.offset > Math.max(0, entry.info.size - backfillBytes)) ? null : saved) || { ino: null, offset: 0, skip: false };
@@ -676,6 +685,7 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   let composed = null, composedFrom = null;
   const listeners = new Set();
   let timer = null;
+  // The hub adds its age fields; a minimal hub without freshness keeps the model fields.
   const freshness = () => { const model = current(); return { state: model.state, observedAt: model.observedAt, checkedAt: model.checkedAt, stale: model.stale, error: model.error, ...hub.freshness?.(), rev: model.rev, primaryRecap: model.primaryRecap }; };
   // Recompose only when the hub published a new model object or the chat asks changed.
   let composedBase = null;

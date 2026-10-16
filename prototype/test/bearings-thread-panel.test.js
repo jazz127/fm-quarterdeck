@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
+import { normalizeSnapshot } from "../bearings.js";
 
 const sources = await Promise.all(["bearings-patch.js", "bearings-view.js", "bearings-thread-panel.js", "call-lifecycle.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
 const flush = async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
@@ -105,7 +106,7 @@ test("a confirmed thread note reloads history and shows the receipt notice", asy
   await flush();
   assert.equal(t.fetches.length, 1, "history loads before any note is sent");
   assert.equal(t.part("expand").hidden, true);
-  t.threads.noteSent(KEY, "note-accepted");
+  t.threads.noteSent(KEY, null, "note-accepted");
   await flush();
   assert.match(t.part("notice").textContent, /Question sent to Firstmate/);
   assert.equal(t.part("notice").hidden, false, "the send notice stays visible");
@@ -246,6 +247,52 @@ test("cached old-cycle notes and legacy task-only entries cannot paint as curren
   assert.match(t.part("provenance-log").textContent,/Old question/);
   assert.match(t.part("provenance-log").textContent,/attribution unverified/);
   assert.equal(t.part("log").textContent,"");
+});
+
+for (const engaged of [false, true]) test(`hold timestamps refresh cached thread clocks with equal presentation revisions${engaged ? " after releasing a draft" : ""}`, async () => {
+  const card = (at) => normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Pick the alpha rollout window",
+    reason: "Choose staged or immediate", created: "2026-10-16", ...(at ? { hold_set_at: at } : {}) }],
+    contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }).cards[0];
+  const initial = card(), held = card("2026-10-15T20:00:00Z");
+  const entries = [
+    { kind: "ask", from: "captain", noteId: "same-cycle", holdVersion: held.holdVersion, state: "replied", at: "2026-10-15T21:00:00Z", text: "Which rollout window?" },
+    { kind: "reply", from: "firstmate", noteId: "same-cycle", at: "2026-10-15T21:30:00Z", text: "Use the staged window." },
+  ];
+  const t = setup({ responses: [history(), history(entries), history(entries)] });
+  t.patcher.update(model([initial]));
+  await flush();
+  if (engaged) t.node().querySelector('[data-call-draft="answer"]').type("Keep this draft");
+  const apply = (next) => {
+    assert.equal(next.rev, initial.rev, "hold timestamps preserve the presentation revision");
+    assert.equal(next.holdVersion, initial.holdVersion, "the local creation date keeps the legacy cycle identity stable");
+    assert.equal(t.patcher.update(model([next])), engaged ? "held" : "applied");
+    if (engaged) {
+      assert.equal(t.node().getAttribute("data-held"), "true");
+      assert.ok(t.patcher.pending, "metadata changes remain pending until released");
+      t.patcher.applyNow(KEY);
+      assert.equal(t.patcher.pending, null);
+      assert.equal(t.node().querySelector('[data-call-draft="answer"]').value, "Keep this draft");
+    }
+    assert.equal(t.node().getAttribute("data-call-rev"), initial.rev);
+  };
+  apply(held);
+  await t.threads.load(KEY);
+  assert.equal(t.part("count").textContent, "Thread · 2 · 1 new reply", "the 21:00 ask follows the 20:00 hold despite the next-day creation date");
+  t.part("expand").click();
+  assert.match(t.part("log").textContent, /Which rollout window/);
+  assert.match(t.part("log").textContent, /Use the staged window/);
+  await t.threads.load(KEY);
+  assert.equal(t.part("count").textContent, "Thread · 2", "a history refresh retains the current exchange");
+  t.timers.advance(600);
+  apply(card("2026-10-15T22:00:00Z"));
+  assert.equal(t.part("count").textContent, "Thread · 0", "a hold after the ask makes that exchange stale");
+  apply(initial);
+  assert.equal(t.part("count").textContent, "Thread · 0", "removing the hold timestamp restores the creation-clock fallback");
+  apply(held);
+  assert.equal(t.part("count").textContent, "Thread · 2", "adding the earlier hold timestamp restores the exchange");
+  assert.equal(t.patcher.update(model([held])), "unchanged");
+  t.threads.destroy();
+  t.patcher.destroy();
 });
 
 test("link boundaries preserve surrounding punctuation, balanced URL paths and fragments", async () => {

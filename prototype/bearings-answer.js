@@ -119,7 +119,7 @@ export function createAnswerRelay({ home, note = noteWithRequestId, receipts = i
     while (sent.size > MAX_REMEMBERED) sent.delete(sent.keys().next().value);
   };
   return {
-    async submit(body, model, { immediate = false } = {}) {
+    async submit(body, model, { immediate = false, arrived } = {}) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
       const digest = shortHash([parsed.key, parsed.cardRev, parsed.selection, parsed.note]);
@@ -135,7 +135,7 @@ export function createAnswerRelay({ home, note = noteWithRequestId, receipts = i
       // never substitutes newer model provenance or loses a now-resolved call.
       remember(parsed.requestId, record);
       let receipt;
-      try { receipt = await note(home, answerRequestId(parsed.requestId), record.text, { record, immediate }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the answer; retry sends the same answer once"); }
+      try { receipt = await note(home, answerRequestId(parsed.requestId), record.text, { record, immediate, arrived }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the answer; retry sends the same answer once"); }
       remember(parsed.requestId, { ...record, noteId: receipt.id });
       return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at, envelope: record.envelope };
     },

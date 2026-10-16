@@ -45,9 +45,9 @@ test("lifecycle priority is procrastinated, then sent, then queued, then active"
   assert.equal(life.cardState({ card: { ...card, answered: true } }), "sent");
   assert.equal(life.cardState({ card, thread: { entries: [{ kind: "ask", from: "captain" }] } }), "sent");
   assert.equal(life.cardState({ card, thread: { entries: [{ kind: "answer", from: "captain" }] } }), "sent");
-  assert.equal(life.cardState({ card, thread: { captainNoteId: "unlisted-note" } }), "sent");
+  assert.equal(life.cardState({ card, thread: { captainAsked: true, captainNoteId: "unlisted-note" } }), "sent");
   assert.equal(life.cardState({ card, thread: { entries: [{ kind: "chat-ask", from: "firstmate" }, { kind: "reply", from: "firstmate" }] } }), "active");
-  assert.equal(life.cardState({ card, answer: { phase: "confirm" }, thread: { captainNoteId: "unlisted-note" } }), "sent");
+  assert.equal(life.cardState({ card, answer: { phase: "confirm" }, thread: { captainAsked: true, captainNoteId: "unlisted-note" } }), "sent");
   assert.equal(life.cardState({ card, answer: { phase: "sent" }, procrastinated: true }), "procrastinated");
   assert.equal(life.cardState({ card, answer: { phase: "confirm" }, procrastinated: true }), "procrastinated");
 });
@@ -72,7 +72,7 @@ test("receipt posture moves a sent note from unread to acknowledged to active", 
   assert.equal(life.cardState({ card, thread: { entries: [ask("replied"), reply] }, procrastinated: true }), "procrastinated");
   const followUp = life.delivery({ card, thread: { entries: [ask("replied"), reply, { kind: "ask", from: "captain", state: "waiting", at: "2026-01-02T11:00:00.000Z", text: "One more note" }] } });
   assert.equal(followUp.posture, "pending");
-  assert.equal(life.cardState({ card, thread: { entries: [ask("replied"), reply], captainNoteId: "unlisted-note" } }), "sent");
+  assert.equal(life.cardState({ card, thread: { entries: [ask("replied"), reply], captainAsked: true, captainNoteId: "unlisted-note" } }), "sent");
 });
 
 test("an answer receipt and the card receipt use the same three postures", () => {
@@ -119,7 +119,7 @@ test("BEARINGS lifecycle reconciles the same note and a send not yet in history"
   assert.equal(life.delivery({ answer, thread: { entries: [staleReply, latest] } }).reply, "");
   assert.equal(life.delivery({ answer, thread: { entries: [staleReply, latest] } }).posture, "replied");
   const held = { phase: "compose", heldNoteId: answer.noteId, heldAt: answer.sentAt, heldReply: "" };
-  assert.equal(life.delivery({ answer: held, thread: { entries: [latest] } }).posture, "replied");
+  assert.equal(life.delivery({ answer: held, thread: { entries: [latest] } }).posture, "pending", "current history owns an unread receipt ahead of an old held reply");
   const newer = { ...answer, noteId: "new-note", sentAt: "2026-01-02T11:00:00.000Z", receipt: { state: "accepted" } };
   assert.equal(life.delivery({ answer: newer, thread: { entries: [{ ...latest, state: "replied" }] } }).posture, "pending");
 });
@@ -157,7 +157,7 @@ test("combined reply posture never supplies card-specific text or an unrelated n
 
 test("pending thread identity stays in its hold cycle and survives older history", () => {
   const card = { key: "decision:sample", holdVersion: "new" };
-  const thread = { captainNoteId: "pending-note", holdVersion: "new", entries: [
+  const thread = { captainAsked: true, captainNoteId: "pending-note", holdVersion: "new", entries: [
     { kind: "ask", from: "captain", noteId: "old-note", state: "replied", holdVersion: "new" },
   ] };
   assert.equal(life.delivery({ card, thread }).posture, "pending");

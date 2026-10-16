@@ -28,16 +28,16 @@ window.overviewTabs = (() => {
         else root.removeAttribute("data-overview-tab");
       }
       if (secondary) secondary.hidden = narrow && selected === "calls";
+      // Every section reads the same bearings feed; a missing or stale feed is not zero.
+      const feed = freshness();
       for (const name of order) {
         const button = buttonFor(name);
         const panel = panels[name];
         const on = !narrow || name === selected;
         const count = Number(counts[name]?.());
         const n = Number.isSafeInteger(count) && count >= 0 ? count : 0;
-        const model = freshness();
-        const state = model?.state;
-        const label = state === "loading" || state === "unavailable" ? state : model?.stale || state === "stale" ? `${n} · stale` : String(n);
         if (button) {
+          const label = feed?.state === "loading" || feed?.state === "unavailable" ? feed.state : feed?.stale || feed?.state === "stale" ? `${n} · stale` : String(n);
           button.textContent = `${LABELS[name]} (${label})`;
           if (narrow) {
             button.setAttribute("role", "tab");

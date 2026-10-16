@@ -267,7 +267,12 @@ test("real fixed child proves health, exits on controller crash, and stale owner
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/api/review`)).json()).version, commit);
   const exited = new Promise((r) => owner.once("exit", r)); owner.kill("SIGKILL"); await exited;
   const deadline = Date.now() + 6000;
-  while (await processIdentity(evidence.pid)) { if (Date.now() > deadline) throw new Error("Orphan did not exit after IPC disconnect"); await new Promise((r) => setTimeout(r, 25)); }
+  // Identity fields can become unreadable before Linux removes an exiting PID.
+  // Wait for absence, preserving the production probe's fail-closed contract.
+  while (await readFile(`/proc/${evidence.pid}/stat`, "utf8").then(() => true, (error) => {
+    if (["ENOENT", "ESRCH"].includes(error.code)) return false;
+    throw error;
+  })) { if (Date.now() > deadline) throw new Error("Orphan did not exit after IPC disconnect"); await new Promise((r) => setTimeout(r, 25)); }
   recovered = new PreviewLifecycle(registered, options); await recovered.ready;
   assert.equal(recovered.problem, undefined); assert.equal(recovered.owned, null);
   assert.equal(recovered.status("main").state, "ready");
@@ -296,6 +301,21 @@ test("transient startup health remains Starting until proof or deadline, never a
   await wait(() => samples === 1);
   assert.equal(f.lifecycle.status("dev-one").state, "starting");
   await wait(() => f.lifecycle.status("dev-one").state === "ready");
+});
+
+test("a process reaped mid-probe is absent; denied access to a present process stays unknown", async () => {
+  const fail = (code) => Promise.reject(Object.assign(new Error(code), { code }));
+  // Linux surfaces a reap between /proc lookup and readlink as EACCES; the
+  // second stat read is the fresh existence recheck.
+  const probe = (recheck) => {
+    let stats = 0;
+    return { read: async (file) => file.endsWith("/stat") && ++stats > 1 ? recheck() : "1 (node) S", link: () => fail("EACCES"), get stats() { return stats; } };
+  };
+  const reaped = probe(() => fail("ENOENT"));
+  assert.equal(await processIdentity(4242, reaped), null);
+  assert.equal(reaped.stats, 2);
+  await assert.rejects(processIdentity(4242, probe(async () => "1 (node) S")), /Process identity unknown/);
+  await assert.rejects(processIdentity(4242, probe(() => fail("EIO"))), /Process identity unknown/);
 });
 
 test("malformed process identity is unknown, not absent evidence authorizing a new child", () => {

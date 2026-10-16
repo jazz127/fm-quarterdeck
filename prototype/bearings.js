@@ -86,7 +86,7 @@ export function shortHash(value) {
 }
 // Presentation compatibility: additive cycle metadata does not change the old revision.
 const withRev = (card) => {
-  const { holdVersion, ...presentation } = card;
+  const { holdVersion, holdAt, ...presentation } = card;
   return { ...card, rev: shortHash(presentation) };
 };
 const durableDate = (value) => isoDate(value) || (typeof value === "string" && /^\d{4}-\d\d-\d\d$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value ? value : null);
@@ -94,6 +94,12 @@ export function decisionClock(row) {
   const candidates = [["Updated", row.updated_at], ["Hold set", row.hold_set_at], ["Created", row.created]]
     .map(([label, value]) => ({ label, at: durableDate(value) })).filter((entry) => entry.at);
   return candidates.sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] || { label: "Created / updated", at: null };
+}
+// Receipt freshness uses the hold cycle's own instant. A date-only creation date is
+// local display evidence and can fall on the next UTC day for a host east of UTC.
+function holdCycle(row) {
+  const at = decisionClock({ ...row, created: null }).at;
+  return at && at !== decisionClock(row).at ? { holdAt: at } : {};
 }
 
 // Read only the selected home's ledger, never another owner's endpoint namespace.
@@ -276,8 +282,9 @@ async function addBacklogEvidence(output, home) {
     if (Array.isArray(raw.gates)) raw.gates = raw.gates.map(row =>
       object(row) && row.owner === "(main)" && !repoName(row.repo) && workRepos.has(row.id)
         ? { ...row, repo: workRepos.get(row.id) } : row);
-    if (Array.isArray(raw.decisions_open)) raw.decisions_open = raw.decisions_open.map((row) =>
-      object(row) && row.owner === "(main)" ? {
+    if (Array.isArray(raw.decisions_open)) raw.decisions_open = raw.decisions_open.map((row) => {
+      if (!object(row) || row.owner !== "(main)") return row;
+      const enriched = {
         ...clocks.get(row.id), ...row,
         // The snapshot may predate a same-reason re-hold in the selected ledger.
         ...(durableDate(clocks.get(row.id)?.hold_set_at)
@@ -287,7 +294,12 @@ async function addBacklogEvidence(output, home) {
         ...(titles.has(row.id) ? { backlogTitle: titles.get(row.id) } : {}),
         ...(reasons.has(row.id) ? { backlogReason: reasons.get(row.id) } : {}),
         ...((typeof row.repo !== "string" || !row.repo.trim()) && repos.has(row.id) ? { repo: repos.get(row.id) } : {}),
-      } : row);
+      };
+      // Only this decoder supplies complete authoritative reasons. Snapshot reason /
+      // backlogReason strings alone cannot establish that provenance.
+      const binary = recordedBinaryOptions(enriched, reasons.get(row.id));
+      return binary.length ? { ...enriched, options: binary } : enriched;
+    });
     const landedEvidence = backlogLandedEvidence(text);
     if (Array.isArray(raw.landed)) raw.landed = raw.landed.map((row) => {
       if (!object(row) || row.owner !== "(main)" || !landedEvidence.has(row.id)) return row;
@@ -325,9 +337,9 @@ export function validateSnapshot(raw) {
 // How a card may be answered from Quarterdeck (BEARINGS.md "Answers"). The question is
 // the same key the /bearings board sends to Firstmate's keyed-answer intake: the task id
 // for a decision, merge.<task> for a merge ask. Structured options, a recommendation and
-// a close mode appear only when Firstmate's row supplies them. A decision with no options
-// array can still offer explicit lettered lines from its recorded text. Otherwise the
-// answer is freeform. No other option is composed here except the board's own "Merge now".
+// a close mode appear only when Firstmate's row supplies them. Without supplied options,
+// recorded lettered lines or the canonical binary-hold supplement can supply choices.
+// Otherwise the answer is freeform; merge asks offer the board's own "Merge now".
 export const ANSWER_SLUG = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_OPTIONS = 8;
 function sourceOptions(row) {
@@ -358,6 +370,37 @@ function proseLetterOptions(row) {
     }
   }
   return best;
+}
+// Last-resort grammar at the selected-home canonical hold boundary, before fresh
+// board enrichment. Never run this on a shortened snapshot or display field.
+function recordedBinaryOptions(row, reason) {
+  if (row.options != null && (!Array.isArray(row.options) || row.options.length)) return [];
+  if (proseLetterOptions(row).length) return [];
+  if (typeof reason !== "string" || /[\r\n…]|\.\.\./.test(reason)) return [];
+  if (reason.startsWith("Yes/No:")) {
+    const action = reason.slice("Yes/No:".length).trim();
+    if (!action || /\b(?:reply|or)\b/i.test(action)) return [];
+  } else {
+    // A complete auxiliary-led polar question, not arbitrary question punctuation.
+    // Consequences explain the question; a No-only consequence is not a sole option.
+    const question = /^(?:should|can|could|may|might|would|will|shall|do|does|did|am|is|are|was|were|has|have|had|must)\s+([^?]+)\?([^?]*)$/i.exec(reason);
+    if (!question || /[\u0000-\u001f\u007f\u0085\u2028\u2029]|\b(?:or|if|unless|assuming|provided)\b/i.test(reason)) return [];
+    if ((question[1].match(/[A-Za-z]+(?:['-][A-Za-z]+)*/g) || []).length < 2
+      || /(?:^|\s)\(?[A-Za-z][).:]\s+/.test(question[1])) return [];
+    const tail = question[2].trim();
+    if (tail) {
+      const labels = [...tail.matchAll(/\b([A-Za-z][A-Za-z0-9_-]*):/g)];
+      if (!labels.length || labels[0].index !== 0 || labels.length > 2 || /\breply\b/i.test(tail)) return [];
+      const seen = new Set();
+      for (const [index, label] of labels.entries()) {
+        const name = label[1].toLowerCase();
+        const explanation = tail.slice(label.index + label[0].length, labels[index + 1]?.index).trim();
+        if (!/^(?:yes|no)$/.test(name) || seen.has(name) || !explanation) return [];
+        seen.add(name);
+      }
+    }
+  }
+  return [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 }
 function decisionAnswer(row, task) {
   if (!ANSWER_SLUG.test(task)) return null;
@@ -515,7 +558,7 @@ function callSection(raw) {
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), answer: readOnly ? null : decisionAnswer(row, task),
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), ...holdCycle(row), answer: readOnly ? null : decisionAnswer(row, task),
       boardTitle: publicText(row.board_title, Infinity),
       boardAbout: publicText(row.board_about, Infinity),
       boardDecide: publicText(row.board_decide, Infinity),
@@ -679,7 +722,10 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
     try { await accessImpl(executable, constants.X_OK); } catch { throw new BearingsUnavailable("Firstmate bearings snapshot is not installed"); }
     return new Promise((resolve, reject) => {
       // Never --include-prs: the background loop makes no GitHub calls.
-      const child = spawnImpl(executable, args, { env: { ...process.env, FM_HOME: home, FM_SSH_BIN: "/usr/bin/false", FM_SNAPSHOT_BUDGET: "1", FM_CREW_STATE_NO_FORGE: "1", FM_SNAPSHOT_SECONDMATES: "0" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      // Remote collection would stage tracked jobs in other homes on every dashboard
+      // read. Read remote homes from Firstmate's validated parent cache instead (Firstmate
+      // owns its refresh) and bound even a collector that waits on the disabled transport.
+      const child = spawnImpl(executable, args, { env: { ...process.env, FM_HOME: home, FM_CREW_STATE_NO_FORGE: "1", FM_SNAPSHOT_SECONDMATES: "0", FM_SSH_BIN: "/usr/bin/false", FM_SNAPSHOT_BUDGET: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
       let stdout = "", stderr = "", failure = null, settled = false;
       const stop = (reason) => {
         failure ||= reason;
@@ -781,9 +827,13 @@ export function createBearingsHub({ home, runner = createSnapshotRunner(home), f
   const listeners = new Set();
 
   const watched = () => !closed && (listeners.size > 0 || now() - pollSeenAt < pollTtlMs);
+  // Age counts from the last success. While watched, the cadence starts a refresh within
+  // one tick of the ceiling, so a good model is stale only once it outlives that promise,
+  // even when nobody watches, unless a refresh that started in time is still running.
   const age = () => model.observedAt ? Math.max(0, now() - Date.parse(model.observedAt)) : null;
   const current = () => {
-    if (model.state === "ready" && age() >= ceiling) model = { ...model, state: "stale", stale: true };
+    const due = Date.parse(model.observedAt) + ceiling + tickMs;
+    if (model.state === "ready" && now() >= due && !(running && lastAttemptAt < due)) model = { ...model, state: "stale", stale: true };
     return model;
   };
   const freshness = () => {

@@ -13,6 +13,7 @@ function fixture(options = {}) {
     subscribe(listener) { hubListeners.add(listener); return () => hubListeners.delete(listener); },
     close() { closes++; },
   };
+  if (options.hubFreshness) hub.freshness = () => options.hubFreshness(base);
   const chat = {
     asks: () => asks,
     view: () => ({ state: 'ready', sources: [], checkedAt: String(scans) }),
@@ -90,4 +91,16 @@ test('hub model events re-apply linking before publishing; own resolutions push 
   assert.equal(events.at(-1).type, 'model');
   assert.equal(events.at(-1).model.cards[0].chatAsks, undefined);
   stop(); f.source.close();
+});
+
+test('freshness forwards hub age fields under the composed revision without dropping the recap', async () => {
+  const f = fixture({ hubFreshness: ({ rev, state, observedAt, checkedAt, stale, error }) => ({ rev, state, observedAt, checkedAt, stale, error, ageMs: 1234, maxAgeMs: 300000 }) });
+  await f.publish({ ...f.base(), state: 'stale', stale: true, observedAt: '2030-01-02T10:00:00Z' });
+  const freshness = f.source.freshness();
+  assert.equal(freshness.rev, f.source.current().rev, 'the composed revision wins over the hub revision');
+  assert.equal(freshness.state, 'stale');
+  assert.equal(freshness.ageMs, 1234);
+  assert.equal(freshness.maxAgeMs, 300000);
+  assert.ok('primaryRecap' in freshness);
+  f.source.close();
 });

@@ -767,17 +767,35 @@ test("dashboard snapshots skip staged remote jobs and bound collection independe
   assert.equal(await readFile(path.join(home, "policy"), "utf8"), "/usr/bin/false|1");
 });
 
-test("health separates HTTP readiness from missing, stale and empty bearings", async (context) => {
+test('Overview work module is served as JavaScript from the host asset allowlist', async (context) => {
+  const { base } = await liveServer(context);
+  const response = await fetch(`${base}/bearings-work.js`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /text\/javascript/);
+  assert.equal(await response.text(), await readFile(new URL('../public/bearings-work.js', import.meta.url), 'utf8'));
+});
+
+test("dashboard snapshots read remote homes from the parent cache under a bounded collection budget", async (context) => {
+  const home = await syntheticHome(context, `printf '%s|%s\\n' "$FM_SSH_BIN" "$FM_SNAPSHOT_BUDGET" >> "$FM_HOME/policy"\ncat "$FM_HOME/fixture.json"`);
+  await writeFile(path.join(home, "fixture.json"), JSON.stringify(await fixture("clear")));
+  await createSnapshotRunner(home)();
+  assert.equal(await readFile(path.join(home, "policy"), "utf8"), "/usr/bin/false|1\n");
+});
+
+test("health separates HTTP readiness from missing, stale and current bearings", async (context) => {
   const source = controlledRunner(new BearingsUnavailable("Bearings snapshot timed out"));
   const clock = fakeClock();
   const { base, hub } = await liveServer(context, { source, clock });
   const health = async () => (await fetch(`${base}/api/health`)).json();
-  assert.equal((await health()).bearings.state, "loading");
+  let body = await health();
+  assert.equal(body.ok, true);
+  assert.equal(body.status, "degraded");
+  assert.equal(body.bearings.state, "loading");
+  assert.equal(hub.stats().runs, 0, "a health read never starts collection");
   const leave = hub.subscribe(() => {});
   context.after(leave);
-  hub.touch();
   await clock.advance(0);
-  let body = await health();
+  body = await health();
   assert.equal(body.ok, true, "HTTP service remains ready for recovery");
   assert.equal(body.status, "degraded");
   assert.equal(body.bearings.state, "unavailable");
@@ -790,6 +808,9 @@ test("health separates HTTP readiness from missing, stale and empty bearings", a
   assert.equal(body.status, "ok");
   assert.equal(body.bearings.state, "ready");
   assert.equal(body.bearings.ageMs, 0);
+  assert.equal(body.bearings.maxAgeMs, 300000);
+  assert.equal(body.bearings.remoteCollection, "cache");
+  assert.deepEqual(Object.keys(body.bearings).sort(), ["ageMs", "checkedAt", "error", "maxAgeMs", "observedAt", "remoteCollection", "rev", "stale", "state"], "health carries freshness only, never call content");
   source.set(new BearingsUnavailable("Bearings snapshot timed out"));
   await clock.advance(30000);
   hub.request();
@@ -797,7 +818,8 @@ test("health separates HTTP readiness from missing, stale and empty bearings", a
   body = await health();
   assert.equal(body.status, "degraded");
   assert.equal(body.bearings.state, "stale");
-  assert(body.bearings.ageMs >= 30000);
+  assert.equal(body.bearings.error, "Bearings snapshot timed out");
+  assert.equal(body.bearings.ageMs, 32000, "age counts from the last success, not the failed attempt");
 });
 
 test("an unwatched last-good snapshot becomes stale at its age ceiling", async () => {
@@ -807,17 +829,36 @@ test("an unwatched last-good snapshot becomes stale at its age ceiling", async (
   const leave = hub.subscribe(() => {});
   await clock.advance(0);
   leave();
-  await clock.advance(300000);
+  const rev = hub.current().rev;
+  await clock.advance(309999);
+  assert.equal(hub.current().state, "ready", "the watched cadence would still be starting its refresh");
+  await clock.advance(1);
   assert.equal(hub.current().state, "stale");
   assert.equal(hub.current().stale, true);
-  assert.equal(hub.freshness().ageMs, 300000);
+  assert.equal(hub.current().error, null, "only the age ceiling expired");
+  assert.equal(hub.current().rev, rev, "ageing changes freshness, not content");
+  assert.equal(hub.freshness().ageMs, 310000);
+  assert.equal(source.calls.length, 1, "ageing never runs collection without a watcher");
+  hub.touch();
+  assert.equal(source.calls.length, 2, "the first read after idle starts a refresh");
+  assert.equal(hub.current().state, "stale", "a refresh that starts after expiry does not make the old reading current");
   hub.close();
 });
 
-test('Overview work module is served as JavaScript from the host asset allowlist', async (context) => {
-  const { base } = await liveServer(context);
-  const response = await fetch(`${base}/bearings-work.js`);
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get('content-type'), /text\/javascript/);
-  assert.equal(await response.text(), await readFile(new URL('../public/bearings-work.js', import.meta.url), 'utf8'));
+test("a watched model never turns stale while its ceiling refresh runs", async () => {
+  const clock = fakeClock();
+  const source = controlledRunner(await fixture("clear"));
+  const { hub } = hubFor(clock, source);
+  hub.subscribe(() => {});
+  await clock.advance(0);
+  const release = source.hold();
+  await clock.advance(300000);
+  assert.equal(source.calls.length, 2, "the ceiling refresh started");
+  await clock.advance(40000);
+  assert.equal(hub.current().state, "ready", "a refresh that started in time keeps the reading current");
+  release();
+  await clock.advance(0);
+  assert.equal(hub.current().state, "ready");
+  assert.equal(hub.freshness().ageMs, 0);
+  hub.close();
 });
