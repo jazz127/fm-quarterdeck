@@ -43,10 +43,14 @@ function isLater(later, earlier) {
     (later.offset === earlier.offset && later.recordId === earlier.recordId && later.part > earlier.part);
   return Boolean(later.at && earlier.at && later.at > earlier.at);
 }
+// Explicit [task:<id>] markers that differ name independent calls, so a shared generic
+// reply such as Yes/No is not a repeat. Unmarked asks keep reply-based supersession.
+const markedForDifferentTasks = (later, earlier) => Boolean(later.taskMarkers?.length && earlier.taskMarkers?.length) &&
+  [...later.taskMarkers].sort().join("\n") !== [...earlier.taskMarkers].sort().join("\n");
 function repeatsAsk(later, earlier) {
   if (later.marker !== earlier.marker) return false;
   const replies = new Set(later.replies.map(normalizeReply).filter(Boolean));
-  return earlier.replies.some(reply => replies.has(normalizeReply(reply))) ||
+  return (!markedForDifferentTasks(later, earlier) && earlier.replies.some(reply => replies.has(normalizeReply(reply)))) ||
     normalizeReply(later.text) === normalizeReply(earlier.text);
 }
 
