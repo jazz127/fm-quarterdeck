@@ -167,6 +167,46 @@ test('optional cycle identity retains an accepted answer across presentation cha
 
 const generatedDecision = (hold = '2026-01-02T10:00:00Z', extra = {}) => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: [{ id: 'alpha-call', owner: '(main)', summary: 'Pick a window', reason: 'Choose staged or now', hold_set_at: hold, options: [{ value: 'staged', label: 'Staged' }, { value: 'now', label: 'Now' }], ...extra }], contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }).cards[0];
 
+for (const reload of [false, true]) {
+  test(`a new hold preserves the follow-up draft after a reply${reload ? " across reload" : " during refresh"}`, async () => {
+    const key = "decision:alpha-call", storage = tabStorage();
+    const t = setup({ storage, responses: [
+      { status: 202, body: { noteId: "answered-note", sentAt: "2026-01-02T11:00:00Z" } },
+      { status: 200, body: { answers: { [uuid(1)]: { state: "replied", replyScope: "individual", reply: "Staged is ready" } } } },
+    ] });
+    t.patcher.update(model([generatedDecision()]));
+    const choice = t.node(key).querySelector('input[value="staged"]');
+    choice.checked = true; choice.dispatchEvent({ type: "change" });
+    t.part(key, "text").type("Use staged");
+    t.submit(key); t.part(key, "send").click(); await flush();
+    t.timers.advance(15000); await flush();
+    assert.equal(t.answers.state(key).phase, "compose");
+    assert.equal(t.answers.state(key).heldReply, "Staged is ready");
+    const followUpChoice = t.node(key).querySelector('input[value="now"]');
+    followUpChoice.checked = true; followUpChoice.dispatchEvent({ type: "change" });
+    t.part(key, "text").focus(); t.part(key, "text").type("Please check the next window");
+    const current = reload ? setup({ storage }) : t;
+    current.patcher.update(model([generatedDecision("2026-01-02T12:00:00Z")]));
+    if (!reload) {
+      assert.equal(current.patcher.held, true);
+      current.node(key).querySelector("[data-call-update-now]").click();
+    }
+    assert.equal(current.answers.state(key), null, "old receipt metadata is discarded");
+    assert.equal(current.part(key, "text").value, "Please check the next window");
+    assert.equal(current.part(key, "text").readOnly, false);
+    assert.equal(current.patcher.drafts.get(key).answer, "Please check the next window");
+    assert.equal(current.node(key).querySelector('input[value="now"]').checked, true);
+    const restored = setup({ storage }); restored.patcher.update(model([generatedDecision("2026-01-02T12:00:00Z")]));
+    assert.equal(restored.part(key, "text").value, "Please check the next window");
+    assert.equal(restored.node(key).querySelector('input[value="now"]').checked, true);
+    current.submit(key);
+    assert.equal(current.answers.state(key).phase, "confirm");
+    assert.equal(current.answers.state(key).selection, "now");
+    assert.equal(current.answers.state(key).note, "Please check the next window");
+    assert.equal(t.fetches.length, 2, "refresh and reload never send the follow-up");
+  });
+}
+
 test('generated hold upgrades unversioned legacy sent state only with current durable classification and forgets a re-hold on reload', () => {
   const key = 'decision:alpha-call', storageKey = 'fm-quarterdeck-call-answer.v1:' + key;
   const legacy = { phase: 'sent', requestId: uuid(9), note: 'Use staged', selection: 'staged', sentAt: '2026-01-02T11:00:00Z', receipt: { state: 'accepted' } };

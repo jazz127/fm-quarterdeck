@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { claudeAwaySummary, claudeProjectDirectory, claudeTurns } from "../claude-transcript.js";
-import { createCallSource, createChatAskScanner, memoryStateFile } from "../chat-asks.js";
+import { createCallSource, createChatAskScanner, discoverPrimarySources, memoryStateFile } from "../chat-asks.js";
 import { createServer } from "../server.js";
 import { awaySummary } from "./helpers/claude-recap.js";
 
 const lines = (...records) => records.map(record => JSON.stringify(record)).join("\n") + "\n";
 async function fixture(t, options = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "quarterdeck-recap-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "quarterdeck-recap-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home"), config = path.join(root, "config");
   await mkdir(path.join(home, "state"), { recursive: true });
@@ -85,6 +85,46 @@ test("selection switch, deletion, inode replacement and truncation never retain 
   await f.chat.scan();
   assert.deepEqual(recap(f.chat), { text: null, state: "unavailable" });
 });
+
+for (const reset of ["restart", "reselection", "recovery"]) {
+  for (const growth of ["beyond backfill", "inside backfill"]) {
+    test(`recap ${reset} preserves unread asks ${growth}`, async t => {
+      let failDiscovery = false;
+      const f = await fixture(t, {
+        now: () => Date.parse("2030-01-02T12:00:00Z"),
+        discover: async (...args) => {
+          if (failDiscovery) throw new Error("synthetic discovery failure");
+          return discoverPrimarySources(...args);
+        },
+      });
+      await f.chat.scan();
+      if (reset === "reselection") {
+        await writeFile(path.join(f.directory, "second.jsonl"), lines(awaySummary("Other session")));
+        await writeFile(f.lock, "second\n");
+        await f.chat.scan();
+        assert.equal(recap(f.chat).text, "Other session");
+      } else if (reset === "recovery") {
+        failDiscovery = true;
+        await f.chat.scan();
+        assert.equal(f.chat.view().state, "stale");
+        failDiscovery = false;
+      }
+      const ask = { type: "assistant", uuid: "unread-ask", timestamp: growth === "beyond backfill" ? "2030-01-02T11:00:00Z" : "2029-12-30T11:00:00Z",
+        message: { role: "assistant", content: "APPROVAL NEEDED: Archive sample notes. Reply \"archive sample\"." } };
+      const ordinary = lines({ type: "system", subtype: "turn_duration", padding: "x".repeat(1024) });
+      await appendFile(f.file, lines(ask) + ordinary.repeat(growth === "beyond backfill" ? 5000 : 2) + lines(awaySummary("Latest after backlog")));
+      if (reset === "reselection") await writeFile(f.lock, "primary\n");
+      const chat = reset === "restart" ? f.scanner() : f.chat;
+      await chat.scan();
+      assert.deepEqual(chat.asks().map(entry => entry.recordId), ["unread-ask"], "recap hydration must retain incremental ask intake, including its age semantics");
+      for (let i = 0; i < 4 && chat.view().behind; i++) await chat.scan();
+      assert.equal(chat.view().behind, false);
+      assert.deepEqual(recap(chat), { text: "Latest after backlog", state: "ready" });
+      await chat.scan();
+      assert.equal(chat.asks().length, 1);
+    });
+  }
+}
 
 test("partial, malformed, overlong and bounded reads hide uncertainty without a full-history fallback", async t => {
   const f = await fixture(t, { maxLineBytes: 1024, backfillBytes: 2048, maxScanBytes: 1024 });
