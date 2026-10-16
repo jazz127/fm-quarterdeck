@@ -221,6 +221,34 @@ test("second mates render separately with escaped evidence, backlog counts and r
   assert.equal(app.node("#secondmates").innerHTML, "");
 });
 
+test("second mates start collapsed on each load and retain only the in-page choice", () => {
+  const storage = new Map([["fm-agentos-hierarchy-open.v1", JSON.stringify([["secondmates", true]])]]);
+  const app = ui({ storage });
+  const toggle = app.node("#secondmates-toggle");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(app.node("#secondmates").hidden, true);
+  app.run(`renderSecondmates({items: [{id: 'navigator', summary: 'Review', scope: 'Review', location: 'local', state: 'idle', stateEvidence: 'Idle', backlog: null}], warning: 'Registry unavailable'})`);
+  assert.equal(app.node("#secondmates-section").hidden, false);
+  assert.equal(app.node("#secondmates-count").textContent, "1");
+  assert.equal(app.node("#secondmates").hidden, true);
+  assert.equal(app.node("#secondmates-state").hidden, false, "warnings stay visible while collapsed");
+  toggle.dispatchEvent({ type: "click" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(app.node("#secondmates").hidden, false);
+  assert.equal(app.node("#secondmates-toggle .secondmates-chevron").textContent, "▾");
+  app.run(`renderSecondmates({items: []})`);
+  assert.equal(app.node("#secondmates").hidden, false, "refreshes keep the viewer's choice");
+  toggle.dispatchEvent({ type: "click" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(app.node("#secondmates").hidden, true);
+  app.run(`renderSecondmates({items: []})`);
+  assert.equal(app.node("#secondmates").hidden, true, "refreshes also preserve collapse");
+  toggle.dispatchEvent({ type: "click" });
+  const reloaded = ui({ storage });
+  assert.equal(reloaded.node("#secondmates-toggle").getAttribute("aria-expanded"), "false");
+  assert.equal(reloaded.node("#secondmates").hidden, true);
+});
+
 // This is not a layout engine; responsive/keyboard checks remain a review obligation.
 function ui({ fetchImpl = () => new Promise(() => {}), compact = true, storage = new Map() } = {}) {
   const nodes = new Map();

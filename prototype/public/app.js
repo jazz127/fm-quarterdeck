@@ -1208,6 +1208,16 @@ function renderSecondmates(data) {
     </article>`).join("");
 }
 
+function setSecondmatesOpen(open) {
+  $("#secondmates").hidden = !open;
+  $("#secondmates-toggle").setAttribute("aria-expanded", String(open));
+  $("#secondmates-toggle .secondmates-chevron").textContent = open ? "▾" : "▸";
+}
+setSecondmatesOpen(false);
+$("#secondmates-toggle").addEventListener("click", () => {
+  setSecondmatesOpen($("#secondmates-toggle").getAttribute("aria-expanded") !== "true");
+});
+
 function renderProjects(projects = overviewProjects) {
   overviewProjects = projects;
   if (workSplitData?.items) {
