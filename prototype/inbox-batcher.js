@@ -23,7 +23,16 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       if (--arriving === 0) for (const resolve of quiet.splice(0)) resolve();
     };
   }
-  const received = () => arriving ? new Promise((resolve) => quiet.push(resolve)) : Promise.resolve();
+  const received = () => arriving ? new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(deadline);
+      const index = quiet.indexOf(done);
+      if (index !== -1) quiet.splice(index, 1);
+      resolve();
+    };
+    const deadline = setTimeout(done, delayMs);
+    quiet.push(done);
+  }) : Promise.resolve();
   const readState = async (strict = false) => {
     try {
       const info = await lstat(file);

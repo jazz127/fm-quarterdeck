@@ -120,3 +120,33 @@ test("failure of an earlier sealed batch releases later callers and keeps all pe
   await f.batcher.flush();
   assert.deepEqual(await f.batcher.pending(), []);
 });
+
+for (const urgentNote of [false, true]) test(`${urgentNote ? "urgent-note" : "direct"} retries bound stalled arrivals after a failed delivery`, { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 2000000000000 });
+  let fail = true;
+  const attempts = [];
+  const f = await fixture(t, { delayMs: 3000, deliver: async (home, id, text) => {
+    attempts.push({ id, text });
+    if (fail) throw Error("offline");
+    return { id: "2000000000-note", request_id: id };
+  } });
+  const id = "quarterdeck-call:" + uuid(1);
+  const first = f.batcher.note(f.setup.home, id, "Retained answer");
+  const failure = assert.rejects(first, /offline/);
+  await f.batcher.note.lookup(id);
+  await assert.rejects(f.batcher.flush(), /offline/);
+  await failure;
+  const arrived = f.batcher.arrive();
+  t.after(arrived);
+  fail = false;
+  const retry = urgentNote ? f.batcher.note(f.setup.home, id, "Retained answer", { immediate: true }) : f.batcher.flush();
+  if (urgentNote) await f.batcher.note.lookup(id);
+  t.mock.timers.tick(2999);
+  await tick();
+  assert.equal(attempts.length, 1, "a stalled sibling retains the batching window");
+  t.mock.timers.tick(1);
+  await retry;
+  assert.equal(attempts.length, 2, "the debounce deadline releases delivery without the sibling finishing");
+  assert.deepEqual(attempts[1], attempts[0], "retry preserves the sealed submission");
+  assert.deepEqual(await f.batcher.pending(), []);
+});
