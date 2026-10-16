@@ -149,7 +149,7 @@ window.bearingsAnswerForm = (() => {
         clearDraft(key);
         state = { phase: "compose", holdVersion: state.holdVersion, cardRev: state.cardRev,
           heldReply: state.receipt.replyScope === "individual" && typeof state.receipt.reply === "string" ? state.receipt.reply : "",
-          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString() };
+          heldReplyScope: state.receipt.replyScope, heldAt: state.sentAt || new Date().toISOString(), heldNoteId: state.noteId, heldRequestId: state.requestId };
         states.set(key, state);
       }
       // Unattempted reviews must be checked again after a version or cycle change;
@@ -292,11 +292,11 @@ window.bearingsAnswerForm = (() => {
           // Return to compose without locking a newer cycle. Thread receipts retain
           // their original cycle so lifecycle consumers can classify them.
           update(key, null, focus ? "text" : null);
-          if (thread) onAsked(key, sentHoldVersion);
+          if (thread) onAsked(key, sentHoldVersion, body?.noteId);
           return true;
         }
         // A same-id retry resends the original note; record the cycle the relay stamped.
-        update(key, { phase: "sent", path, requestId: state.requestId, holdVersion: sentHoldVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
+        update(key, { phase: "sent", path, requestId: state.requestId, noteId: body?.noteId, holdVersion: sentHoldVersion, cardRev: state.cardRev, selection: state.selection, selectionLabel: state.selectionLabel, note: state.note, label: state.label, sentAt: body?.sentAt || new Date().toISOString(), receipt: { state: "accepted" } }, focus ? "receipt" : null);
         return true;
       }
       const noun = thread ? "note" : "answer";

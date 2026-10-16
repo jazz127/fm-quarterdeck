@@ -10,6 +10,31 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   const file = `${statePath}.inbox-${scope}.json`;
   let state = { schema: "fm-quarterdeck-outbox.v1", batches: [] }, serial = Promise.resolve(), timer, closed = false;
   const waiters = new Map();
+  // Submissions a route has started receiving but not yet saved. An urgent flush waits
+  // for them, so concurrent items from one Send share a note instead of sealing early.
+  let arriving = 0, arrivalTimer;
+  const quiet = [];
+  const releaseArrivals = (expired = false) => {
+    clearTimeout(arrivalTimer);
+    arrivalTimer = undefined;
+    for (const resolve of quiet.splice(0)) resolve(expired);
+  };
+  const scheduleArrivalDeadline = () => {
+    if (!timer && !arrivalTimer && quiet.length) arrivalTimer = setTimeout(() => releaseArrivals(true), delayMs);
+  };
+  function arrive() {
+    let open = true;
+    arriving++;
+    return () => {
+      if (!open) return;
+      open = false;
+      if (--arriving === 0) releaseArrivals();
+    };
+  }
+  const received = () => arriving ? new Promise((resolve) => {
+    quiet.push(resolve);
+    scheduleArrivalDeadline();
+  }) : Promise.resolve();
   const readState = async (strict = false) => {
     try {
       const info = await lstat(file);
@@ -70,16 +95,33 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
   };
   const schedule = () => {
     clearTimeout(timer);
-    if (closed || !state.batches.some((batch) => !batch.receipt)) return;
-    timer = setTimeout(() => { void flush().catch(() => {}); }, Math.min(delayMs, Math.max(0, Math.min(...state.batches.filter((batch) => !batch.receipt).map((batch) => (batch.at || Date.now()) + delayMs + 2000 - Date.now())))));
+    timer = undefined;
+    if (closed || !state.batches.some((batch) => !batch.receipt)) { scheduleArrivalDeadline(); return; }
+    clearTimeout(arrivalTimer);
+    arrivalTimer = undefined;
+    timer = setTimeout(() => {
+      timer = undefined;
+      releaseArrivals(true);
+      void flushSaved().catch(() => {});
+    }, Math.min(delayMs, Math.max(0, Math.min(...state.batches.filter((batch) => !batch.receipt).map((batch) => (batch.at || Date.now()) + delayMs + 2000 - Date.now())))));
     timer.unref?.();
   };
   async function flush() {
+    while (true) {
+      const expired = await received();
+      if (await flushSaved(!expired)) return;
+    }
+  }
+  async function flushSaved(waitForArrivals = false) {
     return locked(async () => {
       await ready;
+      if (waitForArrivals && arriving) return false;
       clearTimeout(timer);
+      timer = undefined;
+      scheduleArrivalDeadline();
       for (const batch of state.batches.filter((entry) => entry.receipt)) settle(batch);
       for (const batch of state.batches.filter((entry) => !entry.receipt)) {
+        if (waitForArrivals && arriving) { schedule(); return false; }
         // Seal before delivery. New arrivals cannot join an uncertain submitted batch.
         batch.sealed = true;
         await save();
@@ -94,6 +136,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
           throw error;
         }
       }
+      return true;
     }).catch((error) => {
       // A failed earlier batch or disk/lock operation must also release later HTTP
       // callers. Their payloads stay saved; each client can retry visibly.
@@ -101,7 +144,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       throw error;
     });
   }
-  async function note(_home, id, text, { record, display, immediate = false } = {}) {
+  async function note(_home, id, text, { record, display, immediate = false, arrived = () => {} } = {}) {
     const result = await locked(async () => {
       await ready;
       let batch = find(id);
@@ -119,6 +162,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       schedule();
       return { pending };
     });
+    arrived();
     if (immediate && result.pending) void flush().catch(() => {});
     return result.receipt || result.pending;
   }
@@ -143,5 +187,5 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
       requestId: item.id, text: item.display || item.record?.display || item.text, key: item.record?.key || null,
     })));
   }
-  return { note, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); } };
+  return { note, arrive, receipts, flush, pending, initializeEvidence: () => locked(save), close() { closed = true; clearTimeout(timer); timer = undefined; scheduleArrivalDeadline(); } };
 }

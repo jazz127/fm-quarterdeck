@@ -15,10 +15,10 @@ window.bearingsPatch = (() => {
   const INTERACTIVE = "a, button, input, textarea, select, label, summary, [contenteditable]";
   const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const keyOf = (node) => node?.getAttribute?.("data-call-key") || null;
-  // A card's update identity: its presentation rev plus its optional hold cycle, which rev
-  // omits. A cycle-only re-hold must still reach the card's controllers.
-  const cardToken = (card) => card.holdVersion ? `${card.rev}:${card.holdVersion}` : card.rev;
-  const nodeToken = (node) => { const rev = node.getAttribute("data-call-rev"), hold = node.getAttribute("data-call-hold"); return hold ? `${rev}:${hold}` : rev; };
+  // A card's update identity: its presentation rev plus its optional hold cycle (#174) and hold
+  // timestamp (#172), which rev omits. A cycle-only or clock-only re-hold must still reach the
+  // card's controllers.
+  const patchRevision = (card) => card ? JSON.stringify([card.rev, card.holdVersion ?? null, card.holdAt ?? null]) : null;
 
   // Minimal fallback presentation; bearings-view.js supplies the product rendering.
   const fallbackView = {
@@ -128,13 +128,13 @@ window.bearingsPatch = (() => {
   }
 
   // Counts against what is on screen, so the held message names what will change.
-  function diffCards(appliedRevs, cards) {
+  function diffCards(appliedRevs, cards, revision = (card) => card.rev) {
     let added = 0, changed = 0;
     const seen = new Set();
     for (const card of cards || []) {
       seen.add(card.key);
       if (!appliedRevs.has(card.key)) added += 1;
-      else if (appliedRevs.get(card.key) !== cardToken(card)) changed += 1;
+      else if (appliedRevs.get(card.key) !== revision(card)) changed += 1;
     }
     const removed = [...appliedRevs.keys()].filter((key) => !seen.has(key)).length;
     return { added, changed, removed, total: added + changed + removed };
@@ -192,7 +192,7 @@ window.bearingsPatch = (() => {
     // Source resolution can precede the POST response. Keep the form until that
     // response is consumed so accepted words are cleared before removing it.
     const sendingKeys = () => new Set([...list.querySelectorAll('[data-call-answer-phase="sending"]')].map(form => keyOf(form.closest("[data-call-key]"))).filter(Boolean));
-    const updateToken = (model, key) => { const card = model.cards.find(entry => entry.key === key); return card ? cardToken(card) : null; };
+    const updateToken = (model, key) => patchRevision(model.cards.find(card => card.key === key));
     function releaseDraftUpdate(model, key) { releasedDraftUpdates.set(key, updateToken(model, key)); }
     const heldKeys = (model = pending || applied) => {
       const keys = new Set([...tracker.keys(), ...releaseTimers.keys(), ...sendingKeys()]);
@@ -213,7 +213,7 @@ window.bearingsPatch = (() => {
       let count = 0;
       for (const node of list.querySelectorAll("[data-call-key]")) {
         const card = next.get(keyOf(node));
-        const change = !card ? "resolved" : cardToken(card) !== nodeToken(node) ? "updated" : null;
+        const change = !card ? "resolved" : patchRevision(card) !== node.getAttribute("data-call-patch-rev") ? "updated" : null;
         let notice = node.querySelector("[data-call-held]");
         if (!change || node.classList.contains("call-card-leaving")) {
           notice?.remove(); node.removeAttribute("data-held"); node.removeAttribute("aria-busy"); continue;
@@ -234,7 +234,7 @@ window.bearingsPatch = (() => {
       }
       held = Boolean(count || appliedSort !== sortOrder);
       if (sortNotice) sortNotice.hidden = appliedSort === sortOrder;
-      onHeld(held, diffCards(appliedRevs, model.cards));
+      onHeld(held, diffCards(appliedRevs, model.cards, patchRevision));
     }
 
     function restoreDrafts(node, key) {
@@ -249,6 +249,7 @@ window.bearingsPatch = (() => {
     function fill(node, card) {
       node.innerHTML = render.cardHtml(card);
       node.setAttribute("data-call-rev", card.rev);
+      node.setAttribute("data-call-patch-rev", patchRevision(card));
       if (card.holdVersion) node.setAttribute("data-call-hold", card.holdVersion); else node.removeAttribute("data-call-hold");
       node.setAttribute("data-call-type", card.type);
       restoreDrafts(node, card.key);
@@ -357,7 +358,7 @@ window.bearingsPatch = (() => {
             node.classList.remove("call-card-leaving");
             node.removeAttribute("aria-hidden");
           }
-          if (nodeToken(node) !== cardToken(card)) fill(node, card);
+          if (node.getAttribute("data-call-patch-rev") !== patchRevision(card)) fill(node, card);
         } else {
           node = createCard(card);
           stubs.get(card.key)?.remove();
@@ -395,7 +396,7 @@ window.bearingsPatch = (() => {
       }
       renderChrome(model);
       appliedRevs.clear();
-      for (const card of cards) appliedRevs.set(card.key, cardToken(card));
+      for (const card of cards) appliedRevs.set(card.key, patchRevision(card));
       appliedRev = model.rev;
       applied = model;
       appliedSort = order;
@@ -404,7 +405,7 @@ window.bearingsPatch = (() => {
 
     function update(model) {
       if (!model || !Array.isArray(model.cards)) return "ignored";
-      if (applied && model.rev === appliedRev && !diffCards(appliedRevs, model.cards).total && appliedSort === sortOrder) {
+      if (applied && model.rev === appliedRev && !diffCards(appliedRevs, model.cards, patchRevision).total && appliedSort === sortOrder) {
         // Back to what is on screen: nothing is waiting any more.
         pending = null;
         cancelRelease();
@@ -433,7 +434,7 @@ window.bearingsPatch = (() => {
       // Explicit sort Update now may move selected nodes, but never releases
       // their pending card changes. Normal background patches never detach them.
       apply({ ...model, cards: ordered }, forceSort ? new Set() : protectedKeys, order);
-      pending = diffCards(appliedRevs, model.cards).total || appliedSort !== sortOrder ? model : null;
+      pending = diffCards(appliedRevs, model.cards, patchRevision).total || appliedSort !== sortOrder ? model : null;
       showNotices(model);
       restoreAnchor(anchor);
       return pending ? "held" : "applied";

@@ -157,3 +157,28 @@ test('generated new cycle stays Active while cached thread and local sent state 
   assert.equal(win.callLifecycle.cardState({ card: current, thread, answer }), 'active');
   assert.equal(win.callLifecycle.cardState({ card: card({ repo: 'example-app' }), thread, answer }), 'sent');
 });
+
+test('a date-only creation clock on the next UTC day cannot reject same-cycle notes sent after the precise hold', async () => {
+  // A host east of UTC records its local creation date; the precise hold stamp is still the previous UTC day.
+  const east = { created: '2026-10-16', hold_set_at: '2026-10-15T20:00:00Z' };
+  const a = card({ ...east, id: 'sample-a' }), b = card({ ...east, id: 'sample-b' });
+  assert.equal(a.clock.label, 'Created', 'the display clock still shows the newest durable date');
+  assert.equal(a.holdAt, '2026-10-15T20:00:00.000Z');
+  const { rev, holdVersion, holdAt, ...presentation } = a;
+  assert.equal(rev, shortHash(presentation), 'hold-cycle metadata leaves the presentation revision unchanged');
+  const asked = (c, n) => ({ id: 'shared-note', at: '2026-10-15T21:00:00Z', request_id: threadRequestId(c.key, uuid.replace(/1$/, String(n))),
+    body: formatThreadNote({ key: c.key, card: c, text: `Clarify ${c.task}`, requestId: uuid.replace(/1$/, String(n)) }) });
+  const receipts = { pending: [], handled: [asked(a, 1), asked(b, 2)], replies: [{ id: 'shared-note', at: '2026-10-15T22:00:00Z', body: 'One reply for both calls.' }] };
+  const relay = createThreadRelay({ home: '/synthetic/home', receipts: async () => receipts, transcript: async () => ({ turns: [], omitted: false }) });
+  for (const c of [a, b]) {
+    const classified = classifyAnsweredCalls([c], receipts)[0];
+    assert.equal(classified.sentReceipt, 'replied');
+    assert.equal(classified.sentReplyScope, 'combined');
+    const history = await relay.history(c.key, { cards: [c] });
+    assert.deepEqual(history.entries.map(e => [e.kind, e.state, e.replyScope]), [['ask', 'replied', 'combined']]);
+    assert.equal(win.callLifecycle.delivery({ card: c, thread: history }).posture, 'replied');
+  }
+  const preHold = { ...asked(a, 3), at: '2026-10-15T19:00:00Z' };
+  assert.equal(classifyAnsweredCalls([a], { handled: [preHold] })[0].sentReceipt, undefined, 'a note sent before the hold cycle stays stale');
+  assert.equal(win.callLifecycle.delivery({ card: a, thread: { entries: [{ kind: 'ask', from: 'captain', state: 'waiting', holdVersion: a.holdVersion, at: preHold.at }] } }).posture, null);
+});

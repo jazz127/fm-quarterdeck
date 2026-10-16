@@ -335,6 +335,43 @@ test("unquoted boolean grammar requires one marked task and a complete explicit 
   assert.deepEqual(two.map(a => [a.taskMarkers, a.replies]), [[["alpha-call"], ["Yes", "No"]], [["beta-call"], ["Yes", "No"]]]);
 });
 
+test("shared replies never supersede an ask marked for a different task; same-task repeats still do", async (context) => {
+  const env = await claudeHome(context);
+  await writeFile(env.transcript, lines(
+    firstmate("alpha", 1, "DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No."),
+    firstmate("beta", 2, "DECISION NEEDED [task:beta-call] Remove the sample branch? Reply Yes or No."),
+    firstmate("gamma-old", 3, 'DECISION NEEDED [task:gamma-call] Keep sample logs? Reply "keep" or "drop".'),
+    firstmate("gamma-new", 4, 'DECISION NEEDED [task:gamma-call] The sample logs are larger now; reply "keep" or "drop".'),
+  ));
+  const scanner = scannerFor(env);
+  await scanner.scan();
+  assert.deepEqual(scanner.asks().map(ask => [ask.recordId, ask.replies]), [["alpha", ["Yes", "No"]], ["beta", ["Yes", "No"]], ["gamma-new", ["keep", "drop"]]],
+    "different tasks stay independent; a same-task repeat still supersedes");
+});
+
+test("a matching-version replay keeps persisted open asks for different tasks independent", async (context) => {
+  const env = await claudeHome(context);
+  await writeFile(env.transcript, lines(
+    firstmate("alpha", 1, "DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No."),
+    firstmate("beta", 2, "DECISION NEEDED [task:beta-call] Remove the sample branch? Reply Yes or No."),
+    firstmate("gamma-old", 3, 'DECISION NEEDED [task:gamma-call] Keep sample logs? Reply "keep" or "drop".'),
+    firstmate("gamma-new", 4, 'DECISION NEEDED [task:gamma-call] The sample logs are larger now; reply "keep" or "drop".'),
+  ));
+  await scannerFor(env).scan();
+  // Recreate state persisted before the Yes/No grammar: both unquoted asks open, no replies.
+  const state = JSON.parse(await readFile(chatAsksPath(env.statePath), "utf8"));
+  for (const ask of Object.values(state.asks).filter(ask => ask.recordId !== "gamma-old")) {
+    delete state.tombstones[ask.key];
+    for (const field of ["resolvedBy", "resolvedAt", "supersededBy"]) delete ask[field];
+    Object.assign(ask, { status: "open", replies: [] });
+  }
+  state.matchingVersion = 4;
+  await writeFile(chatAsksPath(env.statePath), JSON.stringify(state));
+  const upgraded = scannerFor(env);
+  await upgraded.scan();
+  assert.deepEqual(upgraded.asks().map(ask => [ask.recordId, ask.replies]), [["alpha", ["Yes", "No"]], ["beta", ["Yes", "No"]], ["gamma-new", ["keep", "drop"]]]);
+});
+
 test("an ask naming a filed hold is shown inside that card, not twice, and resolves when the hold closes", async (context) => {
   const env = await claudeHome(context);
   await writeFile(env.transcript, lines(

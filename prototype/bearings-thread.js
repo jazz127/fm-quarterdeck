@@ -177,7 +177,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
     // A question may be asked about any open card, answerable or not. A retry of the same
     // request id resends the identical note (idempotent in Firstmate) even after the card left
     // or was re-held.
-    async submit(body, model, { immediate = false } = {}) {
+    async submit(body, model, { immediate = false, arrived } = {}) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
       const digest = shortHash([parsed.key, parsed.text]);
@@ -192,7 +192,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
       })();
       remember(parsed.requestId, record);
       let receipt;
-      try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text, { record, immediate }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
+      try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text, { record, immediate, arrived }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
       return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at, ...(record.holdVersion ? { holdVersion: record.holdVersion } : {}) };
     },
     // The card's own history, oldest first. Inbox receipts are required; the transcript is
