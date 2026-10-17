@@ -1123,7 +1123,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
     if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) throw new Error("Quarterdeck presentation state must be outside FM_HOME");
   }
   const inboxBatcher = createInboxBatcher({ home: env.FM_HOME, statePath: agentStatePath });
-  bearingsSource ||= createCallSource({ home: env.FM_HOME, receipts: inboxBatcher.receipts, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits, statePath: chatAsksPath(configuredStatePath(env)), historicalAnswer }) });
+  bearingsSource ||= createCallSource({ home: env.FM_HOME, receipts: inboxBatcher.receipts, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS, timeoutMs: env.FM_BEARINGS_TIMEOUT_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits, statePath: chatAsksPath(configuredStatePath(env)), historicalAnswer }) });
   answerRelay ||= createAnswerRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts });
   threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits }) });
   const servedCommit = revisionResolver.initial;

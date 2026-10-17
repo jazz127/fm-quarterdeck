@@ -51,7 +51,7 @@ async function fixture(t, overrides = {}) {
 
 test("ID starts deduplicate, fixed launch uses loopback, serial replacement honors active leases and idle completion", async (t) => {
   const statePath = "/synthetic/private/quarterdeck-state.json";
-  const f = await fixture(t, { env: { FM_QUARTERDECK_STATE_PATH: statePath, FM_LAVISH_REVIEW_URL: "http://127.0.0.1:9000" } }), c = f.lifecycle;
+  const f = await fixture(t, { env: { FM_QUARTERDECK_STATE_PATH: statePath, FM_BEARINGS_TIMEOUT_MS: "120000", FM_LAVISH_REVIEW_URL: "http://127.0.0.1:9000" } }), c = f.lifecycle;
   const results = await Promise.all(Array.from({ length: 12 }, () => c.select("dev-one")));
   assert.equal(new Set(results.map((r) => r.operation)).size, 1);
   await wait(() => c.status("dev-one").state === "ready");
@@ -65,6 +65,7 @@ test("ID starts deduplicate, fixed launch uses loopback, serial replacement hono
   assert.ok(!f.calls[0].options.env.HOME.startsWith(`${f.calls[0].options.cwd}/`));
   assert.equal(f.calls[0].options.env.FM_PREVIEW_REGISTRY_PATH, undefined);
   assert.equal(f.calls[0].options.env.FM_QUARTERDECK_STATE_PATH, statePath);
+  assert.equal(f.calls[0].options.env.FM_BEARINGS_TIMEOUT_MS, "120000");
   assert.equal(f.calls[0].options.env.FM_LAVISH_REVIEW_URL, undefined);
   const release = c.acquire("dev-one");
   const replacement = await c.select("dev-two");
@@ -78,6 +79,7 @@ test("ID starts deduplicate, fixed launch uses loopback, serial replacement hono
   await wait(() => c.status("dev-two").state === "ready");
   assert.equal(c.status("dev-one").state, "stopped");
   assert.equal(f.maximum, 1); assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[1].options.env.FM_BEARINGS_TIMEOUT_MS, "120000");
   assert.equal(c.status("main").state, "ready");
   assert.deepEqual(f.signals.map((s) => s.signal), ["SIGTERM"]);
 });
