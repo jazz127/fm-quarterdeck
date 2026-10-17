@@ -1,5 +1,6 @@
 import { parseBacklogTask } from "./firstmate-records.js";
 import { enumeratedLetterOptions, publishOptions } from "./enumerated-options.js";
+import { projectFleetInventory } from "./fleet-inventory.js";
 import { projectUnderwayRecords } from "./underway-records.js";
 import { readUnreadableChildren } from "./unreadable-child-records.js";
 import { spawn } from "node:child_process";
@@ -301,6 +302,9 @@ async function addBacklogEvidence(output, home) {
       return binary.length ? { ...enriched, options: binary } : enriched;
     });
     const landedEvidence = backlogLandedEvidence(text);
+    raw.quarterdeckLandingHistory = [...landedEvidence].slice(0, 500).map(([id, evidence]) => ({ id, owner: "(main)", what: evidence.backlogTitle || id,
+      repo: evidence.backlogRepo, landedAt: evidence.landedAt, artifact: evidence.backlogUrls?.[0] }));
+    if (landedEvidence.size > 500) raw.quarterdeckWorkDisclosures = [...(raw.quarterdeckWorkDisclosures || []), `Main home landed history showing 500 of ${landedEvidence.size}`];
     if (Array.isArray(raw.landed)) raw.landed = raw.landed.map((row) => {
       if (!object(row) || row.owner !== "(main)" || !landedEvidence.has(row.id)) return row;
       const evidence = landedEvidence.get(row.id);
@@ -558,7 +562,7 @@ function callSection(raw) {
     // Optional source title/reason retain quoted replies for chat-ask deduplication.
     const title = publicText(row.title, Infinity), reason = publicText(row.reason, Infinity);
     const backlogTitle = publicText(row.backlogTitle, Infinity), backlogReason = publicText(row.backlogReason, Infinity);
-    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), ...holdCycle(row), answer: readOnly ? null : decisionAnswer(row, task),
+    cards.push(withRev({ key: `decision:${id}`, type: "decision", task, localTask: id.split("/").at(-1), ...(readOnly ? { readOnly: true } : {}), verb: token(row.verb), summary, ...(title ? { title } : {}), ...(reason ? { reason } : {}), ...(backlogTitle ? { backlogTitle } : {}), ...(backlogReason ? { backlogReason } : {}), url: httpsUrl(contribution?.url), owner, repo: repos.get(task) || repoName(row.repo) || null, clock: decisionClock(row), holdVersion: shortHash([row.backlogReason || row.reason || row.summary, decisionClock(row).at]), ...holdCycle(row), answer: readOnly ? null : decisionAnswer(row, task),
       boardTitle: publicText(row.board_title, Infinity),
       boardAbout: publicText(row.board_about, Infinity),
       boardDecide: publicText(row.board_decide, Infinity),
@@ -615,7 +619,7 @@ function landedArtifact(value) {
 }
 // Snapshot landed rows only. Invalid rows are counted, never a failed snapshot.
 // Another home's ledger is never read; only snapshot evidence supplies its repository.
-// Its landed time stays unknown.
+// Supplied remote dates retain their source clock; absent dates stay unknown.
 function landedSection(raw) {
   if (!Array.isArray(raw.landed)) return { landed: [], landedInvalid: 0 };
   let landedInvalid = 0;
@@ -635,7 +639,7 @@ function landedSection(raw) {
       if (recovered) { url = recovered; artifact = null; }
     }
     const repo = repoName(row.repo) || (owner === "(main)" ? repoName(row.backlogRepo) : null);
-    const at = owner === "(main)" ? newerAt(durableDate(row.landedAt), durableDate(row.backlogLandedAt)) : null;
+    const at = newerAt(durableDate(row.landedAt), owner === "(main)" ? durableDate(row.backlogLandedAt) : null);
     // Retain the legacy revision (which already includes owner) so existing
     // acknowledgements still match only the exact landing they recorded.
     const card = withRev({ key: `landed:${id}`, type: "landed", task: id, what, ...(backlogTitle ? { backlogTitle } : {}), repo, owner, url, artifact, clock: { label: "Landed", at } });
@@ -687,9 +691,21 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", 
   validateSnapshot(raw);
   const content = { cards: [], coverage: null, omitted: [], landed: [], underway: [], charted: [],
     workCoverage: { underway: Array.isArray(raw.in_flight), charted: Array.isArray(raw.gates),
-      disclosures: raw.omitted.filter(row => object(row) && typeof row.surface === "string" && /in_flight|gates|inventory|current|registry|secondmate/.test(row.surface))
+      disclosures: raw.omitted.filter(row => object(row) && typeof row.surface === "string" && /in_flight|gates|inventory|current|registry|secondmate|landed/.test(row.surface))
         .map(row => publicText(row.surface, Infinity)).filter(Boolean) } };
   if (Array.isArray(raw.quarterdeckWorkDisclosures)) content.workCoverage.underwayDisclosures = raw.quarterdeckWorkDisclosures.map(value => publicText(value, Infinity)).filter(Boolean);
+  if (raw.quarterdeckFleet) {
+    content.fleetWork = raw.quarterdeckFleet;
+    content.workCoverage.disclosures.push(...raw.quarterdeckFleet.homes.flatMap(home => home.warnings.filter(text => /landed/i.test(text)).map(text => `${home.id}: ${text}`)));
+  }
+  const history = [...(raw.landed || []), ...(raw.quarterdeckLandingHistory || []),
+    ...(raw.quarterdeckFleet?.records || []).filter(row => row.owner !== "(main)" && row.bucket === "landed").map(row => ({ id: row.localTask, owner: row.owner, what: row.name, repo: row.repositoryPath, landedAt: row.completionAt, artifact: row.artifact }))];
+  const historyKeys = new Set();
+  content.landedHistory = landedSection({ landed: history.filter(row => {
+    const key = JSON.stringify([row?.owner, row?.id]);
+    if (historyKeys.has(key)) return false;
+    historyKeys.add(key); return true;
+  }) }).landed;
   let landedInvalid = 0;
   for (const name of enabled) {
     const section = SECTIONS[name]?.(raw);
@@ -711,7 +727,7 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", 
 }
 // The revision covers only what the captain sees, never the snapshot clock, so an
 // unchanged Captain's Call is never pushed again. Empty landed rows stay out of the hash.
-export const contentRevision = ({ cards, coverage, omitted, holds, landed, underway, charted, workCoverage }) => shortHash({ cards, coverage, omitted, ...(workCoverage ? { workCoverage } : {}), ...(underway?.length ? { underway } : {}), ...(charted?.length ? { charted } : {}), ...(holds?.length ? { holds } : {}), ...(landed?.length ? { landed } : {}) });
+export const contentRevision = ({ cards, coverage, omitted, holds, landed, landedHistory, fleetWork, underway, charted, workCoverage }) => shortHash({ ...(landedHistory?.length ? { landedHistory } : {}), ...(fleetWork ? { fleetWork } : {}), cards, coverage, omitted, ...(workCoverage ? { workCoverage } : {}), ...(underway?.length ? { underway } : {}), ...(charted?.length ? { charted } : {}), ...(holds?.length ? { holds } : {}), ...(landed?.length ? { landed } : {}) });
 
 export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = access, setPriority = os.setPriority, timeoutMs = 45000, maxStdout = 2 * 1024 * 1024, maxStderr = 4096 } = {}) {
   let pending = null;
@@ -761,12 +777,13 @@ export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = acc
       const work = projectUnderwayRecords(snapshot, await readUnreadableChildren(snapshot));
       raw.in_flight = work.rows.map(({ stage, ...row }) => ({ ...row, quarterdeckStage: stage }));
       raw.quarterdeckWorkDisclosures = work.disclosures;
+      raw.quarterdeckFleet = projectFleetInventory(snapshot, work);
     } catch {
       raw.quarterdeckWorkDisclosures = ["Canonical work records unavailable; current stages and registered-home inventory unverified"];
     }
     return JSON.stringify(raw);
   };
-  return () => (pending ||= once().then(addWorkRecords).then((output) => addBacklogEvidence(output, home)).then((output) => addBoardEvidence(output, home)).finally(() => { pending = null; }));
+  return ({ allLanded = false } = {}) => (pending ||= once("fm-bearings-snapshot.sh", ["--json", "--all-in-flight", "--all-secondmates", ...(allLanded ? ["--all-landed"] : [])]).then(addWorkRecords).then((output) => addBacklogEvidence(output, home)).then((output) => addBoardEvidence(output, home)).finally(() => { pending = null; }));
 }
 
 // Reads mtimes and sizes only (never contents) of the two record kinds whose change
@@ -827,7 +844,7 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
   let lastPrint = null;
   let pollSeenAt = -Infinity;
   let closed = false;
-  let runs = 0;
+  let runs = 0, allLanded = false, recentLandingLimit = 6;
   const listeners = new Set();
 
   const watched = () => !closed && (listeners.size > 0 || now() - pollSeenAt < pollTtlMs);
@@ -856,9 +873,10 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
     lastStartAt = now();
     lastAttemptAt = lastStartAt;
     try {
-      const content = normalizeSnapshot(JSON.parse(await runner()));
+      const content = normalizeSnapshot(JSON.parse(await runner({ allLanded })));
+      if (allLanded) content.landed = content.landed.slice(0, recentLandingLimit);
       const at = new Date(now()).toISOString();
-      lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [], underway: content.underway || [], charted: content.charted || [], workCoverage: content.workCoverage };
+      lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [], underway: content.underway || [], charted: content.charted || [], workCoverage: content.workCoverage, fleetWork: content.fleetWork, landedHistory: content.landedHistory };
       publish(lastGood);
     } catch (error) {
       const reason = error instanceof BearingsUnavailable ? error.message : error instanceof SyntaxError ? "Bearings output is not JSON" : "Bearings snapshot failed";
@@ -916,6 +934,7 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
   }
   return {
     current,
+    expandLandings() { if (allLanded) return; allLanded = true; recentLandingLimit = model.landed?.length || 6; schedule(); },
     freshness,
     subscribe(listener) {
       listeners.add(listener);

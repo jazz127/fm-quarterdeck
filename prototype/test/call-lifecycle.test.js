@@ -239,3 +239,12 @@ test("Send queued is only on Active, counts staged answers, and disables while s
   assert.equal(button.hidden, true);
   life.paintSendQueued(null, { filter: "active", count: 2 });
 });
+
+test('server and thread receipts compare durable note identity and order in either arrival order', () => {
+  const old = { kind: 'ask', from: 'captain', noteId: 'old', requestId: 'old-request', at: '2026-10-01T10:00:00Z', state: 'replied' };
+  const card = { sentReceipt: 'pending', sentReceiptIdentity: { noteId: 'new', requestId: 'new-request', at: '2026-10-01T11:00:00Z' } };
+  assert.equal(life.delivery({ card, thread: { entries: [old] } }).posture, 'pending');
+  const newer = { ...old, noteId: 'newest', requestId: 'newest-request', at: '2026-10-01T12:00:00Z' };
+  assert.equal(life.delivery({ card, thread: { entries: [newer] } }).posture, 'replied');
+  assert.equal(life.delivery({ card, thread: { entries: [{ ...newer, ...card.sentReceiptIdentity }] } }).posture, 'replied');
+});

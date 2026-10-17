@@ -140,3 +140,5 @@ Synthetic extractor tests cover reply extraction and normalized matching, reject
 - Firstmate adds structured ask records, such as an `asks[]` field in the snapshot. In that case, prefer that source and keep this parser as the fallback.
 - A harness changes its transcript layout. Add a reviewed adapter beside `recordTurns`.
 - False positives or missed asks appear in practice. Adjust the marker grammar here and in `test/chat-asks.test.js` together.
+
+Legacy bare `linkedTasks` strings cannot prove local ownership or close against a same-named local ledger row. Reconciliation persists `taskLinks` with composite task, owner and explicit local task ID when matching source evidence arrives; it works whether the ask or remote card arrives first. Local closure requires proven local links for every sibling. Remote associations remain standalone actionable chat asks and never attach controls to a read-only remote decision. Decision cards expose `localTask` beside `task` and `owner`.

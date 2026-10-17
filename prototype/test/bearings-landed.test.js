@@ -123,7 +123,7 @@ test("native same-named landings relay independent follow-up threads", async () 
   assert.deepEqual(notes.map(note => taggedEnvelope(note.text, "fm-quarterdeck-thread").key), model.landed.map(card => card.key));
 });
 
-test("landed rows become cards with a full link or local main, and only main gets a clock", () => {
+test("landed rows become cards with a full link or local main, and supplied owner clocks are retained", () => {
   const raw = { ...fixture, landed: [
     { id: "ship-window", what: "Ship the window", artifact: "https://example.invalid/acme/example-app/pull/42", owner: "(main)", repo: "/srv/checkouts/example-app", landedAt: "2026-10-05", backlogLandedAt: "2026-10-01", backlogRepo: "ignored-when-snapshot-has-repo" },
     { id: "local-notes", what: "Land the notes", artifact: "local main", owner: "(main)", backlogRepo: "sample-notes", backlogLandedAt: "2026-10-02" },
@@ -152,7 +152,7 @@ test("landed rows become cards with a full link or local main, and only main get
   assert.equal(local.clock.at, "2026-10-02");
   const other = content.landed.find((card) => card.task === "other-home");
   assert.equal(other.repo, "repo");
-  assert.equal(other.clock.at, null, "another home does not supply a clock");
+  assert.equal(other.clock.at, "2026-10-03", "a supplied remote clock is retained");
   assert.equal(other.url, "https://example.invalid/o/r/pull/1");
   const plain = content.landed.find((card) => card.task === "dash");
   assert.equal(plain.url, null);

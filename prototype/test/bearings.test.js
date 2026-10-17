@@ -911,3 +911,25 @@ test("a watched model never turns stale while its ceiling refresh runs", async (
   assert.equal(hub.freshness().ageMs, 0);
   hub.close();
 });
+
+test('hub retains fleet inventory and widens landing history through its existing bounded cadence', async () => {
+  const clock = fakeClock();
+  const base = await fixture('clear');
+  const landed = n => Array.from({ length: n }, (_, i) => ({ id: `land-${i}`, owner: '(main)', what: `Landing ${i}` }));
+  const calls = [];
+  const fleetWork = { records: [], homes: [], disclosures: [], observedAt: null };
+  const hub = createBearingsHub({ now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null,
+    runner: async options => { calls.push(options); return JSON.stringify({ ...base, landed: landed(options.allLanded ? 12 : 6), quarterdeckFleet: fleetWork }); } });
+  hub.touch(); await clock.advance(0);
+  assert.equal(hub.current().landed.length, 6);
+  assert.deepEqual(hub.current().fleetWork, fleetWork);
+  const before = hub.current().rev;
+  hub.expandLandings();
+  assert.equal(calls.length, 1, 'history expansion still respects the snapshot minimum gap');
+  await clock.advance(30000);
+  assert.equal(calls.at(-1).allLanded, true);
+  assert.equal(hub.current().landed.length, 6);
+  assert.equal(hub.current().landedHistory.length, 12);
+  assert.notEqual(hub.current().rev, before);
+  hub.close();
+});

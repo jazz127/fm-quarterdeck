@@ -66,10 +66,29 @@ window.callLifecycle = (() => {
   function delivery({ card = null, answer = null, thread = null } = {}) {
     const entries = Array.isArray(thread?.entries) ? thread.entries : null;
     const captain = entries ? entries.filter((entry) => entry && entry.from === "captain" && (entry.kind === "ask" || entry.kind === "answer") && currentHoldNote(card, entry)) : [];
+    const server = card?.sentReceiptIdentity;
+    if (server?.noteId && cardPosture(card)) {
+      const same = captain.find(entry => entry.noteId === server.noteId && (entry.requestId || null) === (server.requestId || null));
+      const entry = { ...server, kind: "ask", from: "captain", state: card.sentReceipt === "acknowledged" ? "received" : card.sentReceipt === "replied" ? "replied" : "waiting", replyScope: card.sentReplyScope };
+      if (same) {
+        // Avoid changing the cached history object.
+        const index = captain.findIndex(item => item.noteId === server.noteId && (item.requestId || null) === (server.requestId || null));
+        if (POSTURE_RANK[entryPosture(entry)] > POSTURE_RANK[entryPosture(captain[index])]) captain[index] = entry;
+      } else captain.push(entry);
+      captain.sort((a, b) => {
+        if (a.noteId === b.noteId && a.itemIndex != null && b.itemIndex != null) return a.itemIndex - b.itemIndex;
+        if (a.sequence != null && b.sequence != null && a.sequence !== b.sequence) return a.sequence - b.sequence;
+        const left = Date.parse(a.at), right = Date.parse(b.at);
+        if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+        // Unknown ordering cannot let a reply to another note clear a pending send.
+        return POSTURE_RANK[entryPosture(b)] - POSTURE_RANK[entryPosture(a)];
+      });
+    }
     const latest = captain.length ? captain[captain.length - 1] : null;
     const localNoteId = (noteId, requestId) => noteId || captain.find((entry) => requestId && entry.requestId === `quarterdeck-call:${requestId}`)?.noteId;
     let posture = latest ? entryPosture(latest) : null;
     let reply = posture === "replied" ? replyFor(latest, entries) : "";
+    if (posture === "replied" && server?.noteId === latest?.noteId && (server.requestId || null) === (latest?.requestId || null) && latest?.replyScope !== "combined") reply ||= replyText(card.sentReply);
     let replyScope = latest?.replyScope;
 
     if (answer?.phase === "sent" && currentHoldNote(card, answer)) {

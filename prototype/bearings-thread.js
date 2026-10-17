@@ -5,7 +5,7 @@ import { discoverPrimarySources, mentionsTask, recordTurns } from "./chat-asks.j
 import { createHistoryReader } from "./history-reader.js";
 import { inboxReceipts, noteWithRequestId } from "./inbox.js";
 import { landedAckKey } from "./landed-ack.js";
-import { currentCardNote, receiptReply, replyBody } from "./receipt-provenance.js";
+import { currentCardNote, receiptReply, replyBody, noteIdentity } from "./receipt-provenance.js";
 
 // Card threads (BEARINGS.md "Card threads"). Text in a Captain's Call card's one box, with
 // no option selected, sends the captain's note to Firstmate through the same guarded,
@@ -24,6 +24,7 @@ const CARD_KEY = /^(?:(?:decision|merge|chat|landed):[A-Za-z0-9._-]{1,160}|decis
 // fm-inbox.sh request ids: [A-Za-z0-9._:-], at most 128 characters.
 const INBOX_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const PREFIX = "quarterdeck-thread:";
+const HOLD_VERSION = /^[0-9a-f]{16}$/;
 const MAX_REMEMBERED = 200;
 const MAX_ENTRIES = 80;
 const MAX_ENTRY_CHARS = 16000;
@@ -48,7 +49,7 @@ export function cardTask(card, key) {
   const match = /^(?:decision|merge|landed):(.+)$/.exec(key);
   return match ? match[1] : null;
 }
-const cardByKey = (model, key) => (model?.cards || []).find((entry) => entry.key === key) || (model?.landed || []).find((entry) => entry.key === key);
+const cardByKey = (model, key) => (model?.cards || []).find((entry) => entry.key === key) || (model?.landed || []).find((entry) => entry.key === key) || (model?.landedHistory || []).find((entry) => entry.key === key);
 const cardLabel = (card, key) => {
   if (card?.type === "chat" || key.startsWith("chat:")) return `Chat ask ${key.slice(5)}`;
   const kind = card?.type === "landed" || key.startsWith("landed:") ? "Landed" : key.startsWith("merge:") ? "Merge" : "Decision";
@@ -65,7 +66,9 @@ export function threadText(value, max = MAX_ENTRY_CHARS) {
 }
 
 function parseBody(body) {
-  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "key,requestId,text") refuse(400, "invalid", "Ask must be exactly requestId, key and text");
+  const fields = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).filter((name) => name !== "holdVersion").sort().join(",") : "";
+  if (fields !== "key,requestId,text") refuse(400, "invalid", "Ask must be exactly requestId, key and text, with an optional holdVersion");
+  if ("holdVersion" in body && (typeof body.holdVersion !== "string" || !HOLD_VERSION.test(body.holdVersion))) refuse(400, "invalid", "Hold version must be the 16-hex cycle shown");
   if (typeof body.requestId !== "string" || !REQUEST_ID.test(body.requestId)) refuse(400, "invalid", "Ask request id must be a lowercase UUID");
   if (!validCardKey(body.key)) refuse(400, "invalid", "Ask must name an open card");
   if (typeof body.text !== "string") refuse(400, "invalid", "Ask text must be text");
@@ -73,7 +76,7 @@ function parseBody(body) {
   if (!text) refuse(422, "empty", "Write a question first");
   if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text)) refuse(422, "invalid-text", "The question contains control characters");
   if (bytes(text) > MAX_QUESTION_BYTES) refuse(422, "too-long", `The question is longer than ${MAX_QUESTION_BYTES} bytes`);
-  return { requestId: body.requestId, key: body.key, text };
+  return { requestId: body.requestId, key: body.key, text, ...("holdVersion" in body ? { holdVersion: body.holdVersion } : {}) };
 }
 
 // One human line, the reply route, then the tagged fence. Backticks inside JSON strings are
@@ -175,7 +178,8 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
   };
   return {
     // A question may be asked about any open card, answerable or not. A retry of the same
-    // request id resends the identical note (idempotent in Firstmate) even after the card left.
+    // request id resends the identical note (idempotent in Firstmate) even after the card left
+    // or was re-held.
     async submit(body, model, { immediate = false, arrived } = {}) {
       if (!home) refuse(503, "unconfigured", "Firstmate home is not configured");
       const parsed = parseBody(body);
@@ -186,12 +190,14 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
         if (card.readOnly) refuse(409, "read-only", "This call is answered in its own home");
-        return { digest, key: parsed.key, display: parsed.text, text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
+        // A supplied reviewed cycle must match before stamping a new note.
+        if ("holdVersion" in parsed && parsed.holdVersion !== card.holdVersion) refuse(409, "changed", "This call changed while you were reviewing; check it and review your note again");
+        return { digest, key: parsed.key, display: parsed.text, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);
       let receipt;
       try { receipt = await note(home, threadRequestId(parsed.key, parsed.requestId), record.text, { record, immediate, arrived }); } catch { refuse(502, "unconfirmed", "Firstmate did not confirm the question; retry sends the same question once"); }
-      return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at };
+      return { state: "accepted", requestId: parsed.requestId, key: record.key, noteId: receipt.id, replay: receipt.outcome === "replay", sentAt: record.at, ...(record.holdVersion ? { holdVersion: record.holdVersion } : {}) };
     },
     // The card's own history, oldest first. Inbox receipts are required; the transcript is
     // best effort and its absence is reported, never hidden.
@@ -210,7 +216,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
         const replyText = replyBody(reply);
         const envelope = taggedEnvelope(item.body, "fm-bearings-answer") || taggedEnvelope(item.body, THREAD_NOTE_TAG) || {};
         const current = currentCardNote(card, envelope, item.at);
-        const captain = { kind: match.kind, from: "captain", at: item.at || null, text: threadText(match.text), noteId: item.id, requestId: item.request_id,
+        const captain = { kind: match.kind, from: "captain", at: item.at || null, text: threadText(match.text), ...noteIdentity(item),
           ...(card?.holdVersion ? { holdVersion: envelope.holdVersion || null, cardRev: envelope.cardRev || null, currentHold: current } : {}),
           ...(reply ? { replyScope: scope } : {}), state: reply ? "replied" : data.handled.some((entry) => entry.id === item.id) ? "received" : "waiting" };
         if (current) entries.push(captain);

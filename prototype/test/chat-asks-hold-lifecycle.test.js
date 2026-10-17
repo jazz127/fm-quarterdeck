@@ -262,3 +262,23 @@ test('legacy bare and qualified remote links stay open when scoped or missing on
     }
   }
 });
+
+test('legacy links require local proof before closure and reconcile remote owners in either arrival order', async t => {
+  for (const remoteFirst of [true, false]) {
+    const { store, make } = await scanner(t, 'APPROVAL NEEDED: Choose the remote plan. Reply "remote choice".');
+    await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+    const scan = make();
+    await scan.scan();
+    const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Reply "remote choice".' }]);
+    const closed = backlogHoldRecords(hold('shared', 'unrelated local choice', 'x'));
+    await scan.applySnapshot(remoteFirst ? remote.cards : [], true, closed);
+    assert.equal(scan.asks().length, 1, 'unproven bare link must not close against local ledger');
+    await scan.applySnapshot(remote.cards, true, closed);
+    assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+    const restored = make();
+    await restored.scan();
+    await restored.applySnapshot([], true, closed);
+    assert.equal(restored.asks().length, 1);
+    assert.equal(remote.cards[0].localTask, 'shared');
+  }
+});

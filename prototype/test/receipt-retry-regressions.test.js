@@ -21,13 +21,13 @@ const newAsk = { kind: "ask", from: "captain", noteId: "new-note", at: "2026-10-
 
 function storage() {
   const values = new Map();
-  return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
+  return { get length() { return values.size; }, key: (index) => [...values.keys()][index], getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
 }
 
 // A click whose handler may call preventDefault.
 const press = (node) => node.dispatchEvent({ type: "click", preventDefault() {} });
 
-function mount(fetchImpl, { tab = storage(), isLanded = false, nextId = null } = {}) {
+function mount(fetchImpl, { tab = storage(), isLanded = false, present = true, nextId = null } = {}) {
   const dom = callDom();
   const timers = fakeTimers();
   const win = { document: dom.document, sessionStorage: tab, navigator: {} };
@@ -39,19 +39,18 @@ function mount(fetchImpl, { tab = storage(), isLanded = false, nextId = null } =
   let board, answers, threads, node;
   if (isLanded) {
     board = win.bearingsLanded.createController({ list, doc: dom.document, storage: tab, timers, fetchImpl, uuid: nextId || (() => uuid(++n)) });
-    board.update(model);
+    board.update(present ? model : { ...model, landed: [] });
     node = list.querySelector("[data-landed-key]");
   } else {
     node = dom.document.createElement("article");
     node.setAttribute("data-call-key", card.key);
     node.setAttribute("data-call-rev", card.rev);
     node.innerHTML = win.bearingsView.cardHtml(card);
-    list.append(node);
+    if (present) list.append(node);
     threads = win.bearingsThread.createThreadController({ list, doc: dom.document, win, storage: tab, timers, fetchImpl });
     answers = win.bearingsAnswerForm.createAnswerController({ list, doc: dom.document, win, storage: tab, timers, fetchImpl, uuid: () => uuid(++n),
       onAsked: (key, holdVersion, noteId) => threads.noteSent(key, holdVersion, noteId) });
-    answers.render(node, card);
-    threads.render(node);
+    if (present) { answers.render(node, card); threads.render(node); }
   }
   const part = (name) => node.querySelector(`[data-${isLanded ? "landed" : "call-answer"}-${name}]`);
   const queue = () => (isLanded ? part("follow") : node.querySelector("[data-call-answer]")).dispatchEvent({ type: "submit", preventDefault() {} });
@@ -424,4 +423,35 @@ test("a landed payload is saved before its response and a reload never sends it 
   assert.equal(third.part("text").value, "New uncertain words");
   assert.equal(third.part("edit").disabled, true);
   third.destroy();
+});
+
+test('client-only uncertain sends survive absent cards and reload with exact retry payloads', async () => {
+  for (const isLanded of [false, true]) {
+    const tab = storage();
+    const attempts = [];
+    const fetchImpl = async (_url, init) => {
+      if (init?.method !== 'POST') return response({ entries: [], acks: {} });
+      attempts.push(JSON.parse(init.body));
+      throw Error('Request never reached the server');
+    };
+    const first = mount(fetchImpl, { tab, isLanded });
+    await flush();
+    first.part('text').type('Keep the exact original words'); first.queue(); press(first.part('send')); await flush();
+    first.destroy();
+    const second = mount(fetchImpl, { tab, isLanded, present: false });
+    if (isLanded) {
+      second.board.update({ ...model, landed: [] });
+      const recovery = second.document.body.querySelector('[data-landed-key]');
+      assert.ok(recovery, 'absent landing keeps an explicit retry row');
+      assert.match(recovery.textContent, /Unconfirmed follow-up/);
+      press(recovery.querySelector('[data-landed-send]'));
+    } else {
+      second.node.remove(); second.answers.prune([]);
+      assert.equal(second.answers.queued().length, 1, 'global review queue retains the absent call');
+      await second.answers.sendQueued();
+    }
+    await flush();
+    assert.deepEqual(attempts[1], attempts[0]);
+    second.destroy();
+  }
 });

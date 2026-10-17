@@ -247,6 +247,8 @@ Firstmate's lavish adapter rule maps it to one keyed line: `<question>\t<selecti
 
 **Firstmate follow-up (separate repository, not done here):** the bearings skill must route an inbox note carrying a `json fm-bearings-answer` block with `channel:"quarterdeck"` exactly like a board answer — feed `<question>\t<answer>\t<label>[\t<close>]` to `fm-captain-hold.sh answers`, handle `merge.<task>` through the merge-click ruling, and record "later" as `hold --until`. Until then Firstmate reads the note as an ordinary captain note.
 
+Both answer and thread requests include the optional reviewed `holdVersion` when the card supplies one. A new submission with a mismatching cycle is refused before delivery; a persisted same-ID retry reuses its original record before checking current membership or cycle. Cycle-only changes patch the form independently of presentation revision. Unattempted queued drafts require review again; uncertain attempts retain their frozen retry. A newly reviewed cycle uses a new request ID, and accepting an old retry cannot clear a newer draft. Legacy requests without the field remain accepted for compatibility.
+
 ## Lifecycle
 
 Every open card has exactly one lifecycle state, derived by `public/call-lifecycle.js` from data the page already holds.
@@ -296,7 +298,7 @@ A thread note matches the card key.
 The latest of those notes sets `sentReceipt`: pending while the note is still pending, acknowledged once it is handled and has no reply, and replied when a reply is present.
 The selected home's receipts are read at most once per 15 seconds while the call source refreshes; a failed read retains previous evidence.
 The sending tab also uses its accepted answer state immediately, including across reload.
-The latest captain note decides the posture the card shows: thread history (`kind` `ask` or `answer`, `from` `captain`, `state` waiting, received, or replied), the sending tab's answer receipt, or `sentReceipt` before that history loads.
+The latest captain note decides the posture the card shows: thread history (`kind` `ask` or `answer`, `from` `captain`, `state` waiting, received, or replied), the sending tab's answer receipt, or the snapshot `sentReceipt`. The snapshot and thread entries share `sentReceiptIdentity`/note identity fields (`noteId`, `requestId`, durable `at`, optional sequence and persisted batch `itemIndex`), so a newer pending snapshot beats a stale reply and newer thread history beats an older snapshot. Receipt state only advances within the same submission; unrelated replies never supply its text.
 History order owns that choice: the sending tab's receipt counts only for the note it was accepted as (its `noteId`), so a retry that reports a later send time for a note history already lists cannot outrank a newer note, and an older note's reply is never shown for a newer one. Legacy answer receipts without `noteId` resolve it from a current history entry whose `requestId` is `quarterdeck-call:<requestId>`; if identity cannot be established, loaded history wins, including an empty history. Returning an answered box to compose retains that receipt's note and request identities with its held reply.
 An accepted thread note keeps the card Sent, across reloads and stale in-flight history reads, until history lists that exact note. Its `noteId` and hold version persist in tab session storage under `fm-quarterdeck-call-thread.v1:<key>` until then.
 A pending note stays Sent until Firstmate acknowledges it.
@@ -380,8 +382,8 @@ The exact text `local main` is a label, not a link.
 Other artifact text is path-redacted and is not a URL.
 `-` and an empty artifact are not recorded.
 `repo` comes from the snapshot row when recorded, reduced to its final segment; only a `(main)` landing can supplement a missing repository from its checked backlog line's `(repo:)` field.
-The landed clock is kept only for `(main)`: the newer of snapshot `landedAt` and the checked backlog line's newest `(done|merged|reported YYYY-MM-DD)`.
-Another home's ledger is never read; its repository needs snapshot evidence and its landed time stays unknown.
+The landed clock retains supplied snapshot `landedAt` for every owner. For `(main)`, it also uses the checked backlog line's newest `(done|merged|reported YYYY-MM-DD)` when newer.
+Another home's repository and date need snapshot evidence; absent fields stay unknown.
 A date-only clock says time unknown.
 Duplicate or invalid rows are withheld as omitted kind `invalid-landed`.
 A missing `landed` array yields an empty column and does not make Captain's Call unavailable.
@@ -404,6 +406,10 @@ Firstmate replies in that thread.
 The note says nothing was decided.
 There is no Procrastinate control on these cards.
 The model rev includes landed cards when any are present.
+
+The landing-history control reveals retained history and requests `--all-landed` through the existing hub, with the same cadence, timeout, output bounds and disabled remote transport. Expanded history also includes checked selected-home backlog rows (up to 500) and structured registered-home landings. Source bounds such as “landed showing 6 of 47” remain visible. Remote cached history cannot exceed the producer's available cache; expansion never invents omitted records. Acknowledgement and follow-up use the same exact owner-scoped landing identity throughout history.
+
+Client-only uncertain attempts remain recoverable when a card leaves the snapshot: answers/notes remain in the global review queue, and landed follow-ups have explicit recovery rows loaded from tab storage. Reload never sends automatically. Retry retains the original request ID, text, revision and reviewed cycle; a missing server record may still refuse the retry, leaving the saved words visible.
 
 ## Card threads
 

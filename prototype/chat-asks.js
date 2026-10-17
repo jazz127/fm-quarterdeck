@@ -555,29 +555,40 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
       if (!state) return false;
       const evidence = fresh ? holds : [];
       cards = cards.map(card => typeof card === "string" ? { task: card } : card);
-      cards = [...cards, ...evidence];
-      const linkable = cards.filter(card => !card.readOnly);
-      const excludedTasks = new Set(cards.filter(card => card.readOnly && !linkable.some(local => local.task === card.task)).map(card => card.task));
-      cards = linkable;
+      const candidates = [...cards, ...evidence];
       const closed = new Map(evidence.filter(row => row.closed).map(row => [row.task, row]));
-      const closure = ask => {
-        const linkedTasks = ask.linkedTasks.filter(task => !excludedTasks.has(task));
-        const rows = linkedTasks.map(task => closed.get(task));
-        if (rows.length && rows.every(Boolean)) return { resolvedTasks: linkedTasks, resolutionSource: "data/backlog.md", holdResolutions: rows.map(row => ({ task: row.task, resolution: row.resolution })) };
-        return null;
-      };
-      const work = openAsks().some((ask) => ask.linkedTasks.some(task => excludedTasks.has(task)) || cards.some(card => !ask.linkedTasks.includes(card.task) && matchesHold(ask, card)))
-        || openAsks().some(ask => closure(ask));
-      if (!work) return false;
       return (await mutate((target) => {
         let dirty = false;
         for (const ask of Object.values(target.asks)) {
           if (ask.status !== "open") continue;
-          const linkedTasks = ask.linkedTasks.filter(task => !excludedTasks.has(task));
-          if (linkedTasks.length !== ask.linkedTasks.length) { ask.linkedTasks = linkedTasks; dirty = true; }
-          for (const card of cards) if (!ask.linkedTasks.includes(card.task) && matchesHold(ask, card)) { ask.linkedTasks.push(card.task); dirty = true; }
-          const resolved = closure(ask);
-          if (resolved) dirty = resolveAsk(target, ask, "answered", resolved) || dirty;
+          const before = JSON.stringify([ask.linkedTasks, ask.taskLinks]);
+          const links = new Map((ask.taskLinks || []).map(link => [link.task, link]));
+          for (const card of candidates) {
+            if (!card.task) continue;
+            const localTask = card.localTask || card.task.split("/").at(-1);
+            const owner = card.readOnly ? card.owner : "(main)";
+            if (!owner || (card.readOnly && !(ask.linkedTasks.includes(localTask) && !links.has(localTask)) && !(card.task.includes("/") && ask.linkedTasks.includes(card.task)) && !links.has(`${owner}/${localTask}`))) continue;
+            const task = card.readOnly ? `${owner}/${localTask}` : card.task;
+            // A legacy bare string is not proof of local ownership. Re-establish
+            // association from the ask and an owner-attributed card/ledger row.
+            const matches = matchesHold(ask, { ...card, readOnly: false })
+              || (card.readOnly && ask.linkedTasks.includes(localTask) && matchesHold(ask, { ...card, task: localTask, readOnly: false }));
+            if (!matches || (!card.readOnly && card.closed && ask.linkedTasks.includes(card.task) && !links.has(card.task))) continue;
+            links.set(task, { task, localTask, owner });
+          }
+          const remoteTasks = new Set(candidates.filter(card => card.readOnly).map(card => card.task));
+          const localTasks = new Set(candidates.filter(card => !card.readOnly).map(card => card.task));
+          ask.linkedTasks = ask.linkedTasks.filter(task => !(remoteTasks.has(task) && !localTasks.has(task))
+            && ![...links.values()].some(link => link.owner !== "(main)" && (link.task === task || link.localTask === task) && !links.has(link.localTask)));
+          for (const link of links.values()) if (link.owner === "(main)" && !ask.linkedTasks.includes(link.task)) ask.linkedTasks.push(link.task);
+          if (links.size || ask.taskLinks) ask.taskLinks = [...links.values()];
+          dirty ||= before !== JSON.stringify([ask.linkedTasks, ask.taskLinks]);
+          const provenLocal = ask.linkedTasks.length && ask.linkedTasks.every(task => links.get(task)?.owner === "(main)");
+          const rows = ask.linkedTasks.map(task => closed.get(task));
+          if (provenLocal && rows.every(Boolean) && ![...links.values()].some(link => link.owner !== "(main)")) {
+            dirty = resolveAsk(target, ask, "answered", { resolvedTasks: ask.linkedTasks, resolutionSource: "data/backlog.md",
+              holdResolutions: rows.map(row => ({ task: row.task, resolution: row.resolution })) }) || dirty;
+          }
         }
         return { dirty, write: dirty };
       })).dirty;
@@ -646,7 +657,7 @@ export function composeCallModel(base, asks, chatView) {
   for (const ask of asks) {
     // The snapshot can finish between a scan and a cache read (including cold GETs
     // without a stream subscription). Dedup at composition too, before any publication.
-    const task = ask.linkedTasks.find((name) => tasks.has(name)) || linkable.find(card => matchesHold(ask, card))?.task;
+    const task = ask.linkedTasks.find((name) => tasks.has(name) && ask.taskLinks?.some(link => link.task === name && link.owner === "(main)")) || linkable.find(card => matchesHold(ask, card))?.task;
     if (task) linked.set(task, [...(linked.get(task) || []), ask]);
     else unlinked.push(ask);
   }
@@ -729,6 +740,7 @@ export function createCallSource({ hub, chat, home = null, receipts = inboxRecei
   let unsubscribeHub = null;
   return {
     current,
+    expandLandings: () => hub.expandLandings?.(),
     freshness,
     refresh,
     // Independent of the UI's 15-second receipt cache. This uses the same expanded

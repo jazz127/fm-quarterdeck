@@ -178,3 +178,27 @@ test("answer status fails visibly when Firstmate receipts are unavailable", asyn
   assert.equal(response.status, 502);
   assert.equal((await response.json()).error, "Firstmate receipts unavailable");
 });
+
+// Two holds of one task whose only difference is a redacted report path: the same
+// presentation revision, but a different hold cycle.
+const heldCycle = (report) => ready(normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Pick a window", reason: `See ${report}`, hold_set_at: "2026-01-02T10:00:00Z" }],
+  contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }));
+
+test("an answer is bound to the hold cycle the captain reviewed even when the card revision is unchanged", async () => {
+  const a = heldCycle("/synthetic/one/report.md"), b = heldCycle("/synthetic/two/report.md");
+  const [cardA] = a.cards, [cardB] = b.cards;
+  assert.equal(cardA.rev, cardB.rev, "a cycle-only change keeps the presentation revision");
+  assert.notEqual(cardA.holdVersion, cardB.holdVersion);
+  const calls = [];
+  const relay = createAnswerRelay({ home: "/synthetic/home", note: async (_home, id, text) => { calls.push({ id, text }); return { id: `note-${calls.length}`, outcome: calls.length > 1 ? "replay" : "created" }; } });
+  const body = { requestId: uuid(1), key: cardA.key, cardRev: cardA.rev, selection: "", note: "Use the first report", holdVersion: cardA.holdVersion };
+  await assert.rejects(relay.submit({ ...body, holdVersion: 7 }, a), refusal("invalid"));
+  await assert.rejects(relay.submit(body, b), refusal("changed"));
+  assert.equal(calls.length, 0, "an answer reviewed on hold A never reaches Firstmate stamped as hold B");
+  assert.equal((await relay.submit(body, a)).envelope.holdVersion, cardA.holdVersion);
+  const retry = await relay.submit(body, b);
+  assert.equal(calls[1].text, calls[0].text, "a same-id retry after the re-hold resends the identical answer");
+  assert.equal(retry.envelope.holdVersion, cardA.holdVersion);
+  const { holdVersion, ...legacy } = { ...body, requestId: uuid(2) };
+  assert.equal((await relay.submit(legacy, b)).envelope.holdVersion, cardB.holdVersion, "a body without the optional field keeps the existing behaviour");
+});
