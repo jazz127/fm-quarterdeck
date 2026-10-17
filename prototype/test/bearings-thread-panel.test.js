@@ -261,3 +261,15 @@ test("link boundaries preserve surrounding punctuation, balanced URL paths and f
   assert.equal(body.textContent, text);
   assert.deepEqual(body.querySelectorAll("a").map((link) => link.getAttribute("href")), ["https://example.invalid/acme/example-app/a_(b)", "https://example.invalid/acme/example-app/page?q=a&x=b#notes"]);
 });
+
+test("a cycle-only update refreshes the panel's card, so hold A's notes stop painting as current", async () => {
+  const t = setup({ responses: [history([
+    { kind: "ask", from: "captain", noteId: "one", holdVersion: "1111111111111111", state: "waiting", text: "Which report?" },
+  ])] });
+  const a = { ...decision(), holdVersion: "1111111111111111" }, b = { ...a, holdVersion: "2222222222222222" };
+  t.patcher.update({ ...model([a]), rev: "cycle-a" }); await flush();
+  assert.equal(t.part("count").textContent, "Thread · 1");
+  t.patcher.update({ ...model([b]), rev: "cycle-b" }); await flush();
+  assert.equal(t.threads.state(KEY).card.holdVersion, b.holdVersion);
+  assert.equal(t.part("count").textContent, "Thread · 0", "hold A's note is provenance once hold B is current");
+});
