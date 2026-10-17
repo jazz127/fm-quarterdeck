@@ -53,7 +53,7 @@ Each card has `clock:{label,at}`. Decision clocks use the newest durable `update
 - Runs happen only while someone watches: an open stream, or a `GET /api/bearings` within the last 60 s. With nobody watching there are no watchers, timers or runs.
 - While watched, a run is requested by: `fs.watch` of `data/backlog.md` and `state/*.meta` (non-recursive, so the snapshot's cache subdirectory never triggers); a 10 s mtime/size fingerprint of the same names as a backstop; the age ceiling; and the first watcher when the cache is older than 60 s.
 - Requests are debounced 2 s. Run starts are at least `FM_BEARINGS_MIN_GAP_MS` apart (default 30000, floor 15000). `FM_BEARINGS_MAX_AGE_MS` (default 300000, floor 60000) bounds model age while watched. One run at a time; a request during a run queues one follow-up.
-- Each run starts the bearings snapshot and then the fleet snapshot; `FM_BEARINGS_TIMEOUT_MS` (default 45000, floor 15000) bounds each script, whose whole process group is killed at the timeout. Unset or invalid values keep the default.
+- Each run starts the bearings snapshot and then the fleet snapshot; `FM_BEARINGS_TIMEOUT_MS` (default 45000) bounds each script, whose whole process group is killed at the timeout. Positive finite values set the timeout in milliseconds; unset, invalid or non-positive values keep the default.
 
 ## Transport
 

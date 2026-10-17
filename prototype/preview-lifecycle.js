@@ -290,6 +290,7 @@ export class PreviewLifecycle {
         env: { PATH: process.env.PATH, ...directories, HOST: "127.0.0.1", PORT: String(port),
           FM_PREVIEW_GENERATION: generation, FM_PREVIEW_COMMIT: entry.commit,
           ...(this.env.FM_HOME ? { FM_HOME: this.env.FM_HOME } : {}),
+          ...(this.env.FM_BEARINGS_TIMEOUT_MS ? { FM_BEARINGS_TIMEOUT_MS: this.env.FM_BEARINGS_TIMEOUT_MS } : {}),
           ...(this.env.FM_QUARTERDECK_STATE_PATH ? { FM_QUARTERDECK_STATE_PATH: this.env.FM_QUARTERDECK_STATE_PATH } : {}) },
       });
       const owned = { ...intent, child, active: 0, lastUse: this.now(), starting: true, exited: false };

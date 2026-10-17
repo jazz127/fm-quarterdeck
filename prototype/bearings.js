@@ -19,7 +19,6 @@ export const MODEL_SCHEMA = "fm-quarterdeck-call.v1";
 const SOURCE_SCHEMA = "fm-bearings.v1";
 const MIN_GAP_FLOOR_MS = 15000;
 const MAX_AGE_FLOOR_MS = 60000;
-const TIMEOUT_FLOOR_MS = 15000;
 
 export class BearingsUnavailable extends Error {}
 
@@ -749,8 +748,10 @@ const boundedMs = (value, fallback, floor) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(floor, Math.round(parsed)) : fallback;
 };
-// One bound covers both snapshot scripts the runner starts per refresh.
-const snapshotTimeoutMs = (value) => boundedMs(value, 45000, TIMEOUT_FLOOR_MS);
+const snapshotTimeoutMs = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 45000;
+};
 
 // The hub owns the cached model and decides when the snapshot runs: only while someone
 // watches, on record changes (debounced), on a stat-fingerprint change, or at the age
@@ -858,7 +859,7 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
     // (previews, stream fallback) keep the cadence alive without a stream.
     touch() { if (closed) return; pollSeenAt = now(); activate(); },
     request,
-    stats: () => ({ runs, running: Boolean(running), subscribers: listeners.size, active: Boolean(tickTimer), minGapMs: gap, maxAgeMs: ceiling, timeoutMs: snapshotTimeoutMs(timeoutMs) }),
+    stats: () => ({ runs, running: Boolean(running), subscribers: listeners.size, active: Boolean(tickTimer), minGapMs: gap, maxAgeMs: ceiling }),
     close() { closed = true; listeners.clear(); deactivate(); },
   };
 }
