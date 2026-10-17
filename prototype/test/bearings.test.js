@@ -303,6 +303,27 @@ test("runner bounds time and output and reports a missing or failing snapshot as
   await assert.rejects(createSnapshotRunner(failing)(), /exited 4/);
 });
 
+test("the hub bounds a configured snapshot timeout and hands it to the runner it builds", async (context) => {
+  const { runner } = controlledRunner(await fixture("clear"));
+  assert.equal(createBearingsHub({ runner }).stats().timeoutMs, 45000, "absent keeps the 45 s default");
+  assert.equal(createBearingsHub({ runner, timeoutMs: "120000" }).stats().timeoutMs, 120000);
+  for (const invalid of ["", "abc", "0", "-5", "Infinity"]) assert.equal(createBearingsHub({ runner, timeoutMs: invalid }).stats().timeoutMs, 45000, `${JSON.stringify(invalid)} falls back to the default`);
+  assert.equal(createBearingsHub({ runner, timeoutMs: "1000" }).stats().timeoutMs, 15000, "the timeout has a 15 s floor");
+
+  const home = await syntheticHome(context, "exit 0");
+  const realSetTimeout = globalThis.setTimeout;
+  const delays = [];
+  context.mock.method(globalThis, "setTimeout", (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, ms, ...rest); });
+  const clock = fakeClock();
+  const hub = createBearingsHub({ home, timeoutMs: "120000", now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null });
+  const settled = new Promise((resolve) => hub.subscribe(resolve));
+  await clock.advance(0);
+  await settled;
+  hub.close();
+  assert.ok(delays.includes(120000), "the built runner kills a snapshot at the configured timeout");
+  assert.ok(!delays.includes(45000), "and not at the default");
+});
+
 function hubFor(clock, source, options = {}) {
   let changed = null;
   let watching = 0;

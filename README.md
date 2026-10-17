@@ -69,6 +69,7 @@ For a remote host, use a private SSH tunnel on the desktop (`ssh -N -L 4173:127.
 | `FM_REFRESH_MS` | `0` | Manual KPI/dashboard refresh; automatic interval must be at least 5000 ms |
 | `FM_BEARINGS_MIN_GAP_MS` | `30000` | Minimum snapshot start gap while watched; floor 15000 ms |
 | `FM_BEARINGS_MAX_AGE_MS` | `300000` | Snapshot age ceiling while watched; floor 60000 ms |
+| `FM_BEARINGS_TIMEOUT_MS` | `45000` | Per-script snapshot run timeout; floor 15000 ms; raise it when a large or busy home's snapshot reports `Bearings snapshot timed out` |
 | `FM_QUOTA_MAX_AGE` | `5m` | quota-axi reading reuse age: a positive integer with `s`, `m` or `h`, at most 5 minutes; unset, invalid, zero or over-limit values fall back to the default |
 | `FM_HISTORY_MAX_FILE_BYTES` / `FM_HISTORY_MAX_TOTAL_BYTES` / `FM_HISTORY_MAX_LINE_BYTES` / `FM_HISTORY_MAX_FILES` / `FM_HISTORY_MAX_RECORDS` / `FM_HISTORY_MAX_MESSAGES` | Existing reader defaults | Optional startup safety bounds; non-negative safe integers, zero is not unlimited; [defaults and consumer precedence](prototype/SESSION-WINDOW.md#startup-history-limit-configuration) |
 | `FM_STATUS_PATH` | synthetic `prototype/data/fleet.json` | Fallback only without selected home |
