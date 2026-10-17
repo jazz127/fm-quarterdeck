@@ -303,6 +303,55 @@ test("runner bounds time and output and reports a missing or failing snapshot as
   await assert.rejects(createSnapshotRunner(failing)(), /exited 4/);
 });
 
+test("the hub's runner kills snapshots at positive configured timeouts, defaulting to 45 s otherwise", async (context) => {
+  const home = await syntheticHome(context, "sleep 20 & wait");
+  const deadline = fakeClock();
+  let scheduled;
+  let delay;
+  context.mock.method(globalThis, "setTimeout", (fn, ms) => {
+    delay = ms;
+    const timer = deadline.timers.setTimeout(fn, ms);
+    scheduled();
+    return timer;
+  });
+  context.mock.method(globalThis, "clearTimeout", deadline.timers.clearTimeout);
+  for (const [timeoutMs, expected] of [["120000", 120000], ["1000", 1000], [undefined, 45000], ["", 45000], ["abc", 45000], ["0", 45000], ["-5", 45000], ["Infinity", 45000]]) {
+    const started = new Promise((resolve) => { scheduled = resolve; });
+    const clock = fakeClock();
+    const hub = createBearingsHub({ home, timeoutMs, now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null });
+    context.after(() => hub.close());
+    const settled = new Promise((resolve) => hub.subscribe(resolve));
+    await started;
+    await deadline.advance(delay - 1);
+    assert.equal(hub.current().state, "loading", "the child is still running before its deadline");
+    await deadline.advance(1);
+    await settled;
+    hub.close();
+    assert.equal(hub.current().state, "unavailable");
+    assert.match(hub.current().error, /Bearings snapshot timed out/);
+    assert.equal(delay, expected, `timeout ${JSON.stringify(timeoutMs)} follows the operator configuration contract`);
+  }
+});
+
+test("the hub applies the configured timeout to both scripts and publishes successful snapshots", async (context) => {
+  const home = await syntheticHome(context, 'cat "$FM_HOME/fixture.json"');
+  await writeFile(path.join(home, "fixture.json"), JSON.stringify(await fixture("clear")));
+  const fleetScript = path.join(home, "bin", "fm-fleet-snapshot.sh");
+  await writeFile(fleetScript, '#!/bin/sh\necho \'{"schema":"fm-fleet-snapshot.v1","tasks":[],"secondmate_current":{"registry":{"available":true},"records":[]}}\'\n');
+  await chmod(fleetScript, 0o755);
+  const realSetTimeout = globalThis.setTimeout;
+  const delays = [];
+  context.mock.method(globalThis, "setTimeout", (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, ms, ...rest); });
+  const clock = fakeClock();
+  const hub = createBearingsHub({ home, timeoutMs: "120000", now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null });
+  const settled = new Promise((resolve) => hub.subscribe(resolve));
+  await clock.advance(0);
+  await settled;
+  hub.close();
+  assert.equal(hub.current().state, "ready");
+  assert.deepEqual(delays, [120000, 120000], "both snapshot scripts receive the configured deadline");
+});
+
 function hubFor(clock, source, options = {}) {
   let changed = null;
   let watching = 0;
