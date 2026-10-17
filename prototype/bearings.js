@@ -748,11 +748,15 @@ const boundedMs = (value, fallback, floor) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(floor, Math.round(parsed)) : fallback;
 };
+const snapshotTimeoutMs = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 45000;
+};
 
 // The hub owns the cached model and decides when the snapshot runs: only while someone
 // watches, on record changes (debounced), on a stat-fingerprint change, or at the age
 // ceiling, never more often than the minimum gap, and never two at once.
-export function createBearingsHub({ home, runner = createSnapshotRunner(home), fingerprint = home ? createRecordFingerprint(home) : null, watchRecords = home ? (onChange) => defaultWatch(home, onChange) : null,
+export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunner(home, { timeoutMs: snapshotTimeoutMs(timeoutMs) }), fingerprint = home ? createRecordFingerprint(home) : null, watchRecords = home ? (onChange) => defaultWatch(home, onChange) : null,
   now = Date.now, timers = globalThis, minGapMs, maxAgeMs, debounceMs = 2000, tickMs = 10000, firstRunAfterMs = 60000, pollTtlMs = 60000 } = {}) {
   const gap = boundedMs(minGapMs, 30000, MIN_GAP_FLOOR_MS);
   const ceiling = Math.max(gap, boundedMs(maxAgeMs, 300000, MAX_AGE_FLOOR_MS));
