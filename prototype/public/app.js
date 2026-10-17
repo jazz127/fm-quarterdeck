@@ -1246,7 +1246,7 @@ function renderSecondmates(data) {
   const states = { live: "Working", idle: "Idle", unreachable: "Unreachable", unknown: "Unknown", "not-read": "Not read" };
   $("#secondmates").innerHTML = items.map((mate) => `
     <article class="secondmate-card" data-review-id="secondmate:${reviewId(mate.id)}">
-      <div class="secondmate-head"><strong>${escapeHtml(mate.id)}</strong><span class="state-chip">${escapeHtml(states[mate.state] || "Unknown")}</span></div>
+      <div class="secondmate-head"><strong>${escapeHtml(mate.id)}</strong><span class="state-chip">${escapeHtml(mate.inventory ? `${mate.inventory.freshness} inventory` : states[mate.state] || "Unknown")}</span></div>
       <p>${escapeHtml(mate.summary)}</p>
       <dl><dt>Scope</dt><dd>${escapeHtml(mate.scope)}</dd>
         <dt>Projects</dt><dd>${escapeHtml(mate.projects || "Not registered")}</dd>

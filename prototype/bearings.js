@@ -302,9 +302,6 @@ async function addBacklogEvidence(output, home) {
       return binary.length ? { ...enriched, options: binary } : enriched;
     });
     const landedEvidence = backlogLandedEvidence(text);
-    raw.quarterdeckLandingHistory = [...landedEvidence].slice(0, 500).map(([id, evidence]) => ({ id, owner: "(main)", what: evidence.backlogTitle || id,
-      repo: evidence.backlogRepo, landedAt: evidence.landedAt, artifact: evidence.backlogUrls?.[0] }));
-    if (landedEvidence.size > 500) raw.quarterdeckWorkDisclosures = [...(raw.quarterdeckWorkDisclosures || []), `Main home landed history showing 500 of ${landedEvidence.size}`];
     if (Array.isArray(raw.landed)) raw.landed = raw.landed.map((row) => {
       if (!object(row) || row.owner !== "(main)" || !landedEvidence.has(row.id)) return row;
       const evidence = landedEvidence.get(row.id);
@@ -698,8 +695,13 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", 
     content.fleetWork = raw.quarterdeckFleet;
     content.workCoverage.disclosures.push(...raw.quarterdeckFleet.homes.flatMap(home => home.warnings.filter(text => /landed/i.test(text)).map(text => `${home.id}: ${text}`)));
   }
-  const history = [...(raw.landed || []), ...(raw.quarterdeckLandingHistory || []),
-    ...(raw.quarterdeckFleet?.records || []).filter(row => row.owner !== "(main)" && row.bucket === "landed").map(row => ({ id: row.localTask, owner: row.owner, what: row.name, repo: row.repositoryPath, landedAt: row.completionAt, artifact: row.artifact }))];
+  const fleetLandings = (raw.quarterdeckFleet?.records || []).filter(row => row.owner !== "(main)" && row.bucket === "landed")
+    .map(row => ({ id: row.localTask, owner: row.owner, what: row.name, repo: row.repositoryPath, landedAt: row.completionAt, artifact: row.artifact }));
+  const sourceLandings = (raw.landed || []).map(row => {
+    const supplied = fleetLandings.find(item => item.owner === row?.owner && item.id === row?.id);
+    return supplied ? { ...supplied, ...row, repo: row.repo || supplied.repo, landedAt: row.landedAt || supplied.landedAt } : row;
+  });
+  const history = [...sourceLandings, ...fleetLandings];
   const historyKeys = new Set();
   content.landedHistory = landedSection({ landed: history.filter(row => {
     const key = JSON.stringify([row?.owner, row?.id]);
@@ -708,7 +710,7 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", 
   }) }).landed;
   let landedInvalid = 0;
   for (const name of enabled) {
-    const section = SECTIONS[name]?.(raw);
+    const section = SECTIONS[name]?.(name === "landed" ? { ...raw, landed: sourceLandings } : raw);
     if (!section) continue;
     if (name === "landed") {
       content.landed = section.landed || [];

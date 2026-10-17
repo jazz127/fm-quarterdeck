@@ -106,3 +106,13 @@ test('producer-shaped overlapping holds use queued classification and completion
   assert.equal(work.counts['captain-action'], 1);
   assert.equal(work.counts.waiting, 3);
 });
+
+test('short bearings rows retain canonical remote completion dates by exact owner', () => {
+  const snapshot = fleetFixture();
+  const fleet = projectFleetInventory(snapshot, projectUnderwayRecords(snapshot));
+  const model = normalizeSnapshot(raw({ quarterdeckFleet: fleet, landed: [{ id: 'shipped', owner: 'alpha', what: 'Short recap' }, { id: 'shipped', owner: 'unread', what: 'Another home' }] }));
+  assert.equal(model.landed[0].clock.at, '2026-10-01T10:00:00.000Z');
+  assert.equal(model.landed[0].what, 'Short recap');
+  assert.equal(model.landed[1].clock.at, null);
+  assert.equal(model.landedHistory.length, 3);
+});
