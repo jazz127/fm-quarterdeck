@@ -1978,13 +1978,19 @@ const overviewTabs = window.overviewTabs?.createController?.({
   // Phone and tablet share one column and the section tabs. Two columns start at 1100px.
   media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
-let fleetObservation = null;
+let fleetObservation = null, pendingFleetRefresh = false;
+function refreshFleetObservation(model) {
+  const observation = JSON.stringify([model.state, model.stale, model.fleetWork]);
+  if (!model.fleetWork || observation === fleetObservation) return;
+  fleetObservation = observation;
+  if (freshness.dashboard.refreshing) pendingFleetRefresh = true;
+  else void refreshEndpoint("dashboard");
+}
 const callLive = window.bearingsLive?.createBearingsLive({
   onModel(model) {
-    const observation = JSON.stringify([model.state, model.stale, model.fleetWork]);
-    if (model.fleetWork && observation !== fleetObservation) { fleetObservation = observation; void refreshEndpoint("dashboard"); }
+    refreshFleetObservation(model);
     callSourceModel = model; callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { if (data.rev !== callSourceModel?.rev) return; callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
+  onObserved(data) { if (data.rev !== callSourceModel?.rev) return; callSourceModel = { ...callSourceModel, ...data }; refreshFleetObservation(callSourceModel); callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
@@ -2135,6 +2141,7 @@ async function refreshEndpoint(key) {
   } finally {
     item.duration = Date.now() - item.started;
     item.refreshing = false;
+    if (key === "dashboard" && pendingFleetRefresh) { pendingFleetRefresh = false; void refreshEndpoint("dashboard"); }
     if (key === "lanes") {
       $("#transcript-load-more").disabled = false;
       if (item.error) $("#transcript-load-more").textContent = "Retry loading more records";

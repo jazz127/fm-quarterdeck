@@ -1148,7 +1148,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   answerRelay ||= createAnswerRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts });
   threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits }) });
   const fleetWorkNow = () => {
-    bearingsSource.touch?.();
+    if (env.FM_HOME) bearingsSource.touch?.();
     const model = bearingsSource.current();
     if (!model.fleetWork) return null;
     if (model.state === "ready" && !model.stale) return model.fleetWork;
