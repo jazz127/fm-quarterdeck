@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { spawn, execFileSync } from "node:child_process";
+import { once } from "node:events";
 import test from "node:test";
 import vm from "node:vm";
 import { quotaDom } from "./helpers/quota-dom.js";
@@ -7,6 +10,8 @@ import { callDom } from "./helpers/call-dom.js";
 import { createHash } from "node:crypto";
 import { parseCss, computed, element } from './helpers/css-model.mjs';
 import { htmlModel } from './helpers/html-model.mjs';
+import { createBearingsHub } from "../bearings.js";
+import { createServer } from "../server.js";
 
 const extraction = (await readFile(new URL("../public/chat-ask-extraction.js", import.meta.url), "utf8")).replace(/^export /gm, "");
 const script = `${extraction}\n${await readFile(new URL("../public/work-hierarchy.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/bulk-controls.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-kinds.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/filter-view.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/message-font-size.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/quota-view-model.js", import.meta.url), "utf8")}\n${await readFile(new URL("../public/call-lifecycle.js", import.meta.url), "utf8")}\n${(await readFile(new URL("../public/app.js", import.meta.url), "utf8")).replace(/^import \{ extractAskSections \} from "\.\/chat-ask-extraction\.js";\n/m, "")}`;
@@ -2748,6 +2753,99 @@ test("emitted taxonomy task links select the exact task through the canonical ro
       assert.equal(app.run("selectedSessionId"), taskId, "the same emitted route restores exact scope on reload");
     }
   }
+});
+
+test("synthetic/offline canonical validation reaches Work Split and KPI rendering through HTTP", async t => {
+  // Acceptance item 5 / WORK-TAXONOMY.md: attributed current run state supplies
+  // In review; process incarnation alone supplies verified Active. Reject a
+  // disconnected canonical feed, prose-based review and stale review retention.
+  // These script outputs are synthetic protocol fixtures, not a Firstmate run.
+  if (!["linux", "darwin"].includes(process.platform)) { t.skip("Process incarnation requires Linux or macOS"); return; }
+  const lab = path.resolve(import.meta.dirname, "../../.sanitization-lab");
+  await mkdir(lab, { recursive: true });
+  const root = await mkdtemp(path.join(lab, "canonical-validation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  for (const dir of ["bin", "data", "state"]) await mkdir(path.join(home, dir), { recursive: true });
+  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(async () => {
+    if (worker.exitCode !== null || worker.signalCode !== null) return;
+    const exited = once(worker, "exit"); worker.kill("SIGKILL"); await exited;
+  });
+  await once(worker, "spawn");
+  let identity = `worker_pid=${worker.pid}\n`;
+  if (process.platform === "linux") {
+    const stat = await readFile(`/proc/${worker.pid}/stat`, "utf8");
+    identity += `worker_start_ticks=${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}\nworker_boot_id=${(await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()}\n`;
+  } else {
+    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(worker.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
+    identity += `worker_start_identity=${new Date(`${started} UTC`).toISOString()}\n`;
+  }
+  await writeFile(path.join(home, "data/projects.md"), "- sample - Synthetic validation work\n");
+  await writeFile(path.join(home, "data/backlog.md"), "## In flight\n- [ ] validation-worker - Synthetic validation worker (repo: sample)\n");
+  // Deliberately no validation_state metadata: only the canonical producer has it.
+  await writeFile(path.join(home, "state/validation-worker.meta"), `project=${path.join(root, "sample")}\nkind=ship\n${identity}`);
+  await writeFile(path.join(home, "state/validation-worker.status"), "working: implementing\n");
+  const clear = JSON.parse(await readFile(new URL("./fixtures/bearings/clear.json", import.meta.url), "utf8"));
+  await writeFile(path.join(home, "bearings.json"), JSON.stringify(clear));
+  for (const [script, file] of [["fm-bearings-snapshot.sh", "bearings.json"], ["fm-fleet-snapshot.sh", "canonical.json"]]) {
+    await writeFile(path.join(home, "bin", script), `#!/bin/sh\ncat "$FM_HOME/${file}"\n`, { mode: 0o755 });
+  }
+  for (const scenario of [
+    { name: "running validation", state: "working", source: "run-step", detail: "validating (running) · run: synthetic", position: "validating", review: 1, active: 1 },
+    { name: "ordinary status prose", state: "working", source: "status-log", detail: "validating (running)", position: "unknown", review: 0, active: 1 },
+    { name: "merged validation", state: "done", source: "run-step", detail: "run passed: PR merged", position: "merged", review: 0, active: 0 },
+    { name: "stale observation", state: "working", source: "run-step", detail: "validating (running)", position: "unknown", review: 0, active: 1, stale: true },
+  ]) await t.test(scenario.name, async () => {
+    const at = new Date().toISOString();
+    await writeFile(path.join(home, "canonical.json"), JSON.stringify({ schema: "fm-fleet-snapshot.v1", generated: at,
+      tasks: [{ id: "validation-worker", kind: "ship", backlog: { title: "Synthetic validation worker", repo: "sample" },
+        current_state: { state: scenario.state, source: scenario.source, detail: scenario.detail, freshness: "fresh", observed_at: at } }],
+      secondmate_current: { registry: { available: true }, records: [] } }));
+    let now = Date.now();
+    const hub = createBearingsHub({ home, now: () => now, fingerprint: null, watchRecords: null, maxAgeMs: 60000 });
+    const published = new Promise(resolve => hub.subscribe(() => resolve(hub.current())));
+    try {
+      const model = await published;
+      assert.equal(model.state, "ready");
+      assert.equal(model.underway[0].pipeline.position, scenario.stale ? "validating" : scenario.position);
+      if (scenario.stale) now += 71000;
+      const server = createServer({ FM_HOME: home, FM_QUARTERDECK_STATE_PATH: path.join(root, "presentation.json"), CLAUDE_CONFIG_DIR: path.join(root, "claude") }, {
+        bearingsSource: hub, durabilityVerifier: async () => [], expenseReader: async () => ({}),
+        revisionResolver: { initial: "a".repeat(40), snapshot: async () => "a".repeat(40) },
+      });
+      try {
+        server.listen(0, "127.0.0.1"); await once(server, "listening");
+        const origin = `http://127.0.0.1:${server.address().port}`;
+        const get = async route => { const response = await fetch(`${origin}${route}`); assert.equal(response.status, 200); return response.json(); };
+        const bearings = await get("/api/bearings");
+        assert.equal(bearings.stale, Boolean(scenario.stale));
+        const { fleet } = await get("/api/dashboard");
+        const split = fleet.workSplit;
+        assert.equal(split.items.length, 1);
+        assert.equal(split.items[0].status, scenario.review ? "review" : scenario.active ? "active" : "newly-done");
+        assert.equal(split.counts.review, scenario.review);
+        assert.equal(split.repositories[0].counts.review, scenario.review);
+        assert.equal(split.repositories[0].lanes[0].themes[0].counts.review, scenario.review);
+        assert.equal(fleet.summary.workCounts.review, scenario.review);
+        assert.equal(fleet.summary.activeAgents, scenario.active);
+        assert.equal(fleet.summary.weakerWorkers, 0);
+        if (scenario.stale) assert.ok(split.coverage.disclosures.includes("Canonical fleet snapshot stale; current worker/run state unavailable"));
+        const app = ui();
+        app.run(`renderWorkSplit(${JSON.stringify(split)}); renderSummary(${JSON.stringify(fleet.summary)});`);
+        const rendered = htmlModel(app.node("#tight-work").innerHTML, { fragment: true });
+        assert.equal(rendered.one(".work-slice").attrs["data-status"], scenario.review ? "review" : scenario.active ? "active" : "newly-done");
+        if (scenario.review) {
+          assert.ok(rendered.one(".work-slice").textContent.includes("In review"));
+          assert.equal(rendered.one('[data-count-status="review"]').attrs["aria-label"], "In review: 1");
+        } else assert.equal(rendered.one('[data-count-status="review"]'), null);
+        const kpi = htmlModel(app.node("#summary").innerHTML, { fragment: true });
+        assert.equal(kpi.one("strong").textContent, String(scenario.active));
+        assert.equal(kpi.one("h3").textContent, "Active");
+        assert.equal(kpi.one("p").textContent, "Verified workers · 0 with weaker evidence");
+      } finally { await new Promise(resolve => server.close(resolve)); }
+    } finally { hub.close(); }
+  });
 });
 
 test("Work Split omits singleton taxonomy wrappers, preserves filters, completion attention and direct links once", () => {
