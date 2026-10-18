@@ -5,7 +5,7 @@ import { discoverPrimarySources, mentionsTask, recordTurns } from "./chat-asks.j
 import { createHistoryReader } from "./history-reader.js";
 import { inboxReceipts, noteWithRequestId } from "./inbox.js";
 import { landedAckKey } from "./landed-ack.js";
-import { currentCardNote, receiptReply, replyBody, noteIdentity } from "./receipt-provenance.js";
+import { currentCardNote, receiptReply, replyBody, noteIdentity, compareNoteIdentity } from "./receipt-provenance.js";
 
 // Card threads (BEARINGS.md "Card threads"). Text in a Captain's Call card's one box, with
 // no option selected, sends the captain's note to Firstmate through the same guarded,
@@ -247,9 +247,9 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
           for (const turn of found.turns) if (mentionsTask(turn.text, task)) provenance.push({ kind: "context", from: "firstmate", at: turn.at, text: threadText(turn.text), sourceLimited: turn.text.length > MAX_ENTRY_CHARS });
         } catch { transcriptState = "unavailable"; }
       } else transcriptState = "not-applicable";
-      // Oldest first; unknown times keep their discovery order at the end.
       const ordered = (items) => items.map((entry, index) => ({ entry, index }))
-        .sort((a, b) => (a.entry.at ? 0 : 1) - (b.entry.at ? 0 : 1) || String(a.entry.at).localeCompare(String(b.entry.at)) || a.index - b.index)
+        .sort((a, b) => compareNoteIdentity(a.entry, b.entry) ||
+          (a.entry.from === "captain" && b.entry.from === "captain" ? ({ waiting: 0, received: 1, replied: 2 }[b.entry.state] ?? 0) - ({ waiting: 0, received: 1, replied: 2 }[a.entry.state] ?? 0) : 0) || a.index - b.index)
         .map(({ entry }) => entry);
       const exact = ordered(entries);
       // Chatter cannot evict a retained original combined receipt. Bound receipt and

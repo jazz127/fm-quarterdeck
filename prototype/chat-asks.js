@@ -29,7 +29,11 @@ export const normalizeReply = (text) => String(text).normalize("NFKC").toLowerCa
 const HOLD_QUOTE = /"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`|'([^'\n]{1,200})'|‘([^’\n]{1,200})’/g;
 function matchesHold(ask, card) {
   if (card.readOnly || !card.task) return false;
-  if (ask.taskMarkers?.includes(card.task) || mentionsTask(ask.text, card.task)) return true;
+  const localTask = card.localTask || card.task.split("/").at(-1);
+  const owner = card.owner || "(main)";
+  const owned = ask.taskLinks?.some(link => link.owner === owner && link.localTask === localTask);
+  const ambiguous = !owned && (ask.linkedTasks?.some(task => task.split("/").at(-1) === localTask) || ask.taskLinks?.some(link => link.localTask === localTask));
+  if (!ambiguous && (ask.taskMarkers?.includes(card.task) || mentionsTask(ask.text, card.task))) return true;
   if (card.type !== "decision") return false;
   const replies = new Set(ask.replies.map(normalizeReply).filter(Boolean));
   return [card.summary, card.title, card.reason, card.backlogTitle, card.backlogReason].some(text => typeof text === "string" &&
@@ -571,7 +575,7 @@ export function createChatAskScanner({ home, claudeConfigDir = null, historyLimi
             const task = card.readOnly ? `${owner}/${localTask}` : card.task;
             // A legacy bare string is not proof of local ownership. Re-establish
             // association from the ask and an owner-attributed card/ledger row.
-            const matches = matchesHold(ask, { ...card, readOnly: false })
+            const matches = (card.readOnly && ask.linkedTasks.includes(task)) || matchesHold(ask, { ...card, readOnly: false })
               || (card.readOnly && ask.linkedTasks.includes(localTask) && matchesHold(ask, { ...card, task: localTask, readOnly: false }));
             if (!matches || (!card.readOnly && card.closed && ask.linkedTasks.includes(card.task) && !links.has(card.task))) continue;
             links.set(task, { task, localTask, owner });

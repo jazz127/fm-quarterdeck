@@ -282,3 +282,51 @@ test('legacy links require local proof before closure and reconcile remote owner
     assert.equal(remote.cards[0].localTask, 'shared');
   }
 });
+
+test('legacy bare markers require owner evidence through open holds, closure, composition and restart', async t => {
+  for (const remoteFirst of [false, true]) {
+    const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Choose the remote plan. Reply "remote choice".');
+    await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+    let scan = make();
+    await scan.scan();
+    const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Reply "remote choice".' }]);
+    const local = decisionModel([{ id: 'shared', owner: '(main)', summary: 'Unrelated local choice' }]);
+    const open = backlogHoldRecords(hold('shared', 'unrelated local choice'));
+    const closed = backlogHoldRecords(hold('shared', 'unrelated local choice', 'x'));
+    if (remoteFirst) await scan.applySnapshot(remote.cards, true);
+    await scan.applySnapshot(local.cards, true, open);
+    assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+    await scan.applySnapshot([], true, closed);
+    assert.equal(scan.asks().length, 1);
+    await scan.applySnapshot(remote.cards, true, closed);
+    assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+    scan = make(); await scan.scan();
+    await scan.applySnapshot(local.cards, true, closed);
+    assert.equal(scan.asks().length, 1);
+    assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+    assert.deepEqual((await store.read()).tombstones, {});
+  }
+  const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Reply "local choice".');
+  await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+  const scan = make(); await scan.scan();
+  await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'local choice')));
+  await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'local choice', 'x')));
+  assert.equal(scan.asks().length, 0);
+});
+
+test('owner-qualified legacy links retain ownership even when the remote card text changes', async t => {
+  const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Choose the remote plan.');
+  await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['mate/shared']; return { write: true }; });
+  const scan = make(); await scan.scan();
+  const local = decisionModel([{ id: 'shared', owner: '(main)', summary: 'Unrelated local choice' }]);
+  assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+  await scan.applySnapshot(local.cards, true, backlogHoldRecords(hold('shared', 'unrelated local choice')));
+  assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+  const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Updated remote summary' }]);
+  await scan.applySnapshot(remote.cards, true);
+  assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+  await scan.applySnapshot(local.cards, true, backlogHoldRecords(hold('shared', 'unrelated local choice')));
+  await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'unrelated local choice', 'x')));
+  assert.equal(scan.asks().length, 1);
+  assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+});

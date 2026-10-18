@@ -384,7 +384,12 @@ window.bearingsAnswerForm = (() => {
       prune(openKeys) {
         const open = new Set(openKeys);
         for (const key of holdVersions.keys()) if (!open.has(key)) holdVersions.delete(key);
-        for (const key of states.keys()) if (!open.has(key) && !states.get(key)?.attempted && states.get(key)?.phase !== "sending") states.set(key, null);
+        for (const key of states.keys()) {
+          if (open.has(key)) continue;
+          const state = states.get(key);
+          if (state?.attempted && ["compose", "refused"].includes(state.phase)) states.set(key, { ...state, phase: "failed" });
+          else if (!state?.attempted && state?.phase !== "sending") states.set(key, null);
+        }
       },
       state: (key) => states.get(key),
       queued,

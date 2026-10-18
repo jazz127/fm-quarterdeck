@@ -5,7 +5,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { createAnswerRelay } from "../bearings-answer.js";
-import { createThreadRelay } from "../bearings-thread.js";
+import { classifyAnsweredCalls } from "../answered-calls.js";
+import { createThreadRelay, formatThreadNote } from "../bearings-thread.js";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
 
 const sources = await Promise.all(["bearings-view.js", "call-lifecycle.js", "bearings-answer-form.js", "bearings-thread-panel.js", "bearings-landed.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
@@ -454,4 +455,65 @@ test('client-only uncertain sends survive absent cards and reload with exact ret
     assert.deepEqual(attempts[1], attempts[0]);
     second.destroy();
   }
+});
+
+test('attempted answers and thread notes remain recoverable after editing, unqueueing or refusal and disappearance', async () => {
+  for (const path of ['answer', 'thread']) for (const action of ['edit', 'unqueue', 'refused']) {
+    const tab = storage(), attempts = [];
+    const fetchImpl = async (_url, init) => {
+      if (init?.method !== 'POST') return response({ entries: [] });
+      attempts.push(JSON.parse(init.body));
+      if (action === 'refused' && attempts.length > 1) return response({ error: 'Review changed' }, 409);
+      throw Error('Request never reached server');
+    };
+    const first = mount(fetchImpl, { tab });
+    if (path === 'answer') {
+      const input = first.document.createElement('input');
+      input.setAttribute('type', 'radio'); input.setAttribute('data-call-draft', 'selection');
+      input.setAttribute('value', 'yes'); input.checked = true;
+      first.node.querySelector('[data-call-answer-fields]').append(input);
+    }
+    first.part('text').type('Keep original payload'); first.queue(); press(first.part('send')); await flush();
+    assert.equal(first.answers.state(card.key).path, path);
+    if (action === 'edit') press(first.part('edit'));
+    else if (action === 'unqueue') first.answers.unqueue(card.key);
+    else { press(first.part('send')); await flush(); }
+    assert.equal(first.answers.state(card.key).phase, action === 'refused' ? 'refused' : 'compose');
+    first.node.remove(); first.answers.prune([]);
+    assert.equal(first.answers.queued().length, 1);
+    assert.equal(first.answers.state(card.key).phase, 'failed');
+    first.destroy();
+    const second = mount(fetchImpl, { tab, present: false });
+    second.answers.prune([]);
+    assert.equal(second.answers.queued().length, 1);
+    await second.answers.sendQueued();
+    assert.deepEqual(attempts.at(-1), attempts[0]);
+    second.destroy();
+  }
+});
+
+test('unrelated batch positions cannot promote a replied note over an unordered pending note', async () => {
+  const at = '2026-10-01T10:00:00Z';
+  const note = (id, index, n, seq) => ({ id, itemIndex: index, at, ...(seq == null ? {} : { seq }), request_id: `quarterdeck-thread:${card.key}:${uuid(n)}`,
+    body: formatThreadNote({ key: card.key, card, text: `Question ${n}`, requestId: uuid(n) }) });
+  for (const ordered of [false, true]) {
+    const old = note('batch', 1, 1, ordered ? 1 : null), pending = note('singleton', 0, 2, ordered ? 2 : null);
+    const receipts = { pending: [pending], handled: [old], replies: [{ note_id: old.id, body: 'Earlier answer', at }] };
+    const projected = classifyAnsweredCalls([card], receipts)[0];
+    assert.equal(projected.sentReceipt, 'pending');
+    assert.equal(projected.sentReceiptIdentity.noteId, 'singleton');
+    const thread = await createThreadRelay({ home: '/synthetic/home', receipts: async () => receipts, transcript: async () => ({ turns: [] }) }).history(card.key, model);
+    assert.equal(thread.entries.filter(entry => entry.from === 'captain').at(-1).noteId, 'singleton');
+    const t = mount(async () => response({ entries: [] }));
+    for (const entries of [thread.entries, [...thread.entries].reverse()]) {
+      assert.equal(t.life.delivery({ card: projected, thread: { entries } }).posture, 'pending');
+      assert.equal(t.life.delivery({ card, thread: { entries } }).posture, 'pending');
+    }
+    t.destroy();
+  }
+  const first = note('same-batch', 0, 1), last = note('same-batch', 1, 2);
+  const receipts = { pending: [last, first], handled: [], replies: [] };
+  assert.equal(classifyAnsweredCalls([card], receipts)[0].sentReceiptIdentity.requestId, last.request_id);
+  const thread = await createThreadRelay({ home: '/synthetic/home', receipts: async () => receipts, transcript: async () => ({ turns: [] }) }).history(card.key, model);
+  assert.equal(thread.entries.at(-1).requestId, last.request_id);
 });

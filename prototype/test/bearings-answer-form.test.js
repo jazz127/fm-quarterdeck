@@ -64,7 +64,7 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
 
 const explicitBooleanModel = () => {
   const base = normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Archive sample notes?", hold_set_at: "2030-01-02T10:00:00Z" }], contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
-  const ask = { ...extractAsks("DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No.")[0], key: "chat:sampleboolean", linkedTasks: ["alpha-call"], source: "synthetic/main", offset: 0, part: 0 };
+  const ask = { ...extractAsks("DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No.")[0], key: "chat:sampleboolean", linkedTasks: [], source: "synthetic/main", offset: 0, part: 0 };
   return composeCallModel({ ...base, state: "ready" }, [ask], { state: "ready", sources: [] });
 };
 

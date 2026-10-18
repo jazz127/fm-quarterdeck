@@ -7,7 +7,7 @@ import { parseStatusLine } from "./firstmate-records.js";
 const exec = promisify(execFile);
 export const WORK_STATUSES = ["active", "review", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
-const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
+export const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
 const PANE_EVIDENCE = "live terminal pane (weaker evidence; worker process unverified)";
 const SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish", "nu"]);
 
@@ -304,7 +304,7 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     let status = classifyCurrent(record);
     const isLive = status === "active";
     if (isLive) activeExecutions.add(record.executionFingerprint || taskFingerprint);
-    const weakerWorker = !isLive && record.inFlight && record.state === "working" && record.endpointLive === true && record.endpointEvidence === PANE_EVIDENCE;
+    const weakerWorker = !isLive && record.inFlight && EXECUTING_STATES.has(record.state) && record.endpointLive === true && record.endpointEvidence === PANE_EVIDENCE;
     if (weakerWorker) weakerExecutions.add(record.executionFingerprint || taskFingerprint);
     const completionSourceFingerprint = record.state === "done" ? fingerprint("completion-source.v1", taskFingerprint, record.completionIdentity) : null;
     const bound = completionSourceFingerprint && state.completionRecords?.[completionSourceFingerprint];

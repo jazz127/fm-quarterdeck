@@ -75,15 +75,14 @@ window.callLifecycle = (() => {
         const index = captain.findIndex(item => item.noteId === server.noteId && (item.requestId || null) === (server.requestId || null));
         if (POSTURE_RANK[entryPosture(entry)] > POSTURE_RANK[entryPosture(captain[index])]) captain[index] = entry;
       } else captain.push(entry);
-      captain.sort((a, b) => {
-        if (a.noteId === b.noteId && a.itemIndex != null && b.itemIndex != null) return a.itemIndex - b.itemIndex;
-        if (a.sequence != null && b.sequence != null && a.sequence !== b.sequence) return a.sequence - b.sequence;
-        const left = Date.parse(a.at), right = Date.parse(b.at);
-        if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
-        // Unknown ordering cannot let a reply to another note clear a pending send.
-        return POSTURE_RANK[entryPosture(b)] - POSTURE_RANK[entryPosture(a)];
-      });
     }
+    captain.sort((a, b) => {
+      if (a.noteId && a.noteId === b.noteId && a.itemIndex != null && b.itemIndex != null) return a.itemIndex - b.itemIndex;
+      if (a.sequence != null && b.sequence != null && a.sequence !== b.sequence) return a.sequence - b.sequence;
+      const left = Date.parse(a.at), right = Date.parse(b.at);
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+      return POSTURE_RANK[entryPosture(b)] - POSTURE_RANK[entryPosture(a)];
+    });
     const latest = captain.length ? captain[captain.length - 1] : null;
     const localNoteId = (noteId, requestId) => noteId || captain.find((entry) => requestId && entry.requestId === `quarterdeck-call:${requestId}`)?.noteId;
     let posture = latest ? entryPosture(latest) : null;

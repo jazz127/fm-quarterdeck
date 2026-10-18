@@ -1343,7 +1343,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         let body;
         try { body = JSON.parse(text); } catch {}
         if (!body || !["acknowledge", "classify", "create-taxonomy"].includes(body.action) || !/^[a-f0-9]{64}$/.test(body.taskFingerprint || "")) { await sendJson(request, response, 400, { error: "Invalid presentation request" }); return; }
-        const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier, reader: createHistoryReader(historyLimits) });
+        const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier, reader: createHistoryReader(historyLimits), fleetWork: fleetWorkNow() });
         const item = current.workSplit.items.find((entry) => entry.taskFingerprint === body.taskFingerprint);
         if (!item || current.workSplit.warning) { await sendJson(request, response, 409, { error: "Current task or Quarterdeck state unavailable" }); return; }
         try {

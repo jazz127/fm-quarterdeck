@@ -846,7 +846,7 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
   let lastPrint = null;
   let pollSeenAt = -Infinity;
   let closed = false;
-  let runs = 0, allLanded = false, recentLandingLimit = 6;
+  let runs = 0, allLanded = false;
   const listeners = new Set();
 
   const watched = () => !closed && (listeners.size > 0 || now() - pollSeenAt < pollTtlMs);
@@ -875,8 +875,8 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
     lastStartAt = now();
     lastAttemptAt = lastStartAt;
     try {
-      const content = normalizeSnapshot(JSON.parse(await runner({ allLanded })));
-      if (allLanded) content.landed = content.landed.slice(0, recentLandingLimit);
+      const content = normalizeSnapshot(JSON.parse(await runner({ allLanded: false })));
+      if (allLanded) content.landedHistory = normalizeSnapshot(JSON.parse(await runner({ allLanded: true }))).landedHistory;
       const at = new Date(now()).toISOString();
       lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [], underway: content.underway || [], charted: content.charted || [], workCoverage: content.workCoverage, fleetWork: content.fleetWork, landedHistory: content.landedHistory };
       publish(lastGood);
@@ -936,7 +936,7 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
   }
   return {
     current,
-    expandLandings() { if (allLanded) return; allLanded = true; recentLandingLimit = model.landed?.length || 6; schedule(); },
+    expandLandings() { if (allLanded) return; allLanded = true; schedule(); },
     freshness,
     subscribe(listener) {
       listeners.add(listener);

@@ -27,7 +27,7 @@ test('weaker worker evidence is disclosed beside the strict active count', async
 
 import { projectFleetInventory } from '../fleet-inventory.js';
 import { projectUnderwayRecords } from '../underway-records.js';
-import { loadFirstmateHome, dashboardData } from '../server.js';
+import { loadFirstmateHome, dashboardData, createServer } from '../server.js';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,4 +115,98 @@ test('short bearings rows retain canonical remote completion dates by exact owne
   assert.equal(model.landed[0].what, 'Short recap');
   assert.equal(model.landed[1].clock.at, null);
   assert.equal(model.landedHistory.length, 3);
+});
+
+test('producer hold buckets and local calendar fallback agree across inventory and Work Split', async () => {
+  const previous = process.env.TZ;
+  let fleet;
+  try {
+    process.env.TZ = 'Australia/Brisbane';
+    const snapshot = fleetFixture(), at = '2026-10-17T23:00:00Z';
+    snapshot.secondmate_current.records = [snapshot.secondmate_current.records[0]];
+    const home = snapshot.secondmate_current.records[0];
+    home.freshness.observed_at = at;
+    home.queued = [
+      { id: 'live', hold_kind: 'captain', hold_until: '2026-10-18', hold_bucket: 'live', captain_actionable: true },
+      { id: 'fallback', hold_kind: 'captain', hold_until: '2026-10-18' },
+      { id: 'later', hold_kind: 'captain', hold_until: '2026-10-19' },
+      { id: 'aged', hold_kind: 'captain', hold_until: '2999-01-01', hold_bucket: 'aged', captain_actionable: false },
+    ];
+    home.holds = home.queued.map(({ id }) => ({ id }));
+    fleet = projectFleetInventory(snapshot, projectUnderwayRecords(snapshot), { now: Date.parse(at) });
+  } finally {
+    if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
+  }
+  assert.equal(fleet.homes[0].captainCalls, 2);
+  assert.equal(fleet.homes[0].deferredHolds, 1);
+  const split = await projectWork(fleet.records.filter(row => row.bucket === 'held'), emptyAgentState());
+  assert.equal(split.counts['captain-action'], 2);
+  assert.equal(split.counts.waiting, 2);
+  for (const bucket of ['queued', 'held']) {
+    assert.equal(fleet.homes[0].inventory[bucket].find(row => row.localTask === 'live').holdDeferred, false);
+    assert.equal(fleet.homes[0].inventory[bucket].find(row => row.localTask === 'fallback').holdDeferred, false);
+  }
+});
+
+test('registered-home source bounds survive and supplemented children never exceed their total', () => {
+  for (const flag of ['input_truncated', 'records_truncated']) {
+    const snapshot = fleetFixture();
+    snapshot.secondmate_current.registry[flag] = true;
+    const home = snapshot.secondmate_current.records[0];
+    home.active_children = [];
+    home.counts.active_children = 0;
+    const underway = projectUnderwayRecords(snapshot);
+    underway.rows.push({ id: 'alpha/unread', owner: 'alpha', state: 'working', name: 'Unread child' });
+    const fleet = projectFleetInventory(snapshot, underway);
+    assert.ok(fleet.disclosures.includes('Registered-home inventory bounded'));
+    assert.equal(fleet.homes[0].bounds.active.shown, 1);
+    assert.equal(fleet.homes[0].bounds.active.total, null);
+  }
+});
+
+test('every supported executing state discloses weaker evidence without increasing verified counts', async () => {
+  for (const state of ['working', 'active', 'in-progress']) {
+    const local = await projectWork([{ id: 'local', state, inFlight: true, endpointLive: true, endpointEvidence: 'live terminal pane (weaker evidence; worker process unverified)' }], emptyAgentState());
+    assert.equal(local.activeWorkerCount, 0);
+    assert.equal(local.weakerWorkerCount, 1, state);
+    const snapshot = fleetFixture();
+    snapshot.secondmate_current.records = [snapshot.secondmate_current.records[0]];
+    snapshot.secondmate_current.records[0].active_children[0].state = state;
+    const fleet = projectFleetInventory(snapshot, projectUnderwayRecords(snapshot));
+    const remote = await projectWork(fleet.records.filter(row => row.owner !== '(main)'), emptyAgentState());
+    assert.equal(remote.activeWorkerCount, 0);
+    assert.equal(remote.weakerWorkerCount, 1, state);
+  }
+});
+
+test('canonical-only completion can be acknowledged using the displayed fingerprint', async t => {
+  const root = await mkdtemp(path.join(process.cwd(), '.fleet-ack-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  await mkdir(path.join(home, 'data'), { recursive: true });
+  await mkdir(path.join(home, 'state'));
+  await writeFile(path.join(home, 'data/projects.md'), '- firstmate - Home work\n');
+  await writeFile(path.join(home, 'data/backlog.md'), '## In flight\n- [ ] local - Canonical completion (repo: firstmate)\n');
+  const snapshot = fleetFixture();
+  snapshot.tasks[0].current_state = { state: 'done', source: 'run-step', detail: 'run passed: PR open', freshness: 'fresh', observed_at: snapshot.generated };
+  snapshot.secondmate_current.records = [];
+  const fleetWork = projectFleetInventory(snapshot, projectUnderwayRecords(snapshot));
+  let current = { state: 'ready', stale: false, fleetWork };
+  const server = createServer({ FM_HOME: home, FM_QUARTERDECK_STATE_PATH: path.join(root, 'state.json') }, {
+    bearingsSource: { current: () => current }, durabilityVerifier: async () => [], expenseReader: async () => ({}),
+    quotaReader: { read: async () => ({}) }, costReader: async () => ({}),
+    revisionResolver: { initial: 'a'.repeat(40), snapshot: async () => 'a'.repeat(40) },
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const get = async () => (await (await fetch(`${origin}/api/dashboard`)).json()).fleet.workSplit.items.find(row => row.id === 'local');
+  const item = await get();
+  assert.equal(item.completionAttention, 'newly-done');
+  const acknowledge = () => fetch(`${origin}/api/work-state`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ action: 'acknowledge', taskFingerprint: item.taskFingerprint, completionFingerprint: item.completionFingerprint }) });
+  assert.equal((await acknowledge()).status, 200);
+  assert.equal((await acknowledge()).status, 200);
+  assert.equal((await get()).completionAttention, 'previously-done');
+  current = { ...current, state: 'stale', stale: true };
+  assert.equal((await acknowledge()).status, 409);
 });

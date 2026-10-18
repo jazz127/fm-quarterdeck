@@ -1,7 +1,8 @@
 // Read-only fleet inventory from the same bounded stock snapshot used by Underway.
 // No child endpoints are probed and no remote commands are run here.
 import path from 'node:path';
-import { safeWorkNote } from './work-model.js';
+import { safeWorkNote, EXECUTING_STATES } from './work-model.js';
+import { currentLocalDate } from './firstmate-records.js';
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(value);
 const date = value => typeof value === 'string' && /^\d{4}-\d\d-\d\d(?:T|$)/.test(value) && Number.isFinite(Date.parse(value)) ? (value.length === 10 && new Date(value).toISOString().slice(0, 10) === value ? value : value.length > 10 ? new Date(value).toISOString() : null) : null;
 const repo = value => typeof value === 'string' ? safeWorkNote(path.basename(value)) : null;
@@ -19,10 +20,11 @@ export function projectFleetInventory(snapshot, underway, { now = Date.now() } =
     const until = row.holdUntil || row.hold_until || row.until;
     const held = bucket === 'held' || Boolean(row.hold_kind || row.holdKind || row.unresolved_blocker_ids?.length);
     const holdKind = held ? safeWorkNote(row.holdKind || row.hold_kind || (row.kind === 'captain' ? 'captain' : 'external')) : null;
-    const deferred = row.hold_bucket === 'dated' || row.deferred === true || row.holdDeferred === true || Boolean(date(until) && date(until).slice(0, 10) > new Date(now).toISOString().slice(0, 10));
+    const deferred = row.hold_bucket ? row.hold_bucket === 'dated' : row.captain_actionable === true ? false
+      : row.deferred === true || row.holdDeferred === true || Boolean(date(until) && date(until).slice(0, 10) > currentLocalDate(now));
     const pipeline = freshness === 'fresh' ? canonical?.pipeline : null;
     const endpoint = endpoints.find(entry => entry?.id === row.id)?.endpoint || row.endpoint;
-    const weak = freshness === 'fresh' && canonical?.state === 'working' && endpoint?.exists === true && endpoint?.freshness === 'fresh' && endpoint?.agent_alive !== 'dead';
+    const weak = freshness === 'fresh' && EXECUTING_STATES.has(canonical?.state) && endpoint?.exists === true && endpoint?.freshness === 'fresh' && endpoint?.agent_alive !== 'dead';
     return { id, localTask: row.id, spawnGeneration: validId(row.spawn_gen) ? row.spawn_gen : null, owner, readOnly: owner !== '(main)', bucket,
       name: safeWorkNote(row.name || row.title || row.what || canonical?.name || row.id),
       repositoryPath: repo(row.repo || canonical?.repo), state: bucket === 'landed' ? 'done' : canonical?.state || (bucket === 'held' ? 'waiting' : 'unknown'),
@@ -63,7 +65,7 @@ export function projectFleetInventory(snapshot, underway, { now = Date.now() } =
       }
       const rows = (input || []).slice(0, MAX_ROWS).map(row => record({ ...queuedById.get(row.id), ...row }, home.id, bucket, freshness, home.endpoints)).filter(Boolean);
       inventory[bucket] = rows;
-      bounds[bucket] = { shown: rows.length, total: count(home.counts?.[source]), available: Boolean(input) };
+      bounds[bucket] = { shown: rows.length, total: input && input.length > home[source].length ? null : count(home.counts?.[source]), available: Boolean(input) };
       if (!input) warnings.push(`${bucket} inventory unavailable`);
       if (input && (input.length > rows.length || (bounds[bucket].total ?? 0) > rows.length)) warnings.push(`${bucket} showing ${rows.length} of ${bounds[bucket].total ?? 'unknown'}`);
       for (const row of rows) {
@@ -82,6 +84,6 @@ export function projectFleetInventory(snapshot, underway, { now = Date.now() } =
       deferredHolds: [...homeRecords.values()].filter(row => row.holdDeferred).length, warnings });
   }
   if (!registry?.registry?.available) disclosures.push('Registered-home registry unavailable');
-  if (registry?.truncated || registry?.records?.length > 64) disclosures.push('Registered-home inventory bounded');
+  if (registry?.truncated || registry?.registry?.input_truncated || registry?.registry?.records_truncated || registry?.records?.length > 64) disclosures.push('Registered-home inventory bounded');
   return { records, homes, disclosures, observedAt: date(snapshot.generated) };
 }

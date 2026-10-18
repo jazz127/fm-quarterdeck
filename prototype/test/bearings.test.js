@@ -933,3 +933,27 @@ test('hub retains fleet inventory and widens landing history through its existin
   assert.notEqual(hub.current().rev, before);
   hub.close();
 });
+
+test('expanded history preserves changing producer recent membership for all watchers', async () => {
+  const clock = fakeClock(), base = await fixture('clear');
+  const landings = Array.from({ length: 10 }, (_, i) => ({ id: `land-${i}`, owner: '(main)', what: `Landing ${i}` }));
+  let recent = [landings[3], landings[1]];
+  const hub = createBearingsHub({ now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null,
+    runner: async ({ allLanded }) => JSON.stringify({ ...base, landed: allLanded ? landings : recent }) });
+  const readings = [[], []];
+  for (const list of readings) hub.subscribe(event => { if (event.type === 'model') list.push(event.model.landed.map(row => row.task)); });
+  await clock.advance(0);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-3', 'land-1']);
+  hub.expandLandings(); await clock.advance(30000);
+  assert.equal(hub.current().landedHistory.length, 10);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-3', 'land-1']);
+  recent = [landings[9], landings[7], landings[5], landings[2]];
+  hub.request(); await clock.advance(30000);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-9', 'land-7', 'land-5', 'land-2']);
+  for (const list of readings) assert.deepEqual(list.at(-1), ['land-9', 'land-7', 'land-5', 'land-2']);
+  recent = [landings[8]];
+  hub.request(); await clock.advance(30000);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-8']);
+  assert.equal(hub.current().landedHistory.length, 10);
+  hub.close();
+});
