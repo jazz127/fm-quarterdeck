@@ -257,7 +257,7 @@ test("named either/or replies reach filed controls without invented Yes/No; unst
 
   const boolean = composeCallModel(base([{ id: "sample-boolean", verb: "approve", summary: "Approve the example-app window?", owner: "(main)", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }] }]), [], view).cards[0];
   assert.deepEqual(labels(boolean), ["Yes", "No"]);
-  const selected = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000012", key: boolean.key, cardRev: boolean.rev, selection: "yes", note: "" }, { state: "ready", cards: [boolean] });
+  const selected = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000012", key: boolean.key, cardRev: boolean.rev, holdVersion: boolean.holdVersion, selection: "yes", note: "" }, { state: "ready", cards: [boolean] });
   assert.equal(answerEnvelope(selected, "model").selection, "yes");
   const chatBoolean = chatCard(ask('Approve the example-app window? Reply "Yes" or "No".', "approval"));
   assert.deepEqual(labels(chatBoolean), ["Yes", "No"]);
@@ -287,7 +287,7 @@ test("single-task explicit unquoted Yes/No survives transcript intake, projectio
   const relay = createAnswerRelay({ home: env.home, note: async (_home, id, text) => { notes.push({ id, text }); return { id: `synthetic-${notes.length}`, outcome: "created" }; } });
   for (const [index, reply] of ["Yes", "No"].entries()) {
     // Linked replies use the existing form's note representation, never a new option id.
-    const receipt = await relay.submit({ requestId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`, key: card.key, cardRev: card.rev, selection: "", note: reply }, current);
+    const receipt = await relay.submit({ requestId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`, key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "", note: reply }, current);
     assert.equal(receipt.state, "accepted");
     assert.equal(receipt.envelope.schema, "fm-bearings-answer.v1");
     assert.equal(receipt.envelope.task, "alpha-call");
@@ -297,7 +297,7 @@ test("single-task explicit unquoted Yes/No survives transcript intake, projectio
     assert.equal(receipt.envelope.note, reply);
   }
   assert.equal(notes.length, 2);
-  const request = { requestId: "00000000-0000-4000-8000-000000000003", key: card.key, cardRev: card.rev, selection: "", note: "Yes" };
+  const request = { requestId: "00000000-0000-4000-8000-000000000003", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "", note: "Yes" };
   for (const [body, model, code] of [
     [request, { ...current, state: "stale" }, "not-current"],
     [{ ...request, key: "decision:missing" }, current, "gone"],
@@ -453,7 +453,7 @@ test("chat cards answer through the keyed relay as the captain's own reply, even
   const [card] = model.cards;
   assert.equal(card.type, "chat");
   assert.deepEqual(card.answer.options, [{ value: "reply-1", label: "retire both", hint: "Firstmate's suggested reply" }]);
-  const valid = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000001", key: card.key, cardRev: card.rev, selection: "reply-1", note: "" }, model);
+  const valid = validateAnswer({ requestId: "00000000-0000-4000-8000-000000000001", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "reply-1", note: "" }, model);
   const envelope = answerEnvelope(valid, model.rev);
   assert.equal(envelope.selection, "");
   assert.equal(envelope.note, "retire both");
@@ -462,7 +462,7 @@ test("chat cards answer through the keyed relay as the captain's own reply, even
   const note = formatAnswerNote(envelope);
   assert.match(note.split("\n")[0], /reply to your chat ask: retire both$/);
   assert.deepEqual(note.split("\n").filter((line) => line.startsWith("```")), ["```json fm-bearings-answer", "```"]);
-  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000002", key: card.key, cardRev: card.rev, selection: "", note: "x" }, { ...model, chat: { ...model.chat, state: "unavailable" } }), /not current/);
+  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000002", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "", note: "x" }, { ...model, chat: { ...model.chat, state: "unavailable" } }), /not current/);
 });
 
 test("lettered decision lines are radios, and a quoted reply keeps its own description", () => {

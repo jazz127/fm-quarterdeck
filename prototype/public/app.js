@@ -1053,7 +1053,7 @@ function renderLanesError(message) {
 
 function renderSummary(summary = {}) {
   if (summary.workCounts && statusLabels) {
-    const kpis = [["Active", summary.activeAgents ?? summary.workCounts.active, "Verified workers"], ["Captain action", summary.workCounts["captain-action"], "Needs your input"], ["Newly done", summary.workCounts["newly-done"], `${summary.workCounts["previously-done"]} previously done`]];
+    const kpis = [["Active", summary.activeAgents ?? summary.workCounts.active, `Verified workers · ${summary.weakerWorkers || 0} with weaker evidence`], ["Captain action", summary.workCounts["captain-action"], "Needs your input"], ["Newly done", summary.workCounts["newly-done"], `${summary.workCounts["previously-done"]} previously done`]];
     $("#summary").innerHTML = kpis.map(([label, value, detail]) => `<article class="metric-card panel"><strong>${escapeHtml(value)}</strong><h3>${escapeHtml(label)}</h3><p>${escapeHtml(detail)}</p></article>`).join("");
     return;
   }
@@ -1100,11 +1100,11 @@ function workRow(item, scope) {
   const options = item.taxonomyOptions.flatMap((lane) => lane.themes.map((theme) => `<option value="${escapeHtml(JSON.stringify([lane.id, theme.id]))}" ${item.lane.id === lane.id && item.theme.id === theme.id ? "selected" : ""}>${escapeHtml(lane.name)} → ${escapeHtml(theme.name)}</option>`)).join("");
   return `<li class="work-slice" data-review-id="${scope}:task:${item.taskFingerprint}" data-task-fingerprint="${item.taskFingerprint}" data-status="${item.status}">
     <div class="work-slice-head">${direct ? `<a href="${escapeHtml(direct)}" class="crew-task">${escapeHtml(item.name)}</a>` : `<strong>${escapeHtml(item.name)}</strong>`}<span class="state-chip">${escapeHtml(statusLabels[item.status])}</span></div>
-    <small>${escapeHtml(item.id)}${item.large ? " · Large project" : " · Implementation slice"}</small>
+    <small>${escapeHtml(item.owner || "(main)")} · ${escapeHtml(item.id)}${item.freshness ? ` · ${escapeHtml(item.freshness)}` : ""}${item.large ? " · Large project" : " · Implementation slice"}</small>
     <p>${escapeHtml(item.taskIntent || "Task intent not recorded.")}</p>
     ${item.completionFingerprint ? `<p class="delivery-badge">${escapeHtml(item.delivery)}</p>` : ""}
     <div class="completion-badges">${item.completionAttention && item.completionAttention !== item.status ? `<span class="state-chip">${escapeHtml(statusLabels[item.completionAttention])}</span>` : ""}${item.evidence.map((entry) => `<span class="state-chip">${escapeHtml(entry.badge)}</span>`).join(" ")}${item.retained ? '<span class="state-chip">Preserved / cleanup pending</span>' : ""}</div>
-    ${(item.completionAttention || item.status) === "newly-done" ? `<button type="button" data-ack-task="${item.taskFingerprint}" data-ack-completion="${item.completionFingerprint}">Mark understood</button>` : ""}
+    ${!item.readOnly && (item.completionAttention || item.status) === "newly-done" ? `<button type="button" data-ack-task="${item.taskFingerprint}" data-ack-completion="${item.completionFingerprint}">Mark understood</button>` : ""}
     <details class="work-inspection" data-tree-key="inspect:${item.taskFingerprint}" ${hierarchyOpen.get(`inspect:${item.taskFingerprint}`) === true ? "open" : ""}><summary>Evidence &amp; classification</summary>
       <p>Recorded state: ${escapeHtml(item.sourceState)} · ${escapeHtml(item.endpointEvidence)}</p>
       ${item.pendingIssues?.length ? `<p>Unresolved keys: ${escapeHtml(item.pendingIssues.map((issue) => `${issue.key} (${issue.state})`).join(", "))}</p>` : ""}
@@ -1113,8 +1113,8 @@ function workRow(item, scope) {
       ${item.evidence.length ? `<pre>${escapeHtml(JSON.stringify(item.evidence, null, 2))}</pre>` : '<p>No authoritative durability / deployment evidence.</p>'}
       <small>Task identity: ${item.taskFingerprint}${item.completionFingerprint ? `<br>Completion identity: ${item.completionFingerprint}<br>Completion source: ${item.completionSourceFingerprint}` : ""}</small>
       ${item.unboundCommit ? '<p>A task-level commit was withheld: it is not bound to this exact completion.</p>' : ""}
-      ${options ? `<form data-classify-task="${item.taskFingerprint}"><label>Fleet → voyage <select name="classification"><option value='["unclassified","unclassified"]'>Leave unclassified</option>${options}</select></label><button type="submit">Save classification</button></form>` : ""}
-      ${item.repositoryId !== "unknown" ? `<form data-create-taxonomy="${item.taskFingerprint}"><label>Fleet <input name="laneName" maxlength="120" required placeholder="Fleet name"></label><label>Voyage <input name="themeName" maxlength="120" required placeholder="Voyage name"></label><label>Voyage type <select name="kind"><option value="theme">Thematic</option><option value="iteration">Iterative</option></select></label><button type="submit">Create / assign taxonomy</button></form>` : '<p>Repository unknown; classification needs authoritative repository identity first.</p>'}
+      ${!item.readOnly && options ? `<form data-classify-task="${item.taskFingerprint}"><label>Fleet → voyage <select name="classification"><option value='["unclassified","unclassified"]'>Leave unclassified</option>${options}</select></label><button type="submit">Save classification</button></form>` : ""}
+      ${!item.readOnly && item.repositoryId !== "unknown" ? `<form data-create-taxonomy="${item.taskFingerprint}"><label>Fleet <input name="laneName" maxlength="120" required placeholder="Fleet name"></label><label>Voyage <input name="themeName" maxlength="120" required placeholder="Voyage name"></label><label>Voyage type <select name="kind"><option value="theme">Thematic</option><option value="iteration">Iterative</option></select></label><button type="submit">Create / assign taxonomy</button></form>` : '<p>Repository unknown; classification needs authoritative repository identity first.</p>'}
     </details></li>`;
 }
 function hierarchyHtml(items, scope) {
@@ -1146,7 +1146,7 @@ function renderStatusFilterButtons(container, options, selectedValue) {
 
 function renderWorkSplit(split = workSplitData) {
   workSplitData = split;
-  const warning = split?.warning || (split?.activeReviewRequired ? "More than eight genuinely active workers: review concurrent implementation slices." : "");
+  const warning = [split?.warning, ...(split?.coverage?.disclosures || [])].filter(Boolean).join(" · ") || (split?.activeReviewRequired ? "More than eight genuinely active workers: review concurrent implementation slices." : "");
   for (const node of [$("#overview-state"), $("#work-state")]) {
     if (!node) continue;
     node.textContent = warning;
@@ -1185,7 +1185,7 @@ function renderWorkSplit(split = workSplitData) {
       }))
     ], workPhase);
     const items = split.items.filter((item) => (workRepository === "all" || item.repositoryId === workRepository) && (workPhase === "all" || item.status === workPhase || item.completionAttention === workPhase));
-    $("#tight-work").innerHTML = hierarchyHtml(items, "work");
+    $("#tight-work").innerHTML = fleetInventoryHtml(split.homes) + hierarchyHtml(items, "work");
     $("#large-work").innerHTML = "";
     $("#large-count").textContent = "· included as slices above";
     const largeHeading = $("#large-work").previousElementSibling;
@@ -1229,6 +1229,14 @@ function renderWorkSplit(split = workSplitData) {
     : '<p class="empty panel">No large projects match these filters.</p>';
 }
 
+function fleetInventoryHtml(homes = []) {
+  return homes.map(home => `<details class="panel"><summary>${escapeHtml(home.id)} · ${escapeHtml(home.freshness)} inventory</summary>
+    ${home.observedAt ? `<p>Observed ${escapeHtml(home.observedAt)}</p>` : ""}
+    ${Object.entries(home.inventory).map(([bucket, rows]) => `<details><summary>${escapeHtml(bucket)} · showing ${rows.length} of ${home.bounds[bucket].total ?? "unknown"}${home.bounds[bucket].available ? "" : " · unavailable"}</summary><ul>${rows.map(row => `<li>${escapeHtml(row.localTask)} · ${escapeHtml(row.name)}${row.holdDeferred ? ` · deferred until ${escapeHtml(row.holdUntil || "unknown")}` : ""}${row.completionAt ? ` · ${escapeHtml(row.completionAt)}` : ""}</li>`).join("")}</ul></details>`).join("")}
+    <p>${home.captainCalls} captain calls · ${home.deferredHolds} deferred holds</p>
+    ${home.warnings.map(warning => `<p class="notice">${escapeHtml(warning)}</p>`).join("")}</details>`).join("");
+}
+
 function renderSecondmates(data) {
   const items = data?.items || [];
   $("#secondmates-section").hidden = !items.length && !data?.warning;
@@ -1238,13 +1246,14 @@ function renderSecondmates(data) {
   const states = { live: "Working", idle: "Idle", unreachable: "Unreachable", unknown: "Unknown", "not-read": "Not read" };
   $("#secondmates").innerHTML = items.map((mate) => `
     <article class="secondmate-card" data-review-id="secondmate:${reviewId(mate.id)}">
-      <div class="secondmate-head"><strong>${escapeHtml(mate.id)}</strong><span class="state-chip">${escapeHtml(states[mate.state] || "Unknown")}</span></div>
+      <div class="secondmate-head"><strong>${escapeHtml(mate.id)}</strong><span class="state-chip">${escapeHtml(mate.inventory ? `${mate.inventory.freshness} inventory` : states[mate.state] || "Unknown")}</span></div>
       <p>${escapeHtml(mate.summary)}</p>
       <dl><dt>Scope</dt><dd>${escapeHtml(mate.scope)}</dd>
         <dt>Projects</dt><dd>${escapeHtml(mate.projects || "Not registered")}</dd>
         <dt>Location</dt><dd>${escapeHtml(mate.location)}</dd>
         <dt>Evidence</dt><dd>${escapeHtml(mate.stateEvidence)}</dd>
         <dt>Backlog</dt><dd>${mate.backlog ? `${escapeHtml(mate.backlog.openWork)} open · ${escapeHtml(mate.backlog.captainCalls)} captain calls` : "Not read"}</dd></dl>
+      ${mate.inventory ? fleetInventoryHtml([mate.inventory]) : ""}
       ${mate.warning ? `<p class="notice">${escapeHtml(mate.warning)}</p>` : ""}
     </article>`).join("");
 }
@@ -1956,7 +1965,7 @@ callDismiss = callPatcher && window.bearingsDismiss?.createDismissController({
   focusTarget: () => [...document.querySelectorAll('.primary-tab[data-view="overview"], [data-mobile-view="overview"]')].find((node) => node.getClientRects().length),
   onDismiss(key) { if (callPatcher.tracker.state().selected === key) callPatcher.tracker.deselect(); },
 });
-const landedBoard = window.bearingsLanded?.createController?.({ list: $("#landed-cards"), toggle: $("#landed-ack-toggle"), badge: $("#landed-new-count"), onChange: () => overviewTabs?.paint() });
+const landedBoard = window.bearingsLanded?.createController?.({ list: $("#landed-cards"), toggle: $("#landed-ack-toggle"), historyToggle: $("#landed-history-toggle"), badge: $("#landed-new-count"), onChange: () => overviewTabs?.paint() });
 const workBoard = window.bearingsWork?.createController?.({ sections: { underway: $("#underway"), charted: $("#charted-next") } });
 const overviewTabs = window.overviewTabs?.createController?.({
   root: $("#overview-view"),
@@ -1969,9 +1978,19 @@ const overviewTabs = window.overviewTabs?.createController?.({
   // Phone and tablet share one column and the section tabs. Two columns start at 1100px.
   media: window.matchMedia?.("(max-width: 1099.98px)"),
 });
+let fleetObservation = null, pendingFleetRefresh = false;
+function refreshFleetObservation(model) {
+  const observation = JSON.stringify([model.state, model.stale, model.fleetWork]);
+  if (!model.fleetWork || observation === fleetObservation) return;
+  fleetObservation = observation;
+  if (freshness.dashboard.refreshing) pendingFleetRefresh = true;
+  else void refreshEndpoint("dashboard");
+}
 const callLive = window.bearingsLive?.createBearingsLive({
-  onModel(model) { callSourceModel = model; callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
-  onObserved(data) { if (data.rev !== callSourceModel?.rev) return; callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
+  onModel(model) {
+    refreshFleetObservation(model);
+    callSourceModel = model; callPatcher.update(model); landedBoard?.update(model); workBoard?.update(model); renderCallBadge(model); observeBearings(model); },
+  onObserved(data) { if (data.rev !== callSourceModel?.rev) return; callSourceModel = { ...callSourceModel, ...data }; refreshFleetObservation(callSourceModel); callPatcher.observe(data); landedBoard?.observe(data); workBoard?.observe(data); observeBearings(data); },
   onConnection({ state }) {
     freshness.bearings.connection = state;
     renderFreshness();
@@ -2122,6 +2141,7 @@ async function refreshEndpoint(key) {
   } finally {
     item.duration = Date.now() - item.started;
     item.refreshing = false;
+    if (key === "dashboard" && pendingFleetRefresh) { pendingFleetRefresh = false; void refreshEndpoint("dashboard"); }
     if (key === "lanes") {
       $("#transcript-load-more").disabled = false;
       if (item.error) $("#transcript-load-more").textContent = "Retry loading more records";
@@ -2172,13 +2192,18 @@ async function refreshPreferences() {
   catch (error) { renderPreferences({ error: error.message }); }
   finally { preferencesRefreshing = false; }
 }
-function loadDashboard() {
+function loadDashboard(manual = false) {
   // Manual and timer refreshes may coincide; the endpoint guards prevent overlap.
   const active = activeFreshnessKey();
   void refreshEndpoint("dashboard");
   void refreshEndpoint("quota");
   if ($(".workspace").dataset.view === "expenses") void refreshCosts();
-  if (active === "lanes") void refreshEndpoint("lanes");
+  if (active === "lanes") {
+    // A manual refresh can follow a write newer than the in-flight history read.
+    // Queue one follow-up rather than dropping that explicit request.
+    if (manual) requestLanes();
+    else void refreshEndpoint("lanes");
+  }
   if ($(".workspace").dataset.view === "preferences") void refreshPreferences();
 }
 // A confirmed Quarterdeck send (review batch, Captain's Call answer or thread note) is a
@@ -2794,7 +2819,7 @@ document.querySelector(".primary-nav").addEventListener("click", (event) => {
   showView(tab.dataset.view);
   if (tab.dataset.view === "conversations") renderFeed();
 });
-$("#refresh").addEventListener("click", () => { loadDashboard(); void callLive?.refresh(); });
+$("#refresh").addEventListener("click", () => { loadDashboard(true); void callLive?.refresh(); });
 $("#quota-providers").addEventListener("toggle", (event) => {
   if (event.target.dataset?.provider && event.target.tagName === "DETAILS") {
     quotaOpen.set(event.target.dataset.provider, event.target.open);

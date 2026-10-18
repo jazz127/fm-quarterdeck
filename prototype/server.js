@@ -614,7 +614,7 @@ async function readBacklog(home, reader = createHistoryReader()) {
 }
 
 // The backlog remains the only ledger. Briefs supply classification evidence, never a second task list.
-async function workSplit(home, backlogTasks, stateNames, agentState, projects, repositoryPaths, durability, acknowledgementsAvailable, reader, metaById) {
+async function workSplit(home, backlogTasks, stateNames, agentState, projects, repositoryPaths, durability, acknowledgementsAvailable, reader, metaById, fleetWork = null) {
   const readFile = reader.text;
   const tight = { backlog: [], inProgress: [], justLanded: [] };
   const large = [];
@@ -689,8 +689,20 @@ async function workSplit(home, backlogTasks, stateNames, agentState, projects, r
       commit: null, pullRequest: null, unboundCommit: Boolean(meta.completion_commit),
       large: large.some((entry) => entry.id === id), waitingOn: decision?.text || holdWaitingOn(task || {}) || (latest?.state === "captain-held" ? latest.text : null) || folded.pendingIssues.at(-1)?.text || recordedWork?.waitingOn || null };
   }));
+  const canonical = new Map((fleetWork?.records || []).map(row => [row.id, row]));
+  for (const record of records) {
+    const current = canonical.get(record.id);
+    if (current && (!current.spawnGeneration || !metaById.get(record.id)?.spawn_gen || current.spawnGeneration === metaById.get(record.id).spawn_gen)) {
+      if (current.freshness === "fresh" && current.state !== "unknown") record.state = current.state;
+      if (record.endpointLive == null && current.endpointLive === true) { record.endpointLive = true; record.endpointEvidence = current.endpointEvidence; }
+      record.pipeline = current.pipeline;
+      record.reviewRun = current.reviewRun;
+      record.freshness = current.freshness;
+    }
+  }
+  records.push(...(fleetWork?.records || []).filter(row => row.owner !== "(main)"));
   const model = await projectWork(records, agentState, { durability, acknowledgementsAvailable, repositoryPaths });
-  return { tight: Object.fromEntries(Object.entries(tight).map(([key, items]) => [key, { count: items.length, items }])), large: { count: large.length, projects: large }, ...model };
+  return { tight: Object.fromEntries(Object.entries(tight).map(([key, items]) => [key, { count: items.length, items }])), large: { count: large.length, projects: large }, homes: fleetWork?.homes || [], coverage: { observedAt: fleetWork?.observedAt || null, disclosures: fleetWork?.disclosures || ["Canonical fleet inventory unavailable"] }, ...model };
 }
 
 function stateLabelForWork(state) { return state.replaceAll("-", " "); }
@@ -766,7 +778,7 @@ export function claudeConfigDir(env) {
   return env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path.join(os.homedir(), ".claude");
 }
 
-export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null } = {}) {
+export async function loadFirstmateHome(home, { includeHistory = true, sessionIds = [], diskIds = [], older = 0, diskOlder = 0, agentStateOwner = createAgentStateOwner(), durability = verifyDurability, reader = createHistoryReader(), claudeConfigDir = null, windowBytes = null, fleetWork = null } = {}) {
   const readFile = reader.text;
   if (!home) throw new PublicDataError("Fleet Chats offline: set FM_HOME to a readable Firstmate home (for example /absolute/path/to/firstmate).");
   const resolvedHome = path.resolve(home);
@@ -790,7 +802,14 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
     const secondmates = await readSecondmates(resolvedHome, stateNames, { reader, parseMeta, probe: (meta) => probeLiveness(() => endpointIsLive(meta)) });
     const workBacklog = new Map([...backlogTasks].filter(([id]) => !secondmates.ids.has(id)));
     const workStateNames = stateNames.filter((name) => !secondmates.ids.has(name.replace(/\.(meta|status)$/, "")));
-    const split = await workSplit(resolvedHome, workBacklog, workStateNames, agentState, projects, repositoryPaths, durability, !taxonomyWarning, reader, secondmates.metaById);
+    const split = await workSplit(resolvedHome, workBacklog, workStateNames, agentState, projects, repositoryPaths, durability, !taxonomyWarning, reader, secondmates.metaById, fleetWork);
+    for (const home of fleetWork?.homes || []) {
+      let mate = secondmates.view.items.find(item => item.id === home.id);
+      if (!mate) { mate = { id: home.id, registered: true, summary: "Registered home", scope: "Scope not recorded", location: "unknown", state: "unknown" }; secondmates.view.items.push(mate); }
+      mate.inventory = home;
+      mate.stateEvidence = `${home.freshness} structured inventory${home.observedAt ? ` · ${home.observedAt}` : ""}`;
+      mate.backlog = home.freshness === "unavailable" ? null : { openWork: new Set([...home.inventory.active, ...home.inventory.queued, ...home.inventory.held].map(row => row.id)).size, captainCalls: home.captainCalls };
+    }
     split.warning = taxonomyWarning;
     const currentWork = new Map(split.items.map((item) => [item.id, item]));
     if (!projects.length) throw new Error("data/projects.md has no project entries");
@@ -1016,6 +1035,8 @@ export async function loadFirstmateHome(home, { includeHistory = true, sessionId
         workCounts: split.counts,
         activeReviewRequired: split.activeReviewRequired,
         activeAgents: split.activeWorkerCount,
+        weakerWorkers: split.weakerWorkerCount,
+        workCoverage: split.coverage,
         openDecisions: split.counts["captain-action"],
         completedToday: split.items.filter((task) => task.sourceState === "done" && task.completionAt?.slice(0, 10) === today).length,
       },
@@ -1046,8 +1067,8 @@ function fleetFromFirstmate(firstmate) {
   };
 }
 
-async function loadFleet(env, agentStateOwner, durability, historyLimits) {
-  if (env.FM_HOME) return fleetFromFirstmate(await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability, reader: createHistoryReader(historyLimits) }));
+async function loadFleet(env, agentStateOwner, durability, historyLimits, fleetWork) {
+  if (env.FM_HOME) return fleetFromFirstmate(await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability, reader: createHistoryReader(historyLimits), fleetWork }));
   const configuredPath = env.FM_STATUS_PATH ? path.resolve(env.FM_STATUS_PATH) : null;
   const fleet = await readJson(configuredPath || DEFAULT_FLEET_PATH);
   validateFleet(fleet);
@@ -1084,8 +1105,8 @@ export async function loadExpenses(env = {}, { canonicalPath = CANONICAL_LEDGER_
   }
 }
 
-export async function dashboardData(env = process.env, agentStateOwner = createAgentStateOwner(configuredStatePath(env)), durability = verifyDurability, expenseReader = loadExpenses, historyLimits = resolveHistoryLimits(env)) {
-  const [fleet, expenses, firstmateActivity] = await Promise.all([loadFleet(env, agentStateOwner, durability, historyLimits), expenseReader(env), readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) })]);
+export async function dashboardData(env = process.env, agentStateOwner = createAgentStateOwner(configuredStatePath(env)), durability = verifyDurability, expenseReader = loadExpenses, historyLimits = resolveHistoryLimits(env), fleetWork = null) {
+  const [fleet, expenses, firstmateActivity] = await Promise.all([loadFleet(env, agentStateOwner, durability, historyLimits, fleetWork), expenseReader(env), readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) })]);
   const configuredRefresh = Number(env.FM_REFRESH_MS || 0);
   return {
     generatedAt: new Date().toISOString(),
@@ -1126,6 +1147,15 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   bearingsSource ||= createCallSource({ home: env.FM_HOME, receipts: inboxBatcher.receipts, hub: createBearingsHub({ home: env.FM_HOME, minGapMs: env.FM_BEARINGS_MIN_GAP_MS, maxAgeMs: env.FM_BEARINGS_MAX_AGE_MS, timeoutMs: env.FM_BEARINGS_TIMEOUT_MS }), chat: createChatAskScanner({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits, statePath: chatAsksPath(configuredStatePath(env)), historicalAnswer }) });
   answerRelay ||= createAnswerRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts });
   threadRelay ||= createThreadRelay({ home: env.FM_HOME, note: inboxBatcher.note, receipts: inboxBatcher.receipts, transcript: createTranscriptTurns({ home: env.FM_HOME, claudeConfigDir: claudeConfigDir(env), historyLimits }) });
+  const fleetWorkNow = () => {
+    if (env.FM_HOME) bearingsSource.touch?.();
+    const model = bearingsSource.current();
+    if (!model.fleetWork) return null;
+    if (model.state === "ready" && !model.stale) return model.fleetWork;
+    return { ...model.fleetWork, disclosures: [...model.fleetWork.disclosures, "Canonical fleet snapshot stale; current worker/run state unavailable"],
+      homes: model.fleetWork.homes.map(home => ({ ...home, freshness: "stale" })),
+      records: model.fleetWork.records.map(row => ({ ...row, freshness: "stale", reviewRun: false, endpointLive: null, pipeline: { position: "unknown", substep: null, milestones: [] } })) };
+  };
   const servedCommit = revisionResolver.initial;
   const registered = validateRegistry(previewRegistry ?? (env.FM_PREVIEW_REGISTRY_PATH ? JSON.parse(readFileSync(env.FM_PREVIEW_REGISTRY_PATH, "utf8")) : []));
   const deploymentTier = env.FM_DEPLOYMENT_TIER || "";
@@ -1313,7 +1343,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         let body;
         try { body = JSON.parse(text); } catch {}
         if (!body || !["acknowledge", "classify", "create-taxonomy"].includes(body.action) || !/^[a-f0-9]{64}$/.test(body.taskFingerprint || "")) { await sendJson(request, response, 400, { error: "Invalid presentation request" }); return; }
-        const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier, reader: createHistoryReader(historyLimits) });
+        const current = await loadFirstmateHome(env.FM_HOME, { includeHistory: false, agentStateOwner, durability: durabilityVerifier, reader: createHistoryReader(historyLimits), fleetWork: fleetWorkNow() });
         const item = current.workSplit.items.find((entry) => entry.taskFingerprint === body.taskFingerprint);
         if (!item || current.workSplit.warning) { await sendJson(request, response, 409, { error: "Current task or Quarterdeck state unavailable" }); return; }
         try {
@@ -1422,7 +1452,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         }
       }
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
-        await sendJson(request, response, 200, await dashboardData(env, agentStateOwner, durabilityVerifier, expenseReader, historyLimits));
+        await sendJson(request, response, 200, await dashboardData(env, agentStateOwner, durabilityVerifier, expenseReader, historyLimits, fleetWorkNow()));
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/lanes") {
@@ -1432,7 +1462,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         const requestedBytes = Number(url.searchParams.get("windowBytes"));
         const windowBytes = url.searchParams.has("windowBytes") && Number.isSafeInteger(requestedBytes)
           ? Math.min(8 * 1024 * 1024, Math.max(1024 * 1024, requestedBytes)) : null;
-        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env), windowBytes, reader: createHistoryReader(historyLimits) });
+        const firstmate = await lanesReader(env.FM_HOME, { sessionIds: ids("session"), diskIds: ids("disk"), older: page("older"), diskOlder: page("diskOlder"), agentStateOwner, durability: durabilityVerifier, claudeConfigDir: claudeConfigDir(env), windowBytes, reader: createHistoryReader(historyLimits), fleetWork: fleetWorkNow() });
         await sendJson(request, response, 200, {
           generatedAt: new Date().toISOString(),
           source: firstmate.source,
@@ -1481,6 +1511,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
       }
       if (request.method === "GET" && url.pathname === "/api/bearings") {
         bearingsSource.touch();
+        if (url.searchParams.get("landed") === "all") bearingsSource.expandLandings?.();
         // A refresh or poll reads any new transcript lines first (bounded, stat-only when idle).
         // Only the chat scan is awaited; the snapshot run never delays a read.
         if (bearingsSource.refresh) await bearingsSource.refresh();
@@ -1606,7 +1637,7 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
         if (await syncRevision(true) !== commit) { await sendJson(request, response, 409, { error: "Quarterdeck updated; reload to continue", code: "revision" }); return; }
         const current = bearingsSource.current?.() || {};
         if (current.state !== "ready" && current.state !== "stale") { await sendJson(request, response, 409, { error: "Just landed is not ready", code: "not-ready" }); return; }
-        const open = current.landed || [];
+        const open = current.landedHistory || current.landed || [];
         const card = open.find((entry) => entry.key === body.key);
         if (!card || !/^[0-9a-f]{16}$/.test(String(card.rev || ""))) { await sendJson(request, response, 409, { error: "This landing is no longer shown", code: "gone" }); return; }
         try {
@@ -1705,6 +1736,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   });
   // SSE framing is written by hand: sendJson gzips, which would buffer events.
   function openBearingsStream(request, response) {
+    // Revision validation can finish after the client has disconnected.
+    // Its close event has already fired, so no stream resources can be acquired.
+    if (response.destroyed) return;
     response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
     const send = async (event, data, id) => {
       if (event === "model" || event === "observed") data = { ...data, firstmateActivity: await readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) }) };

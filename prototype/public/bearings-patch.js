@@ -15,7 +15,7 @@ window.bearingsPatch = (() => {
   const INTERACTIVE = "a, button, input, textarea, select, label, summary, [contenteditable]";
   const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const keyOf = (node) => node?.getAttribute?.("data-call-key") || null;
-  const patchRevision = (card) => card ? JSON.stringify([card.rev, card.holdAt ?? null]) : null;
+  const patchRevision = (card) => card ? JSON.stringify([card.rev, card.holdAt ?? null, card.holdVersion ?? null]) : null;
 
   // Minimal fallback presentation; bearings-view.js supplies the product rendering.
   const fallbackView = {
@@ -247,6 +247,7 @@ window.bearingsPatch = (() => {
       node.innerHTML = render.cardHtml(card);
       node.setAttribute("data-call-rev", card.rev);
       node.setAttribute("data-call-patch-rev", patchRevision(card));
+      if (card.holdVersion) node.setAttribute("data-call-hold", card.holdVersion); else node.removeAttribute("data-call-hold");
       node.setAttribute("data-call-type", card.type);
       restoreDrafts(node, card.key);
       // Per-card controllers (answer form, overflow) re-apply their own state to fresh markup.

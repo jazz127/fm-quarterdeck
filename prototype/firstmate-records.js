@@ -25,8 +25,8 @@ export function decodeHoldReason(value) {
   catch { return value; }
 }
 
-function currentLocalDate() {
-  const date = new Date();
+export function currentLocalDate(now = Date.now()) {
+  const date = new Date(now);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 

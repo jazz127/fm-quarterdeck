@@ -19,6 +19,7 @@
     "test/enumerated-options.test.js",
     "test/fetch-fixture.test.mjs",
     "test/filter-view.test.js",
+    "test/fleet-coverage.test.js",
     "test/firstmate-activity.test.js",
     "test/fmqd-lanes-ownership.test.js",
     "test/health-preferences-ui.test.js",

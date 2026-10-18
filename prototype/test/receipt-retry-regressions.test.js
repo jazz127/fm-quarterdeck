@@ -5,7 +5,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { createAnswerRelay } from "../bearings-answer.js";
-import { createThreadRelay } from "../bearings-thread.js";
+import { classifyAnsweredCalls } from "../answered-calls.js";
+import { createThreadRelay, formatThreadNote } from "../bearings-thread.js";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
 
 const sources = await Promise.all(["bearings-view.js", "call-lifecycle.js", "bearings-answer-form.js", "bearings-thread-panel.js", "bearings-landed.js"].map((name) => readFile(new URL(`../public/${name}`, import.meta.url), "utf8")));
@@ -21,13 +22,13 @@ const newAsk = { kind: "ask", from: "captain", noteId: "new-note", at: "2026-10-
 
 function storage() {
   const values = new Map();
-  return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
+  return { get length() { return values.size; }, key: (index) => [...values.keys()][index], getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
 }
 
 // A click whose handler may call preventDefault.
 const press = (node) => node.dispatchEvent({ type: "click", preventDefault() {} });
 
-function mount(fetchImpl, { tab = storage(), isLanded = false, nextId = null } = {}) {
+function mount(fetchImpl, { tab = storage(), isLanded = false, present = true, nextId = null } = {}) {
   const dom = callDom();
   const timers = fakeTimers();
   const win = { document: dom.document, sessionStorage: tab, navigator: {} };
@@ -39,19 +40,18 @@ function mount(fetchImpl, { tab = storage(), isLanded = false, nextId = null } =
   let board, answers, threads, node;
   if (isLanded) {
     board = win.bearingsLanded.createController({ list, doc: dom.document, storage: tab, timers, fetchImpl, uuid: nextId || (() => uuid(++n)) });
-    board.update(model);
+    board.update(present ? model : { ...model, landed: [] });
     node = list.querySelector("[data-landed-key]");
   } else {
     node = dom.document.createElement("article");
     node.setAttribute("data-call-key", card.key);
     node.setAttribute("data-call-rev", card.rev);
     node.innerHTML = win.bearingsView.cardHtml(card);
-    list.append(node);
+    if (present) list.append(node);
     threads = win.bearingsThread.createThreadController({ list, doc: dom.document, win, storage: tab, timers, fetchImpl });
     answers = win.bearingsAnswerForm.createAnswerController({ list, doc: dom.document, win, storage: tab, timers, fetchImpl, uuid: () => uuid(++n),
       onAsked: (key, holdVersion, noteId) => threads.noteSent(key, holdVersion, noteId) });
-    answers.render(node, card);
-    threads.render(node);
+    if (present) { answers.render(node, card); threads.render(node); }
   }
   const part = (name) => node.querySelector(`[data-${isLanded ? "landed" : "call-answer"}-${name}]`);
   const queue = () => (isLanded ? part("follow") : node.querySelector("[data-call-answer]")).dispatchEvent({ type: "submit", preventDefault() {} });
@@ -424,4 +424,120 @@ test("a landed payload is saved before its response and a reload never sends it 
   assert.equal(third.part("text").value, "New uncertain words");
   assert.equal(third.part("edit").disabled, true);
   third.destroy();
+});
+
+test('client-only uncertain sends survive absent cards and reload with exact retry payloads', async () => {
+  for (const isLanded of [false, true]) {
+    const tab = storage();
+    const attempts = [];
+    const fetchImpl = async (_url, init) => {
+      if (init?.method !== 'POST') return response({ entries: [], acks: {} });
+      attempts.push(JSON.parse(init.body));
+      throw Error('Request never reached the server');
+    };
+    const first = mount(fetchImpl, { tab, isLanded });
+    await flush();
+    first.part('text').type('Keep the exact original words'); first.queue(); press(first.part('send')); await flush();
+    first.destroy();
+    const second = mount(fetchImpl, { tab, isLanded, present: false });
+    if (isLanded) {
+      second.board.update({ ...model, landed: [] });
+      const recovery = second.document.body.querySelector('[data-landed-key]');
+      assert.ok(recovery, 'absent landing keeps an explicit retry row');
+      assert.match(recovery.textContent, /Unconfirmed follow-up/);
+      press(recovery.querySelector('[data-landed-send]'));
+    } else {
+      second.node.remove(); second.answers.prune([]);
+      assert.equal(second.answers.queued().length, 1, 'global review queue retains the absent call');
+      await second.answers.sendQueued();
+    }
+    await flush();
+    assert.deepEqual(attempts[1], attempts[0]);
+    second.destroy();
+  }
+});
+
+test('attempted answers and thread notes remain recoverable after blocked edits and refused retries', async () => {
+  for (const path of ['answer', 'thread']) for (const action of ['edit', 'unqueue', 'refused']) {
+    const tab = storage(), attempts = [];
+    const fetchImpl = async (_url, init) => {
+      if (init?.method !== 'POST') return response({ entries: [] });
+      attempts.push(JSON.parse(init.body));
+      if (action === 'refused' && attempts.length > 1) return response({ error: 'Review changed' }, 409);
+      throw Error('Request never reached server');
+    };
+    const first = mount(fetchImpl, { tab });
+    if (path === 'answer') {
+      const input = first.document.createElement('input');
+      input.setAttribute('type', 'radio'); input.setAttribute('data-call-draft', 'selection');
+      input.setAttribute('value', 'yes'); input.checked = true;
+      first.node.querySelector('[data-call-answer-fields]').append(input);
+    }
+    first.part('text').type('Keep original payload'); first.queue(); press(first.part('send')); await flush();
+    assert.equal(first.answers.state(card.key).path, path);
+    if (action === 'edit') press(first.part('edit'));
+    else if (action === 'unqueue') first.answers.unqueue(card.key);
+    else { press(first.part('send')); await flush(); }
+    assert.equal(first.answers.state(card.key).phase, 'failed');
+    first.node.remove(); first.answers.prune([]);
+    assert.equal(first.answers.queued().length, 1);
+    assert.equal(first.answers.state(card.key).phase, 'failed');
+    first.destroy();
+    const second = mount(fetchImpl, { tab, present: false });
+    second.answers.prune([]);
+    assert.equal(second.answers.queued().length, 1);
+    await second.answers.sendQueued();
+    assert.deepEqual(attempts.at(-1), attempts[0]);
+    second.destroy();
+  }
+});
+
+test('unrelated batch positions cannot promote a replied note over an unordered pending note', async () => {
+  const at = '2026-10-01T10:00:00Z';
+  const note = (id, index, n, seq) => ({ id, itemIndex: index, at, ...(seq == null ? {} : { seq }), request_id: `quarterdeck-thread:${card.key}:${uuid(n)}`,
+    body: formatThreadNote({ key: card.key, card, text: `Question ${n}`, requestId: uuid(n) }) });
+  for (const ordered of [false, true]) {
+    const old = note('batch', 1, 1, ordered ? 1 : null), pending = note('singleton', 0, 2, ordered ? 2 : null);
+    const receipts = { pending: [pending], handled: [old], replies: [{ note_id: old.id, body: 'Earlier answer', at }] };
+    const projected = classifyAnsweredCalls([card], receipts)[0];
+    assert.equal(projected.sentReceipt, 'pending');
+    assert.equal(projected.sentReceiptIdentity.noteId, 'singleton');
+    const thread = await createThreadRelay({ home: '/synthetic/home', receipts: async () => receipts, transcript: async () => ({ turns: [] }) }).history(card.key, model);
+    assert.equal(thread.entries.filter(entry => entry.from === 'captain').at(-1).noteId, 'singleton');
+    const t = mount(async () => response({ entries: [] }));
+    for (const entries of [thread.entries, [...thread.entries].reverse()]) {
+      assert.equal(t.life.delivery({ card: projected, thread: { entries } }).posture, 'pending');
+      assert.equal(t.life.delivery({ card, thread: { entries } }).posture, 'pending');
+    }
+    t.destroy();
+  }
+  const first = note('same-batch', 0, 1), last = note('same-batch', 1, 2);
+  const receipts = { pending: [last, first], handled: [], replies: [] };
+  assert.equal(classifyAnsweredCalls([card], receipts)[0].sentReceiptIdentity.requestId, last.request_id);
+  const thread = await createThreadRelay({ home: '/synthetic/home', receipts: async () => receipts, transcript: async () => ({ turns: [] }) }).history(card.key, model);
+  assert.equal(thread.entries.at(-1).requestId, last.request_id);
+});
+
+test('legacy unresolved compose and refused states restore as frozen retries with or without their card', async () => {
+  for (const phase of ['compose', 'refused', 'confirm']) for (const present of [true, false]) for (const path of ['answer', 'thread']) {
+    const tab = storage(), attempts = [];
+    const saved = { phase, attempted: true, path, requestId: uuid(7), cardRev: card.rev, selection: '', note: 'Original uncertain words' };
+    tab.setItem('fm-quarterdeck-call-answer.v1:' + card.key, JSON.stringify(saved));
+    const t = mount(async (_url, init) => {
+      if (init?.method === 'POST') attempts.push(JSON.parse(init.body));
+      return response({ state: 'accepted', noteId: 'original' }, init?.method === 'POST' ? 202 : 200);
+    }, { tab, present });
+    if (!present) t.answers.prune([]);
+    else {
+      press(t.part('edit')); t.answers.unqueue(card.key); t.queue(); press(t.part('again'));
+    }
+    assert.equal(t.answers.state(card.key).phase, 'failed');
+    assert.equal(t.answers.queued().length, 1);
+    assert.equal(attempts.length, 0);
+    await t.answers.sendQueued();
+    assert.deepEqual(attempts, [path === 'thread'
+      ? { requestId: uuid(7), key: card.key, text: 'Original uncertain words' }
+      : { requestId: uuid(7), key: card.key, cardRev: card.rev, selection: '', note: 'Original uncertain words' }]);
+    t.destroy();
+  }
 });

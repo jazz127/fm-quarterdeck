@@ -16,13 +16,15 @@ function setup() {
   const list = dom.document.createElement("div");
   list.innerHTML = '<p data-landed-empty></p>';
   const toggle = dom.document.createElement("button");
-  dom.document.body.append(toggle, list);
+  const historyToggle = dom.document.createElement("button");
+  const invalid = dom.document.createElement("p");
+  dom.document.body.append(toggle, historyToggle, invalid, list);
   let entries = [];
   const acks = {};
   const sends = [];
   const saved = new Map();
   const board = context.window.bearingsLanded.createController({
-    list, toggle, doc: dom.document, timers, uuid: () => "00000000-0000-4000-8000-000000000001",
+    list, toggle, historyToggle, invalid, doc: dom.document, timers, uuid: () => "00000000-0000-4000-8000-000000000001",
     storage: { getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: (key) => saved.delete(key) },
     fetchImpl: async (url, options) => {
       if (options?.method === "POST") {
@@ -35,7 +37,7 @@ function setup() {
   });
   const update = (landed) => board.update({ state: "ready", landed, omitted: [] });
   const node = (key = "landed:ship-window") => list.querySelector(`[data-landed-key="${key}"]`);
-  return { ...dom, timers, context, board, list, toggle, update, node, sends, history(next) { entries = next; } };
+  return { ...dom, timers, context, board, list, toggle, historyToggle, invalid, update, node, sends, history(next) { entries = next; } };
 }
 
 test("BEARINGS landed refreshes preserve editor identity, focus, selection and drafts", async () => {
@@ -148,5 +150,36 @@ test("BEARINGS phone panels leave populated second mates visible on both tabs", 
   assert.equal(visible(landed), true);
   assert.equal(visible(mates), true);
   phone.destroy();
+  t.board.destroy();
+});
+
+
+test("landing history expands supplied records and retains source-bound disclosure", async () => {
+  const t = setup(); await flush();
+  const recent = landing(), older = landing("older");
+  t.board.update({ state: "ready", landed: [recent], landedHistory: [recent, older], omitted: [], workCoverage: { disclosures: ["landed showing 2 of 47"] } });
+  assert.equal(t.list.querySelectorAll("[data-landed-key]").length, 1);
+  assert.equal(t.historyToggle.hidden, false);
+  t.historyToggle.click(); await flush();
+  assert.equal(t.list.querySelectorAll("[data-landed-key]").length, 2);
+  assert.match(t.invalid.textContent, /landed showing 2 of 47/);
+  t.historyToggle.click();
+  assert.equal(t.list.querySelectorAll("[data-landed-key]").length, 1);
+  t.board.destroy();
+});
+
+test('history-unavailable disclosure remains visible when viewing recent landings', async () => {
+  const t = setup(); await flush();
+  const current = landing();
+  t.board.update({ state: 'ready', stale: false, landed: [current], landedHistory: [current], omitted: [], workCoverage: { disclosures: ['Expanded landed history unavailable'] } });
+  assert.equal(t.invalid.hidden, false);
+  assert.match(t.invalid.textContent, /history unavailable/);
+  assert.equal(t.node().querySelector('[data-landed-text]').disabled, false);
+  assert.equal(t.historyToggle.hidden, false);
+  t.historyToggle.click(); await flush();
+  t.historyToggle.click();
+  assert.equal(t.historyToggle.getAttribute('aria-expanded'), 'false');
+  assert.match(t.invalid.textContent, /history unavailable/);
+  assert.equal(t.list.querySelectorAll('[data-landed-key]').length, 1);
   t.board.destroy();
 });

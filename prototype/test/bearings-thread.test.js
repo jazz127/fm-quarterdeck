@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { answerEnvelope, answerRequestId, formatAnswerNote } from "../bearings-answer.js";
-import { createBearingsHub } from "../bearings.js";
+import { createBearingsHub, normalizeSnapshot } from "../bearings.js";
 import { ThreadRefused, createThreadRelay, createTranscriptTurns, formatThreadNote, noteForCard, taggedEnvelope, threadKeyPart, threadRequestId, threadText } from "../bearings-thread.js";
 import { createServer } from "../server.js";
 
@@ -150,9 +150,9 @@ async function threadServer(context, { relay, revision = "a".repeat(40) } = {}) 
 test("thread routes are same-origin JSON on the host only and revision-guarded", async (context) => {
   const calls = [];
   const relay = createThreadRelay({ home: "/synthetic/home", transcript: noTranscript, receipts: empty, note: async (_home, id, text) => { calls.push({ id, text }); return { id: "note-3", outcome: "created" }; } });
-  const { base, moveHead } = await threadServer(context, { relay });
+  const { base, hub, moveHead } = await threadServer(context, { relay });
   const post = (body, headers = {}, route = "/api/bearings/thread") => fetch(`${base}${route}`, { method: "POST", headers: { "content-type": "application/json", origin: base, ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
-  const body = { requestId: uuid(), key: "decision:alpha-call", text: "What is alpha about?" };
+  const body = { requestId: uuid(), key: "decision:alpha-call", holdVersion: hub.current().cards.find(card => card.key === "decision:alpha-call").holdVersion, text: "What is alpha about?" };
 
   assert.equal((await post(body, { origin: "https://elsewhere.invalid" })).status, 403);
   assert.equal((await post(body, { "content-type": "text/plain" })).status, 415);
@@ -205,4 +205,36 @@ test("Pi primary transcript joins only Firstmate text naming the whole card task
   assert.equal(result.provenance[0].kind, "context");
   assert.equal(result.provenance[0].at, "2026-01-02T08:01:00.000Z");
   assert.ok(result.provenance[0].text.length > 4000, "More can reveal long context instead of the old 4000-character cut");
+});
+
+// Two holds of one task whose only difference is a redacted report path: the same
+// presentation revision, but a different hold cycle.
+const heldCycle = (report) => normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Pick a window", reason: `See ${report}`, hold_set_at: "2026-01-02T10:00:00Z" }],
+  contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
+
+test("a thread note is bound to the hold cycle the captain reviewed; a same-id retry resends its original note", async () => {
+  const a = heldCycle("/synthetic/one/report.md"), b = heldCycle("/synthetic/two/report.md");
+  const [cardA] = a.cards, [cardB] = b.cards;
+  assert.equal(cardA.rev, cardB.rev, "a cycle-only change keeps the presentation revision");
+  assert.notEqual(cardA.holdVersion, cardB.holdVersion);
+  const calls = [];
+  const relay = createThreadRelay({ home: "/synthetic/home", receipts: empty, transcript: noTranscript,
+    note: async (_home, id, text) => { calls.push({ id, text }); return { id: `note-${calls.length}`, outcome: calls.length > 1 ? "replay" : "created" }; } });
+  const body = { requestId: uuid(1), key: cardA.key, text: "Which report?", holdVersion: cardA.holdVersion };
+  await assert.rejects(relay.submit({ ...body, holdVersion: "not-a-cycle" }, a), refusal("invalid"));
+  await assert.rejects(relay.submit(body, b), refusal("changed"));
+  assert.equal(calls.length, 0, "a note reviewed on hold A never reaches Firstmate stamped as hold B");
+  const accepted = await relay.submit(body, a);
+  assert.equal(accepted.holdVersion, cardA.holdVersion);
+  assert.equal(taggedEnvelope(calls[0].text, "fm-quarterdeck-thread").holdVersion, cardA.holdVersion);
+  const retry = await relay.submit(body, b);
+  assert.equal(calls[1].text, calls[0].text, "a same-id retry after the re-hold resends the identical note");
+  assert.equal(retry.holdVersion, cardA.holdVersion);
+  const legacy = { requestId: uuid(2), key: cardB.key, text: "Which report?" };
+  await assert.rejects(relay.submit(legacy, a), refusal("changed"));
+  await assert.rejects(relay.submit(legacy, b), refusal("changed"));
+  assert.equal(calls.length, 2);
+  const current = await relay.submit({ ...legacy, holdVersion: cardB.holdVersion }, b);
+  assert.equal(taggedEnvelope(calls[2].text, "fm-quarterdeck-thread").holdVersion, cardB.holdVersion);
+  assert.equal(current.holdVersion, cardB.holdVersion);
 });

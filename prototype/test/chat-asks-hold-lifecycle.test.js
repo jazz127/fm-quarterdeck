@@ -172,7 +172,7 @@ test('local chat asks stay actionable across every read-only decision matching f
     assert.equal(model.cards[1].answer.question, `chat.${key.slice(5)}`);
     assert.equal(model.chat.linked, 0);
     assert.equal(Object.values((await store.read()).asks)[0].status, 'open');
-    const local = { ...base.cards[0], readOnly: false, owner: '(main)' };
+    const local = { ...base.cards[0], key: `decision:${base.cards[0].localTask}`, task: base.cards[0].localTask, readOnly: false, owner: '(main)' };
     await scan.applySnapshot([local], true);
     assert.deepEqual(scan.asks()[0].linkedTasks, [local.task]);
     assert.equal(composeCallModel({ ...base, cards: [local] }, scan.asks(), scan.view()).chat.linked, 1);
@@ -259,6 +259,152 @@ test('legacy bare and qualified remote links stay open when scoped or missing on
       await restarted.resolve(ask.key, present ? 'answered' : 'dismissed');
       assert.deepEqual(restarted.asks(), []);
       assert.ok((await persisted.read()).tombstones[ask.key]);
+    }
+  }
+});
+
+test('legacy links require local proof before closure and reconcile remote owners in either arrival order', async t => {
+  for (const remoteFirst of [true, false]) {
+    const { store, make } = await scanner(t, 'APPROVAL NEEDED: Choose the remote plan. Reply "remote choice".');
+    await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+    const scan = make();
+    await scan.scan();
+    const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Reply "remote choice".' }]);
+    const closed = backlogHoldRecords(hold('shared', 'unrelated local choice', 'x'));
+    await scan.applySnapshot(remoteFirst ? remote.cards : [], true, closed);
+    assert.equal(scan.asks().length, 1, 'unproven bare link must not close against local ledger');
+    await scan.applySnapshot(remote.cards, true, closed);
+    assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+    const restored = make();
+    await restored.scan();
+    await restored.applySnapshot([], true, closed);
+    assert.equal(restored.asks().length, 1);
+    assert.equal(remote.cards[0].localTask, 'shared');
+  }
+});
+
+test('legacy bare markers require owner evidence through open holds, closure, composition and restart', async t => {
+  for (const remoteFirst of [false, true]) {
+    const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Choose the remote plan. Reply "remote choice".');
+    await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+    let scan = make();
+    await scan.scan();
+    const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Reply "remote choice".' }]);
+    const local = decisionModel([{ id: 'shared', owner: '(main)', summary: 'Unrelated local choice' }]);
+    const open = backlogHoldRecords(hold('shared', 'unrelated local choice'));
+    const closed = backlogHoldRecords(hold('shared', 'unrelated local choice', 'x'));
+    if (remoteFirst) await scan.applySnapshot(remote.cards, true);
+    await scan.applySnapshot(local.cards, true, open);
+    assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+    await scan.applySnapshot([], true, closed);
+    assert.equal(scan.asks().length, 1);
+    await scan.applySnapshot(remote.cards, true, closed);
+    assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+    scan = make(); await scan.scan();
+    await scan.applySnapshot(local.cards, true, closed);
+    assert.equal(scan.asks().length, 1);
+    assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+    assert.deepEqual((await store.read()).tombstones, {});
+  }
+  const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Reply "local choice".');
+  await store.update(state => {
+    const ask = Object.values(state.asks)[0];
+    ask.linkedTasks = ['shared'];
+    ask.taskLinks = [{ task: 'shared', localTask: 'shared', owner: '(main)' }];
+    return { write: true };
+  });
+  const scan = make(); await scan.scan();
+  await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'local choice')));
+  await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'local choice', 'x')));
+  assert.equal(scan.asks().length, 0);
+});
+
+// Item 3's ownership contract: shared reply text cannot prove the owner of a
+// legacy bare link. Reject local adoption, hidden chat cards and local closure.
+test('legacy bare links cannot adopt local ownership through shared replies', async t => {
+  for (const arrival of ['unavailable', 'remote-first', 'local-first', 'together-local-first', 'together-remote-first']) {
+    for (const localTask of ['shared', 'unrelated']) for (const field of ['summary', 'title', 'reason', 'backlogTitle', 'backlogReason']) for (const exact of [true, false]) {
+      await t.test(`${arrival}: ${localTask}, ${field}, ${exact ? 'exact' : 'quoted'}`, async t => {
+        const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Choose mate/shared. Reply "remote choice".');
+        await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+        let scan = make(); await scan.scan();
+        const key = scan.asks()[0].key;
+        const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Reply "remote choice".' }]);
+        const local = decisionModel([{ id: localTask, owner: '(main)', summary: 'Local pending', [field]: exact ? 'remote choice' : 'Reply "remote choice".' }]);
+        const open = backlogHoldRecords(hold(localTask, 'Reply "remote choice".'));
+        const closed = backlogHoldRecords(hold(localTask, 'Reply "remote choice".', 'x'));
+        if (arrival === 'remote-first') await scan.applySnapshot(remote.cards, true);
+        const cards = arrival === 'together-local-first' ? [...local.cards, ...remote.cards]
+          : arrival === 'together-remote-first' ? [...remote.cards, ...local.cards] : local.cards;
+        const assertIndependent = () => {
+          assert.equal(scan.asks()[0]?.key, key, 'local closure must leave the remote ask open');
+          assert.equal(scan.asks()[0].taskLinks?.some(link => link.owner === '(main)') || false, false);
+          const model = composeCallModel({ ...local, cards }, scan.asks(), scan.view());
+          assert.equal(model.chat.linked, 0, 'shared replies must not hide the standalone ask');
+          assert.ok(model.cards.find(card => card.key === key)?.answer);
+        };
+        assertIndependent();
+        await scan.applySnapshot(cards, true, open);
+        assertIndependent();
+        if (arrival === 'local-first') await scan.applySnapshot(remote.cards, true);
+        await scan.applySnapshot([], true, closed);
+        assertIndependent();
+        if (arrival !== 'unavailable') {
+          await scan.applySnapshot(remote.cards, true, closed);
+          assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+        }
+        scan = make(); await scan.scan();
+        await scan.applySnapshot(local.cards, true, closed);
+        assertIndependent();
+        assert.deepEqual((await store.read()).tombstones, {});
+      });
+    }
+  }
+});
+
+test('owner-qualified legacy links retain ownership even when the remote card text changes', async t => {
+  const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Choose the remote plan.');
+  await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['mate/shared']; return { write: true }; });
+  const scan = make(); await scan.scan();
+  const local = decisionModel([{ id: 'shared', owner: '(main)', summary: 'Unrelated local choice' }]);
+  assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+  await scan.applySnapshot(local.cards, true, backlogHoldRecords(hold('shared', 'unrelated local choice')));
+  assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+  const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Updated remote summary' }]);
+  await scan.applySnapshot(remote.cards, true);
+  assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+  await scan.applySnapshot(local.cards, true, backlogHoldRecords(hold('shared', 'unrelated local choice')));
+  await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'unrelated local choice', 'x')));
+  assert.equal(scan.asks().length, 1);
+  assert.equal(composeCallModel(local, scan.asks(), scan.view()).chat.linked, 0);
+});
+
+test('proven remote ownership excludes local cards and ledger holds before all text matching', async t => {
+  for (const representation of ['qualified', 'taskLinks']) for (const localTask of ['shared', 'unrelated']) {
+    for (const field of ['summary', 'title', 'reason', 'backlogTitle', 'backlogReason']) for (const exact of [true, false]) {
+      const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Reply "remote choice".');
+      await store.update(state => {
+        const ask = Object.values(state.asks)[0];
+        ask.linkedTasks = representation === 'qualified' ? ['mate/shared'] : [];
+        if (representation === 'taskLinks') ask.taskLinks = [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }];
+        return { write: true };
+      });
+      const scan = make(); await scan.scan();
+      const local = decisionModel([{ id: localTask, owner: '(main)', summary: 'Local pending', [field]: exact ? 'remote choice' : 'Reply "remote choice".' }]);
+      const key = scan.asks()[0].key;
+      for (const base of [local, { ...local, cards: [...decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Remote pending' }]).cards, ...local.cards] }]) {
+        const before = composeCallModel(base, scan.asks(), scan.view());
+        assert.equal(before.chat.linked, 0);
+        assert.ok(before.cards.find(card => card.key === key)?.answer);
+        await scan.applySnapshot(base.cards, true, backlogHoldRecords(hold(localTask, 'remote choice')));
+        await scan.applySnapshot([], true, backlogHoldRecords(hold(localTask, 'remote choice', 'x')));
+        assert.equal(scan.asks().length, 1);
+        assert.equal(scan.asks()[0].taskLinks?.some(link => link.owner === '(main)') || false, false);
+        assert.equal(composeCallModel(base, scan.asks(), scan.view()).chat.linked, 0);
+      }
+      const restored = make(); await restored.scan();
+      assert.equal(composeCallModel(local, restored.asks(), restored.view()).chat.linked, 0);
+      assert.deepEqual((await store.read()).tombstones, {});
     }
   }
 });

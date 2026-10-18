@@ -50,8 +50,8 @@ test("remote decisions display in their own home while local calls keep all cont
     const node = dom.document.createElement("article");
     node.innerHTML = window.bearingsView.cardHtml(card);
     const remote = index < 3;
-    const body = { requestId: uuid(++request), key: card.key, text: "More context?" };
-    const answer = { requestId: uuid(++request), key: card.key, cardRev: card.rev, selection: "blue", note: "" };
+    const body = { requestId: uuid(++request), key: card.key, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), text: "More context?" };
+    const answer = { requestId: uuid(++request), key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "blue", note: "" };
     if (remote) {
       assert.match(node.textContent, /This call is answered in its own home/);
       assert.equal(node.querySelector("textarea"), null);

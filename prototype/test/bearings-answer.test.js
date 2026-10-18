@@ -39,7 +39,11 @@ test("an answer must name an open card at the revision shown and one of its own 
   const model = ready(normalizeSnapshot(await fixture("two-calls")));
   const decision = model.cards.find((card) => card.key === "decision:alpha-call");
   const merge = model.cards.find((card) => card.key === "merge:beta-merge");
-  const body = (extra) => ({ requestId: uuid(), key: decision.key, cardRev: decision.rev, selection: "", note: "Use the Tuesday window", ...extra });
+  const body = (extra) => {
+    const fields = { requestId: uuid(), key: decision.key, cardRev: decision.rev, selection: "", note: "Use the Tuesday window", ...extra };
+    const holdVersion = model.cards.find(card => card.key === fields.key)?.holdVersion;
+    return { ...fields, ...(holdVersion ? { holdVersion } : {}) };
+  };
   assert.equal(validateAnswer(body(), model).note, "Use the Tuesday window");
   assert.equal(validateAnswer(body({ key: merge.key, cardRev: merge.rev, selection: "merge", note: "" }), model).selection, "merge");
   assert.equal(validateAnswer(body({ note: "  two\r\nlines  " }), model).note, "two\nlines");
@@ -87,7 +91,7 @@ test("the relay notes once per request id, replays a retry after the card left, 
     receipts: async () => ({ pending: [{ id: "note-1", request_id: answerRequestId(uuid()), announced: true }], handled: [], replies: [] }) });
   const model = ready(normalizeSnapshot(await fixture("two-calls")));
   const decision = model.cards.find((card) => card.key === "decision:alpha-call");
-  const body = { requestId: uuid(), key: decision.key, cardRev: decision.rev, selection: "", note: "Tuesday" };
+  const body = { requestId: uuid(), key: decision.key, cardRev: decision.rev, holdVersion: decision.holdVersion, selection: "", note: "Tuesday" };
   const first = await relay.submit(body, model);
   assert.equal(first.state, "accepted");
   assert.equal(first.replay, false);
@@ -108,7 +112,7 @@ test("the relay notes once per request id, replays a retry after the card left, 
 test("an unconfirmed delivery retains its exact envelope for a same-id retry after the model changes", async () => {
   const model = ready(normalizeSnapshot(await fixture("two-calls")));
   const card = model.cards[0];
-  const body = { requestId: uuid(), key: card.key, cardRev: card.rev, selection: "", note: "Tuesday" };
+  const body = { requestId: uuid(), key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "", note: "Tuesday" };
   const attempts = [];
   const relay = createAnswerRelay({ home: "/synthetic/home", note: async (_home, _id, text) => {
     attempts.push(text);
@@ -143,7 +147,7 @@ test("POST /api/bearings/answer is same-origin JSON on the host only, revision-g
   const card = hub.current().cards.find((entry) => entry.key === "decision:alpha-call");
   const origin = base;
   const post = (body, headers = {}, path = "/api/bearings/answer") => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", origin, ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
-  const body = { requestId: uuid(), key: card.key, cardRev: card.rev, selection: "", note: "Tuesday window" };
+  const body = { requestId: uuid(), key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "", note: "Tuesday window" };
 
   assert.equal((await post(body, { origin: "https://elsewhere.invalid" })).status, 403);
   assert.equal((await post(body, { "content-type": "text/plain" })).status, 415);
@@ -177,4 +181,31 @@ test("answer status fails visibly when Firstmate receipts are unavailable", asyn
   const response = await fetch(`${base}/api/bearings/answer/status?ids=${uuid()}`);
   assert.equal(response.status, 502);
   assert.equal((await response.json()).error, "Firstmate receipts unavailable");
+});
+
+// Two holds of one task whose only difference is a redacted report path: the same
+// presentation revision, but a different hold cycle.
+const heldCycle = (report) => ready(normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Pick a window", reason: `See ${report}`, hold_set_at: "2026-01-02T10:00:00Z" }],
+  contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }));
+
+test("an answer is bound to the hold cycle the captain reviewed even when the card revision is unchanged", async () => {
+  const a = heldCycle("/synthetic/one/report.md"), b = heldCycle("/synthetic/two/report.md");
+  const [cardA] = a.cards, [cardB] = b.cards;
+  assert.equal(cardA.rev, cardB.rev, "a cycle-only change keeps the presentation revision");
+  assert.notEqual(cardA.holdVersion, cardB.holdVersion);
+  const calls = [];
+  const relay = createAnswerRelay({ home: "/synthetic/home", note: async (_home, id, text) => { calls.push({ id, text }); return { id: `note-${calls.length}`, outcome: calls.length > 1 ? "replay" : "created" }; } });
+  const body = { requestId: uuid(1), key: cardA.key, cardRev: cardA.rev, selection: "", note: "Use the first report", holdVersion: cardA.holdVersion };
+  await assert.rejects(relay.submit({ ...body, holdVersion: 7 }, a), refusal("invalid"));
+  await assert.rejects(relay.submit(body, b), refusal("changed"));
+  assert.equal(calls.length, 0, "an answer reviewed on hold A never reaches Firstmate stamped as hold B");
+  assert.equal((await relay.submit(body, a)).envelope.holdVersion, cardA.holdVersion);
+  const retry = await relay.submit(body, b);
+  assert.equal(calls[1].text, calls[0].text, "a same-id retry after the re-hold resends the identical answer");
+  assert.equal(retry.envelope.holdVersion, cardA.holdVersion);
+  const { holdVersion, ...legacy } = { ...body, requestId: uuid(2) };
+  await assert.rejects(relay.submit(legacy, a), refusal("changed"));
+  await assert.rejects(relay.submit(legacy, b), refusal("changed"));
+  assert.equal(calls.length, 2);
+  assert.equal((await relay.submit({ ...legacy, holdVersion: cardB.holdVersion }, b)).envelope.holdVersion, cardB.holdVersion);
 });

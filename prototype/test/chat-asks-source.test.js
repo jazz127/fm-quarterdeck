@@ -21,7 +21,7 @@ function fixture(options = {}) {
     async applySnapshot(cards, fresh) {
       const tasks = cards.map(card => card.task).filter(Boolean);
       links.push([cards, fresh]);
-      asks = asks.map(entry => ({ ...entry, linkedTasks: tasks.includes('sample-task') ? ['sample-task'] : entry.linkedTasks }));
+      asks = asks.map(entry => tasks.includes('sample-task') ? { ...entry, linkedTasks: ['sample-task'], taskLinks: [{ task: 'sample-task', localTask: 'sample-task', owner: '(main)' }] } : entry);
     },
     async resolve(key) { const before = asks.length; asks = asks.filter(entry => entry.key !== key); return asks.length !== before; },
   };

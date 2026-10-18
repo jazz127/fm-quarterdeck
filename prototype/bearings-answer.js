@@ -13,6 +13,7 @@ export const MAX_ANSWER_BYTES = 512;
 export const MAX_BODY_BYTES = 4096;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const FIELDS = ["cardRev", "key", "note", "requestId", "selection"];
+const HOLD_VERSION = /^[0-9a-f]{16}$/;
 const MAX_REMEMBERED = 200;
 export const answerRequestId = (id) => `quarterdeck-call:${id}`;
 
@@ -31,10 +32,12 @@ function clipBytes(text, max) {
 export const displayAnswer = (selection, note) => selection ? (note ? `${selection} - ${note}` : selection) : note;
 
 // Shape and size checks that need no model. The note keeps the captain's words; only
-// line endings are normalised, and other control characters are refused.
+// line endings are normalised, and other control characters are refused. holdVersion is
+// optional: the hold cycle the captain reviewed, when the card had one.
 function parseBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "invalid", "Answer must be a JSON object");
-  if (Object.keys(body).sort().join(",") !== FIELDS.join(",")) refuse(400, "invalid", "Answer fields must be requestId, key, cardRev, selection and note");
+  if (Object.keys(body).filter((name) => name !== "holdVersion").sort().join(",") !== FIELDS.join(",")) refuse(400, "invalid", "Answer fields must be requestId, key, cardRev, selection and note, with an optional holdVersion");
+  if ("holdVersion" in body && (typeof body.holdVersion !== "string" || !HOLD_VERSION.test(body.holdVersion))) refuse(400, "invalid", "Hold version must be the 16-hex cycle shown");
   const { requestId, key, cardRev, selection } = body;
   if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) refuse(400, "invalid", "Answer request id must be a lowercase UUID");
   if (typeof key !== "string" || key.length > 330 || typeof cardRev !== "string" || !/^[0-9a-f]{16}$/.test(cardRev)) refuse(400, "invalid", "Answer must name a card and the revision shown");
@@ -45,7 +48,7 @@ function parseBody(body) {
   if (selection === "reconcile") refuse(422, "reconcile", "Reconcile is not an answer; ask Firstmate to re-check in chat");
   if (!selection && !note) refuse(422, "empty", "Choose an option or write an answer");
   if (bytes(displayAnswer(selection, note)) > MAX_ANSWER_BYTES) refuse(422, "too-long", `The answer is longer than ${MAX_ANSWER_BYTES} bytes`);
-  return { requestId, key, cardRev, selection, note };
+  return { requestId, key, cardRev, selection, note, ...("holdVersion" in body ? { holdVersion: body.holdVersion } : {}) };
 }
 
 // The key must still be open in the current model, shown at the same revision, and the
@@ -57,7 +60,8 @@ export function validateAnswer(body, model) {
   if ((chat ? model?.chat?.state : model?.state) !== "ready") refuse(409, "not-current", "Captain's Call is not current; wait for it to refresh");
   const card = (model.cards || []).find((entry) => entry.key === parsed.key);
   if (!card) refuse(409, "gone", "This call is no longer open");
-  if (card.rev !== parsed.cardRev) refuse(409, "changed", "This call changed; review it before answering");
+  // rev omits the hold cycle, so a re-hold can keep the revision shown.
+  if (card.rev !== parsed.cardRev || (parsed.holdVersion || null) !== (card.holdVersion || null)) refuse(409, "changed", "This call changed; review it before answering");
   if (card.readOnly || !card.answer) refuse(409, "not-answerable", "This call cannot be answered from Quarterdeck; answer in chat");
   if (parsed.selection && !card.answer.options.some((option) => option.value === parsed.selection)) refuse(422, "bad-option", "That option is not offered for this call");
   return { ...parsed, card };

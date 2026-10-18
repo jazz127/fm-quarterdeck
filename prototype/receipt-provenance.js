@@ -23,3 +23,18 @@ export function receiptReply(data, note) {
 export function replyBody(reply) {
   return typeof reply?.body === 'string' ? reply.body : typeof reply?.text === 'string' ? reply.text : null;
 }
+
+// Durable submission order, shared by snapshot receipts and thread history. A batch
+// note's members share its clock/id but keep their persisted position and request id.
+export function noteIdentity(note) {
+  return { noteId: note?.id || null, requestId: note?.request_id || null, at: note?.at || null,
+    sequence: note?.seq != null && Number.isSafeInteger(Number(note.seq)) ? Number(note.seq) : null,
+    itemIndex: Number.isSafeInteger(note?.itemIndex) ? note.itemIndex : null };
+}
+
+export function compareNoteIdentity(a, b) {
+  if (a.noteId && a.noteId === b.noteId && a.itemIndex != null && b.itemIndex != null) return a.itemIndex - b.itemIndex;
+  if (a.sequence != null && b.sequence != null && a.sequence !== b.sequence) return a.sequence - b.sequence;
+  const left = Date.parse(a.at), right = Date.parse(b.at);
+  return Number.isFinite(left) && Number.isFinite(right) ? left - right : 0;
+}

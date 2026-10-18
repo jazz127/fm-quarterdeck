@@ -1,3 +1,4 @@
+import { parseBacklogTask } from "./firstmate-records.js";
 import path from "node:path";
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
@@ -33,7 +34,8 @@ export function countSecondmateBacklog(text, excludedIds = new Set()) {
     const item = line.match(/^\s*-\s+\[ \]\s+(\S+)\s+-\s+(.+)$/);
     if (!item || /^(done|completed|closed)\b/.test(section) || excludedIds.has(item[1])) continue;
     openWork++;
-    if (/\(hold-kind:\s*captain\s*\)/i.test(item[2])) captainCalls++;
+    const hold = parseBacklogTask(item[2], false);
+    if (hold.holdKind === "captain" && !hold.holdDeferred) captainCalls++;
   }
   return { openWork, captainCalls };
 }

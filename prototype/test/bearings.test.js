@@ -182,8 +182,8 @@ test("a decision with lettered lines offers those letters, and a card without th
   assert.equal(answer.recommend, null);
   const model = { schema: "fm-quarterdeck-call.v1", rev: "model", state: "ready", ...normalizeSnapshot(raw) };
   const card = model.cards[0];
-  assert.equal(validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "a", note: "" }, model).selection, "a");
-  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "z", note: "" }, model), /not offered/);
+  assert.equal(validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "a", note: "" }, model).selection, "a");
+  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "z", note: "" }, model), /not offered/);
   raw.decisions_open[0].summary = "Provide the gamma sandbox credential";
   raw.decisions_open[0].reason = "No lettered choice is recorded.";
   assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options, []);
@@ -808,6 +808,40 @@ test("streams are capped, recycled, refused through preview paths, and ended by 
   assert.equal(c.events.at(-1).event, "bye");
 });
 
+for (const shutdown of [false, true]) {
+  test(`a stream disconnected during revision validation cannot subscribe${shutdown ? " after server shutdown" : " while the server stays open"}`, { timeout: 3000 }, async (context) => {
+    // Oracle: the HTTP response's close event ends its resource lifetime.
+    // Resuming validation must not create a subscription whose close event
+    // has already happened, or a browser pass can hang after its final PASS.
+    const revision = "a".repeat(40);
+    let releaseRevision, enteredRevision;
+    const pendingRevision = new Promise((resolve) => { releaseRevision = resolve; });
+    const entered = new Promise((resolve) => { enteredRevision = resolve; });
+    const server = createServer({}, { revisionResolver: {
+      initial: revision, snapshot: () => { enteredRevision(); return pendingRevision; },
+    } });
+    context.after(async () => {
+      releaseRevision(revision);
+      await flush();
+      server.bearings.close();
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const disconnected = new Promise((resolve) => server.once("request", (_request, response) => response.once("close", resolve)));
+    const request = http.get(`http://127.0.0.1:${server.address().port}/api/bearings/stream`);
+    request.on("error", () => {});
+    context.after(() => request.destroy());
+    await entered;
+    request.destroy();
+    await disconnected;
+    if (shutdown) await new Promise((resolve) => server.close(resolve));
+    releaseRevision(revision);
+    await flush();
+    assert.equal(server.bearings.stats().subscribers, 0, "a closed response cannot acquire a stream subscription");
+    assert.equal(server.bearings.stats().active, false, "disconnected streams cannot start the scheduler");
+  });
+}
+
 test("dashboard snapshots skip staged remote jobs and bound collection independently", async (context) => {
   const raw = await fixture("clear");
   const home = await syntheticHome(context, `printf '%s|%s' "$FM_SSH_BIN" "$FM_SNAPSHOT_BUDGET" > "$FM_HOME/policy"\ncat "$FM_HOME/fixture.json"`);
@@ -909,5 +943,81 @@ test("a watched model never turns stale while its ceiling refresh runs", async (
   await clock.advance(0);
   assert.equal(hub.current().state, "ready");
   assert.equal(hub.freshness().ageMs, 0);
+  hub.close();
+});
+
+test('hub retains fleet inventory and widens landing history through its existing bounded cadence', async () => {
+  const clock = fakeClock();
+  const base = await fixture('clear');
+  const landed = n => Array.from({ length: n }, (_, i) => ({ id: `land-${i}`, owner: '(main)', what: `Landing ${i}` }));
+  const calls = [];
+  const fleetWork = { records: [], homes: [], disclosures: [], observedAt: null };
+  const hub = createBearingsHub({ now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null,
+    runner: async options => { calls.push(options); return JSON.stringify({ ...base, landed: landed(options.allLanded ? 12 : 6), quarterdeckFleet: fleetWork }); } });
+  hub.touch(); await clock.advance(0);
+  assert.equal(hub.current().landed.length, 6);
+  assert.deepEqual(hub.current().fleetWork, fleetWork);
+  const before = hub.current().rev;
+  hub.expandLandings();
+  assert.equal(calls.length, 1, 'history expansion still respects the snapshot minimum gap');
+  await clock.advance(30000);
+  assert.equal(calls.at(-1).allLanded, true);
+  assert.equal(hub.current().landed.length, 6);
+  assert.equal(hub.current().landedHistory.length, 12);
+  assert.notEqual(hub.current().rev, before);
+  hub.close();
+});
+
+test('expanded history preserves changing producer recent membership for all watchers', async () => {
+  const clock = fakeClock(), base = await fixture('clear');
+  const landings = Array.from({ length: 10 }, (_, i) => ({ id: `land-${i}`, owner: '(main)', what: `Landing ${i}` }));
+  let recent = [landings[3], landings[1]];
+  const hub = createBearingsHub({ now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null,
+    runner: async ({ allLanded }) => JSON.stringify({ ...base, landed: allLanded ? landings : recent }) });
+  const readings = [[], []];
+  for (const list of readings) hub.subscribe(event => { if (event.type === 'model') list.push(event.model.landed.map(row => row.task)); });
+  await clock.advance(0);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-3', 'land-1']);
+  hub.expandLandings(); await clock.advance(30000);
+  assert.equal(hub.current().landedHistory.length, 10);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-3', 'land-1']);
+  recent = [landings[9], landings[7], landings[5], landings[2]];
+  hub.request(); await clock.advance(30000);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-9', 'land-7', 'land-5', 'land-2']);
+  for (const list of readings) assert.deepEqual(list.at(-1), ['land-9', 'land-7', 'land-5', 'land-2']);
+  recent = [landings[8]];
+  hub.request(); await clock.advance(30000);
+  assert.deepEqual(hub.current().landed.map(row => row.task), ['land-8']);
+  assert.equal(hub.current().landedHistory.length, 10);
+  hub.close();
+});
+
+test('optional expanded history failures preserve current calls, recent membership and answerability', async () => {
+  const clock = fakeClock(), base = await fixture('two-calls');
+  let failure = 'bound', summary = 'Current first question';
+  const observed = [];
+  const hub = createBearingsHub({ now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null,
+    runner: async ({ allLanded }) => {
+      if (allLanded && failure === 'bound') throw new BearingsUnavailable('Bearings snapshot output too large');
+      if (allLanded && failure === 'invalid') return '{';
+      return JSON.stringify({ ...base, decisions_open: [{ ...base.decisions_open[0], summary }], landed: [{ id: 'current', owner: '(main)', what: summary }, ...(allLanded ? [{ id: 'older', owner: '(main)', what: 'Earlier work' }] : [])] });
+    } });
+  hub.subscribe(event => { if (event.type === 'model') observed.push(event.model); });
+  await clock.advance(0);
+  hub.expandLandings();
+  for (const next of ['bound', 'invalid', null]) {
+    failure = next; summary = `Fresh question ${next || 'recovered'}`;
+    hub.request(); await clock.advance(30000);
+    const current = hub.current(), card = current.cards.find(card => card.task === 'alpha-call');
+    assert.equal(current.state, 'ready');
+    assert.equal(current.stale, false);
+    assert.equal(current.error, null);
+    assert.equal(card.summary, summary);
+    assert.deepEqual(current.landed.map(row => row.task), ['current']);
+    assert.equal(current.landedHistory.length, next ? 1 : 2);
+    assert.equal(current.workCoverage.disclosures.includes('Expanded landed history unavailable'), Boolean(next));
+    assert.equal(validateAnswer({ requestId: '00000000-0000-4000-8000-000000000011', key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), holdVersion: card.holdVersion, selection: '', note: 'Use this current question' }, current).card.key, card.key);
+    assert.equal(observed.at(-1), current);
+  }
   hub.close();
 });

@@ -7,7 +7,7 @@ import { parseStatusLine } from "./firstmate-records.js";
 const exec = promisify(execFile);
 export const WORK_STATUSES = ["active", "review", "waiting", "captain-action", "cleanup", "unknown", "backlog", "newly-done", "previously-done"];
 
-const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
+export const EXECUTING_STATES = new Set(["working", "active", "in-progress"]);
 const PANE_EVIDENCE = "live terminal pane (weaker evidence; worker process unverified)";
 const SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "fish", "nu"]);
 
@@ -105,9 +105,9 @@ export function foldStatusLines(lines, { kind = "unknown" } = {}) {
     pendingIssues: [...open.values()].map(({ key, state, text }) => ({ key, state, text })) };
 }
 
-export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, activeBlockers = [] }) {
+export function classifyCurrent({ state, inFlight, endpointLive, endpointEvidence, queued, retained, pendingIssues = [], holdKind, holdOpen, holdDeferred, holdActive, captainActionable, activeBlockers = [] }) {
   if (state === "needs-decision" || pendingIssues.some((issue) => issue.state === "needs-decision")) return "captain-action";
-  if (holdOpen && (holdDeferred || activeBlockers.length)) return "waiting";
+  if (holdOpen && (captainActionable === false || holdDeferred || activeBlockers.length)) return "waiting";
   if (holdOpen && holdKind === "captain") return "captain-action";
   if (holdActive) return "waiting";
   if (pendingIssues.length) return "waiting";
@@ -286,6 +286,7 @@ export async function verifyDurability(repository, commit, pullRequest, run = ex
 export async function projectWork(records, state, { durability = verifyDurability, acknowledgementsAvailable = true, repositoryPaths = new Map() } = {}) {
   const items = [];
   const activeExecutions = new Set();
+  const weakerExecutions = new Set();
   // Bound external evidence work per snapshot; unverified candidates stay reviewable.
   const evidenceDeadline = Date.now() + 6000;
   const probes = new Map();
@@ -303,6 +304,8 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     let status = classifyCurrent(record);
     const isLive = status === "active";
     if (isLive) activeExecutions.add(record.executionFingerprint || taskFingerprint);
+    const weakerWorker = !isLive && record.inFlight && EXECUTING_STATES.has(record.state) && record.endpointLive === true && record.endpointEvidence === PANE_EVIDENCE;
+    if (weakerWorker) weakerExecutions.add(record.executionFingerprint || taskFingerprint);
     const completionSourceFingerprint = record.state === "done" ? fingerprint("completion-source.v1", taskFingerprint, record.completionIdentity) : null;
     const bound = completionSourceFingerprint && state.completionRecords?.[completionSourceFingerprint];
     const commit = bound?.taskFingerprint === taskFingerprint ? bound.commit : record.commit || null;
@@ -327,7 +330,8 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     if (record.reviewRun && status !== "captain-action" && !["needs-decision", "captain-held"].includes(record.state) && !(record.holdOpen && (record.holdActive || record.holdDeferred || record.activeBlockers?.length))) status = "review";
     items.push({ id: record.id, name: safeWorkNote(record.name), taskIntent: safeWorkNote(record.taskIntent), chatLaneId: record.chatLaneId || null,
       taskFingerprint, repositoryId, repository: repository?.name || (repositoryPath ? path.basename(repositoryPath) : "Repository unknown"),
-      lane, theme, status, isLive, sourceState: record.state,
+      lane, theme, status, isLive, weakerWorker, sourceState: record.state,
+      owner: record.owner || "(main)", localTask: record.localTask || record.id, readOnly: Boolean(record.readOnly), freshness: record.freshness || null, pipeline: record.pipeline || null,
       endpointEvidence: record.endpointEvidence || (record.endpointLive === true ? "live process incarnation" : record.endpointLive === false ? "endpoint not live" : "liveness unknown"),
       retained: Boolean(record.retained), pendingIssues: (record.pendingIssues || []).map((issue) => ({ ...issue, ...(issue.text ? { text: safeWorkNote(issue.text) } : {}) })),
       holdKind: record.holdKind ? safeWorkNote(record.holdKind) : null, holdReason: record.holdReason ? safeWorkNote(record.holdReason) : null, holdUntil: record.holdUntil || null,
@@ -352,5 +356,5 @@ export async function projectWork(records, state, { durability = verifyDurabilit
     });
     repositories.push({ id: repositoryId, name: rows[0].repository, counts: counts(rows), lanes });
   }
-  return { items, repositories, counts: counts(items), activeWorkerCount: activeExecutions.size, activeReviewRequired: activeExecutions.size > 8 };
+  return { items, repositories, counts: counts(items), activeWorkerCount: activeExecutions.size, weakerWorkerCount: weakerExecutions.size, activeReviewRequired: activeExecutions.size > 8 };
 }

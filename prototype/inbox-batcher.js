@@ -172,7 +172,7 @@ export function createInboxBatcher({ home, statePath, delayMs = 3000, deliver = 
     const data = await readReceipts(home);
     const expand = (notes) => notes.flatMap((entry) => {
       const batch = batches.find((candidate) => candidate.id === entry.request_id);
-      return batch ? batch.items.map((item) => ({ ...entry, request_id: item.id, body: item.text,
+      return batch ? batch.items.map((item, itemIndex) => ({ ...entry, itemIndex, request_id: item.id, body: item.text,
         submission: { requestId: batch.id, count: batch.items.length, body: entry.body } })) : [entry];
     });
     return { ...data, pending: expand(data.pending), handled: expand(data.handled) };

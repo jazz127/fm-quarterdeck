@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { callDom, fakeTimers } from "./helpers/call-dom.js";
+import { createAnswerRelay } from "../bearings-answer.js";
+import { createThreadRelay } from "../bearings-thread.js";
 import { normalizeSnapshot } from "../bearings.js";
 import { composeCallModel, extractAsks } from "../chat-asks.js";
 import { prefixHold, prefixReason, binaryQuestionReasons } from "./helpers/prefix-hold.js";
@@ -17,7 +19,7 @@ const merge = (rev = "b1") => ({ key: "merge:beta-merge", type: "merge", task: "
   answer: { question: "merge.beta-merge", options: [{ value: "merge", label: "Merge now", hint: "Firstmate re-checks" }], recommend: null, close: null, freeform: true } });
 const model = (cards) => ({ schema: "fm-quarterdeck-call.v1", rev: cards.map((card) => `${card.key}@${card.rev}`).join("|") || "empty", state: "ready", cards, coverage: { known: 1, checked: 1, provenClear: false }, omitted: [] });
 
-function setup({ responses = [], storage = null, viewerStorage = null, onAsked = () => {}, activeFilter = false } = {}) {
+function setup({ responses = [], storage = null, viewerStorage = null, onAsked = () => {}, activeFilter = false, respond = null, uuidImpl = null } = {}) {
   const dom = callDom();
   const timers = fakeTimers();
   const { document } = dom;
@@ -34,7 +36,7 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
   const queue = [...responses];
   const fetchImpl = async (url, init = {}) => {
     fetches.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
-    const next = await (queue.shift() || { status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } });
+    const next = await (respond ? respond(url, fetches.at(-1).body) : queue.shift() || { status: 202, body: { state: "accepted", sentAt: "2026-01-02T03:04:05.000Z" } });
     if (next instanceof Error) throw next;
     return { status: next.status, ok: next.status < 300, json: async () => next.body };
   };
@@ -43,7 +45,7 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
   const patcher = win.bearingsPatch.createCallPatcher({ section, list, status, view: win.bearingsView, doc: document, win, storage, viewerStorage, timers,
     onRender: (node, card) => { answers?.render(node, card); overflow?.render(node, card); },
     onApply: (next) => { answers?.prune(next.cards.map((card) => card.key)); overflow?.prune(next.cards.map((card) => card.key)); } });
-  answers = win.bearingsAnswerForm.createAnswerController({ list, drafts: patcher.drafts, doc: document, win, storage, fetchImpl, timers, uuid: () => uuid(++n), onAsked,
+  answers = win.bearingsAnswerForm.createAnswerController({ list, drafts: patcher.drafts, doc: document, win, storage, fetchImpl, timers, uuid: uuidImpl || (() => uuid(++n)), onAsked,
     onChange(key, answer) {
       const card = list.querySelector(`[data-call-key="${key}"]`);
       if (activeFilter && card) {
@@ -62,7 +64,7 @@ function setup({ responses = [], storage = null, viewerStorage = null, onAsked =
 
 const explicitBooleanModel = () => {
   const base = normalizeSnapshot({ schema: "fm-bearings.v1", decisions_open: [{ id: "alpha-call", owner: "(main)", summary: "Archive sample notes?", hold_set_at: "2030-01-02T10:00:00Z" }], contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] });
-  const ask = { ...extractAsks("DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No.")[0], key: "chat:sampleboolean", linkedTasks: ["alpha-call"], source: "synthetic/main", offset: 0, part: 0 };
+  const ask = { ...extractAsks("DECISION NEEDED [task:alpha-call] Archive sample notes? Reply Yes or No.")[0], key: "chat:sampleboolean", linkedTasks: [], source: "synthetic/main", offset: 0, part: 0 };
   return composeCallModel({ ...base, state: "ready" }, [ask], { state: "ready", sources: [] });
 };
 
@@ -75,7 +77,7 @@ test("extracted Yes and No controls use the typed answer path; text alone remain
     radio.checked = true; radio.dispatchEvent({ type: "change" });
     t.submit(key); t.part(key, "send").click(); await flush();
     assert.equal(t.fetches[0].url, "/api/bearings/answer");
-    assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection: "", note: reply });
+    assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection: "", note: reply, holdVersion: current.cards[0].holdVersion });
   }
   for (const text of ["Yes", "No", "Please explain the timing"]) {
     const t = setup(); t.patcher.update(current);
@@ -101,14 +103,14 @@ test("canonical prefix and binary-question radios require Queue/Send; typed Yes/
       t.part(key, "send").click(); await flush();
       assert.equal(t.fetches.length, 1);
       assert.equal(t.fetches[0].url, "/api/bearings/answer");
-      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection, note: "" });
+      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, cardRev: current.cards[0].rev, selection, note: "", holdVersion: current.cards[0].holdVersion });
     }
     for (const text of ["Yes", "Proceed", "No"]) {
       const t = setup(); t.patcher.update(current); t.part(key, "text").type(text);
       t.submit(key); assert.equal(t.fetches.length, 0);
       t.part(key, "send").click(); await flush();
       assert.equal(t.fetches[0].url, "/api/bearings/thread");
-      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text });
+      assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text, holdVersion: current.cards[0].holdVersion });
     }
     assert.equal(current.cards[0].backlogReason, reason);
   }
@@ -286,12 +288,12 @@ test('clock ticks only change clock text and leave focused answer nodes intact',
   assert.equal(field.value, 'Tuesday');
 });
 
-test('Edit after an unconfirmed send and changed-card refusal retain identity, including reload', async () => {
+test('unresolved payload survives blocked editing, a refused retry and reload', async () => {
   const storage = tabStorage();
-  const t = setup({ storage, responses: [new Error('offline')] });
+  const t = setup({ storage, responses: [new Error('offline'), { status: 409, body: { error: 'This call changed; review again.' } }] });
   const key = 'decision:alpha-call'; t.patcher.update(model([decision()]));
   t.part(key, 'text').type('Tuesday'); t.submit(key); t.part(key, 'send').click(); await flush();
-  const requestId = t.answers.state(key).requestId;
+  const originalBody = t.fetches[0].body;
   assert.match(t.part(key, 'error').textContent, /may already have reached/);
   let writes = 0;
   const error = t.part(key, 'error'), text = error.textContent;
@@ -299,15 +301,15 @@ test('Edit after an unconfirmed send and changed-card refusal retain identity, i
   t.answers.render(t.node(key)); t.answers.render(t.node(key));
   assert.equal(writes, 0, 'unchanged alerts are not rewritten');
   t.part(key, 'edit').click(); t.part(key, 'text').type('Wednesday'); t.submit(key);
-  assert.equal(t.answers.state(key).requestId, requestId);
-  t.leave(); t.patcher.update(model([decision('a2')]));
-  assert.equal(t.answers.state(key).phase, 'confirm', 'unfocused unsent text waits for acknowledgement');
-  t.node(key).querySelector('[data-call-update-now]').click();
-  assert.equal(t.answers.state(key).phase, 'refused');
-  assert.equal(t.answers.state(key).requestId, requestId);
+  assert.equal(t.answers.state(key).phase, 'failed');
+  t.part(key, 'send').click(); await flush();
+  assert.deepEqual(t.fetches[1].body, originalBody);
+  assert.equal(t.answers.state(key).phase, 'failed');
   const reload = setup({ storage }); reload.patcher.update(model([decision('a2')]));
   reload.part(key, 'text').type('Thursday'); reload.submit(key);
-  assert.equal(reload.answers.state(key).requestId, requestId);
+  assert.equal(reload.answers.state(key).phase, 'failed');
+  await reload.answers.sendQueued();
+  assert.deepEqual(reload.fetches[0].body, originalBody);
 });
 
 function tabStorage() {
@@ -592,7 +594,7 @@ test("a call that changes while the answer is under review is never sent as revi
   assert.equal(t.fetches.length, 0);
 });
 
-test("unconfirmed sends retry only by click with the same request id; refusals return to editing with the server's reason", async () => {
+test("unconfirmed sends retain their payload through a refused retry", async () => {
   const t = setup({ responses: [new Error("offline"), { status: 502, body: { error: "Firstmate did not confirm" } }, { status: 409, body: { error: "This call is no longer open" } }] });
   t.patcher.update(model([merge()]));
   const key = "merge:beta-merge";
@@ -615,13 +617,12 @@ test("unconfirmed sends retry only by click with the same request id; refusals r
   assert.match(t.part(key, "error").textContent, /^Firstmate did not confirm.*may already have reached/);
   t.part(key, "send").click();
   await flush();
-  assert.equal(t.answers.state(key).phase, "refused");
-  assert.equal(t.part(key, "error").textContent, "This call is no longer open");
-  assert.equal(t.part(key, "compose").hidden, false);
-  assert.equal(t.part(key, "text").readOnly, false);
-  // A refusal after an uncertain attempt cannot mint a second note identity.
+  assert.equal(t.answers.state(key).phase, "failed");
+  assert.match(t.part(key, "error").textContent, /^This call is no longer open/);
+  assert.equal(t.part(key, "compose").hidden, true);
+  assert.equal(t.part(key, "text").readOnly, true);
   t.submit(key);
-  assert.equal(t.answers.state(key).requestId, uuid(1));
+  assert.equal(t.answers.state(key).requestId, t.fetches[0].body.requestId);
 });
 
 test("an empty or oversized answer is refused locally and nothing is sent", async () => {
@@ -816,9 +817,9 @@ test("queued answers list for the review queue, send together with their own ids
   assert.equal(t.part(first, "summary").hidden, true, "a thread note does not show Your answer");
   assert.deepEqual(plain(t.answers.queued()).map((entry) => [entry.key, entry.phase]), [[second, "failed"]]);
   t.answers.unqueue(second);
-  assert.equal(t.answers.state(second).phase, "compose");
+  assert.equal(t.answers.state(second).phase, "failed");
   assert.equal(t.answers.state(second).requestId, uuid(2), "an attempted answer keeps its identity after Remove");
-  assert.deepEqual(plain(t.answers.queued()), []);
+  assert.deepEqual(plain(t.answers.queued()).map(entry => [entry.key, entry.phase]), [[second, "failed"]]);
 });
 
 test("Send batch relays every queued card on its own route and those cards become Sent", async () => {
@@ -852,4 +853,220 @@ test("Send batch relays every queued card on its own route and those cards becom
   assert.equal(stateOf(first, decision()), "sent");
   assert.equal(stateOf(second, merge()), "sent");
   assert.equal(t.win.callLifecycle.cardState({ card: merge(), answer: t.answers.state(second), thread: thread(second), procrastinated: true }), "procrastinated");
+});
+
+// Two holds of one task whose only difference is a redacted report path: the same
+// presentation revision, but a different hold cycle.
+const reportCycle = (report, hold = '2026-01-02T10:00:00Z') => normalizeSnapshot({ schema: 'fm-bearings.v1', decisions_open: [{ id: 'alpha-call', owner: '(main)', summary: 'Pick a window', reason: `See ${report}`, hold_set_at: hold, options: [{ value: 'first', label: 'First report' }, { value: 'second', label: 'Second report' }] }],
+  contributions: { captain: [], known: 0, checked: 0, proven_clear: false }, omitted: [] }).cards[0];
+const cycleModel = (card) => ({ ...model([card]), rev: `${card.rev}:${card.holdVersion}` });
+
+test('a queued note on an engaged card is sent bound to the hold cycle the captain reviewed', async () => {
+  const sent = [];
+  const t = setup({ responses: [{ status: 409, body: { error: 'This call changed while you were reviewing; check it and review your note again.', code: 'changed' } }], onAsked: (...args) => sent.push(args) });
+  const key = 'decision:alpha-call', a = reportCycle('/synthetic/one/report.md'), b = reportCycle('/synthetic/one/report.md', '2026-01-02T12:00:00Z');
+  t.patcher.update(cycleModel(a));
+  const field = t.part(key, 'text'); field.focus(); field.type('Which report?'); t.submit(key);
+  // Re-held as B while the captain is still on A: the engaged card keeps showing A.
+  t.patcher.update(cycleModel(b));
+  assert.equal(t.patcher.held, true);
+  t.part(key, 'send').click(); await flush();
+  assert.deepEqual(t.fetches[0].body, { requestId: uuid(1), key, text: 'Which report?', holdVersion: a.holdVersion }, 'the relay can refuse a note reviewed on hold A');
+  assert.equal(t.answers.state(key).phase, 'refused');
+  assert.deepEqual(sent, [], 'a refused note never records a thread receipt');
+});
+
+test('a cycle-only update re-renders the card, so a queued note or answer reviewed on hold A is not sent as-is', async () => {
+  const key = 'decision:alpha-call', a = reportCycle('/synthetic/one/report.md'), b = reportCycle('/synthetic/two/report.md');
+  assert.equal(a.rev, b.rev); assert.notEqual(a.holdVersion, b.holdVersion);
+  for (const path of ['thread', 'answer']) {
+    const t = setup();
+    t.patcher.update(cycleModel(a));
+    const queue = () => {
+      if (path === 'answer') { const radio = t.node(key).querySelector('input[value="first"]'); radio.checked = true; radio.dispatchEvent({ type: 'change' }); }
+      else t.part(key, 'text').type('Which report?');
+      t.submit(key);
+    };
+    queue(); t.leave();
+    assert.equal(t.answers.state(key).phase, 'confirm');
+    assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+    t.patcher.update(cycleModel(b)); t.leave();
+    // Unsent note text holds the card until the captain takes the update; a chosen option does not.
+    if (path === 'thread') {
+      assert.equal(t.node(key).getAttribute('data-held'), 'true', 'the held card shows that its call changed');
+      t.node(key).querySelector('[data-call-update-now]').click();
+    }
+    assert.equal(t.node(key).getAttribute('data-call-hold'), b.holdVersion, 'the card markup names the current cycle');
+    assert.equal(t.answers.state(key).phase, 'refused', `${path}: a note reviewed on hold A needs a new review`);
+    t.submit(key); t.part(key, 'send').click(); await flush();
+    assert.equal(t.fetches.length, 1);
+    assert.equal(t.fetches[0].url, `/api/bearings/${path}`);
+    assert.equal(t.fetches[0].body.holdVersion, b.holdVersion, `${path}: the new review is bound to hold B`);
+  }
+});
+
+
+function uncertainCycleSend(path, recovery = 'failed') {
+  const key = 'decision:alpha-call';
+  const a = reportCycle('/synthetic/one/report.md'), b = reportCycle('/synthetic/two/report.md');
+  let current = a, first = true, nextId = 0;
+  const notes = new Map();
+  const relay = (path === 'thread' ? createThreadRelay : createAnswerRelay)({ home: '/synthetic/firstmate',
+    note: async (_home, id, text, { record }) => {
+      const replay = notes.has(id);
+      if (!replay) notes.set(id, { text, record });
+      return { id, outcome: replay ? 'replay' : 'created' };
+    } });
+  const options = { storage: tabStorage(), uuidImpl: () => uuid(++nextId), respond: async (url, body) => {
+    assert.equal(url, `/api/bearings/${path}`);
+    try {
+      const accepted = await relay.submit(body, cycleModel(current));
+      if (first) {
+        first = false;
+        if (recovery === 'interrupted') return new Promise(() => {});
+        throw new Error('acknowledgement lost after delivery');
+      }
+      return { status: 202, body: accepted };
+    } catch (error) {
+      if (!error.status) throw error;
+      return { status: error.status, body: { error: error.message, code: error.code } };
+    }
+  } };
+  const t = setup(options);
+  t.patcher.update(cycleModel(a));
+  if (path === 'answer') {
+    const radio = t.node(key).querySelector('input[value="first"]');
+    radio.checked = true; radio.dispatchEvent({ type: 'change' });
+  }
+  t.part(key, 'text').type('Use the reviewed report'); t.submit(key); t.part(key, 'send').click();
+  const rehold = () => { current = b; };
+  return { t, options, notes, key, a, b, rehold };
+}
+
+function applyCycle(t, card) {
+  t.leave(); t.patcher.update(cycleModel(card)); t.leave();
+  if (t.node(card.key).getAttribute('data-held') === 'true') t.node(card.key).querySelector('[data-call-update-now]').click();
+  assert.equal(t.node(card.key).getAttribute('data-call-hold'), card.holdVersion);
+}
+
+for (const path of ['thread', 'answer']) {
+  for (const recovery of ['failed', 'interrupted']) {
+    test(`${path}: ${recovery} send keeps a frozen Retry across a cycle-only change and preserves the newer draft`, async () => {
+      const { t: original, options, notes, key, a, b, rehold } = uncertainCycleSend(path, recovery);
+      await flush();
+      assert.equal(notes.size, 1, 'the first send reached the inbox before its acknowledgement was lost');
+      const originalBody = original.fetches[0].body;
+      rehold();
+      let t = original;
+      if (recovery === 'interrupted') {
+        assert.equal(original.answers.state(key).phase, 'sending');
+        original.answers.destroy();
+        t = setup(options); t.patcher.update(cycleModel(b));
+      } else applyCycle(t, b);
+      assert.equal(a.rev, b.rev, 'only the cycle changed');
+      assert.equal(t.answers.state(key).phase, 'failed');
+      assert.equal(t.answers.state(key).attempted, true);
+      assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+      assert.equal(t.part(key, 'send').hidden, false);
+      assert.equal(t.part(key, 'send').textContent, 'Retry send');
+      const beforeRetry = t.fetches.length;
+      t.timers.advance(60000); await flush();
+      assert.equal(t.fetches.length, beforeRetry, 'updates and reload do not resend');
+      if (recovery === 'failed') t.part(key, 'send').click();
+      else await t.answers.sendQueued();
+      await flush();
+      assert.deepEqual(t.fetches.at(-1).body, originalBody, 'explicit Retry sends the entire original payload');
+      assert.equal(notes.size, 1, 'Retry reconciles A without delivering another note');
+      assert.equal(t.answers.state(key), null, 'the receipt for A does not lock B as Sent');
+      assert.equal(t.part(key, 'text').value, 'Use the reviewed report', 'acknowledging A preserves the visible draft on B');
+      assert.match(t.patcher.drafts.text(key), /Use the reviewed report/);
+      t.submit(key);
+      const fresh = t.answers.state(key);
+      assert.notEqual(fresh.requestId, originalBody.requestId);
+      assert.equal(fresh.holdVersion, b.holdVersion);
+      assert.equal(fresh.attempted, false);
+      t.part(key, 'send').click(); await flush();
+      assert.equal(notes.size, 2, 'B gets its own inbox submission even with unchanged words');
+      const records = [...notes.values()].map(({ record }) => record);
+      assert.equal(records[0].envelope?.holdVersion || records[0].holdVersion, a.holdVersion);
+      assert.equal(records[1].envelope?.holdVersion || records[1].holdVersion, b.holdVersion);
+      assert.equal(t.patcher.drafts.text(key), '', 'B clears only after its own submission is delivered');
+    });
+  }
+
+  for (const action of ['edit', 'unqueue']) {
+    for (const recovery of ['failed', 'interrupted']) {
+      test(`${path}: same-cycle ${action} cannot replace the ${recovery} send before its explicit retry`, async () => {
+        const { t: original, options, notes, key, a } = uncertainCycleSend(path, recovery);
+        await flush();
+        assert.equal(notes.size, 1, 'the inbox recorded A before its acknowledgement was lost');
+        const originalBody = original.fetches[0].body;
+        let t = original;
+        if (recovery === 'interrupted') {
+          original.answers.destroy();
+          t = setup(options); t.patcher.update(cycleModel(a));
+        }
+        assert.equal(t.answers.state(key).phase, 'failed');
+        if (action === 'edit') t.part(key, 'edit').click();
+        else t.answers.unqueue(key);
+        if (recovery === 'interrupted') {
+          t.answers.destroy();
+          t = setup(options); t.patcher.update(cycleModel(a));
+        }
+        t.submit(key);
+        assert.equal(t.answers.state(key).requestId, originalBody.requestId);
+        assert.equal(t.answers.state(key).attempted, true);
+        assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+        if (action === 'edit') { t.part(key, 'send').click(); await flush(); }
+        else assert.equal(await t.answers.sendQueued(), true);
+        assert.deepEqual(t.fetches.at(-1).body, originalBody, 'unchanged words keep the entire attempted payload');
+        assert.equal(notes.size, 1, 'the same-cycle send reconciles the original inbox note instead of duplicating it');
+        assert.equal(t.patcher.drafts.text(key), '');
+        if (path === 'answer') assert.equal(t.answers.state(key).phase, 'sent');
+        else assert.equal(t.answers.state(key), null);
+      });
+    }
+
+    test(`${path}: ${action} cannot abandon A for B before reconciliation or after disappearance`, async () => {
+      const { t, options, notes, key, a, b, rehold } = uncertainCycleSend(path);
+      await flush(); rehold(); applyCycle(t, b);
+      const originalBody = t.fetches[0].body;
+      if (action === 'edit') t.part(key, 'edit').click();
+      else t.answers.unqueue(key);
+      t.part(key, 'text').type('Different words for B');
+      if (path === 'answer') {
+        const radio = t.node(key).querySelector('input[value="second"]');
+        radio.checked = true; radio.dispatchEvent({ type: 'change' });
+      }
+      t.submit(key);
+      t.part(key, 'again').click();
+      assert.equal(t.answers.state(key).phase, 'failed');
+      assert.equal(t.answers.state(key).requestId, originalBody.requestId);
+      assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+      assert.equal(t.answers.state(key).attempted, true);
+      assert.equal(notes.size, 1);
+      t.node(key).remove(); t.answers.prune([]); t.answers.destroy();
+      const restored = setup(options); restored.patcher.update(model([]));
+      assert.equal(restored.answers.queued().length, 1);
+      await restored.answers.sendQueued();
+      assert.deepEqual(restored.fetches[0].body, originalBody);
+      assert.equal(notes.size, 1, 'only the persisted A submission is reconciled');
+    });
+  }
+}
+
+test('a first-attempt refusal permits a new review without an unresolved payload', async () => {
+  const t = setup({ responses: [{ status: 409, body: { error: 'Review changed' } }] });
+  const key = decision().key;
+  t.patcher.update(model([decision()]));
+  t.part(key, 'text').type('Initial words'); t.submit(key); t.part(key, 'send').click(); await flush();
+  assert.equal(t.answers.state(key).phase, 'refused');
+  assert.equal(t.answers.state(key).attempted, false);
+  assert.equal(t.part(key, 'text').readOnly, false);
+  t.part(key, 'text').type('Reviewed correction'); t.submit(key);
+  assert.equal(t.answers.state(key).phase, 'confirm');
+  t.part(key, 'edit').click();
+  assert.equal(t.answers.state(key), null);
+  assert.equal(t.document.activeElement, t.part(key, 'text'));
+  assert.equal(t.part(key, 'text').value, 'Reviewed correction');
 });

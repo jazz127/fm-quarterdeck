@@ -24,7 +24,7 @@ window.bearingsLanded = (() => {
     const headline = window.bearingsView?.landedHeadlineHtml?.(card) || `<h3>${escape(card.what || "Landing not recorded")}</h3>`;
     const artifact = artifactHtml(card);
     const shortened = headline.includes("data-call-truncated") || artifact.includes("data-call-truncated");
-    return `<div class="call-chrome"><header class="call-head"><span class="state-chip">Landed</span><div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}<button type="button" class="call-head-pill landed-ack" data-landed-ack>Acknowledge</button></div><span class="call-age">${escape(clockText(card.clock))}</span></header>
+    return `<div class="call-chrome"><header class="call-head"><span class="state-chip">${card.recovery ? "Delivery unconfirmed" : "Landed"}</span><div class="call-head-actions">${card.repo ? `<span class="call-repo">${escape(card.repo)}</span>` : ""}<button type="button" class="call-head-pill landed-ack" data-landed-ack>Acknowledge</button></div><span class="call-age">${escape(clockText(card.clock))}</span></header>
       ${headline}
       <dl class="call-context"><div class="call-context-row"><dt>About</dt><dd>${escape(about)}</dd></div></dl>
       <p class="call-id">Task <code>${escape(card.task || "unknown")}</code></p>
@@ -46,14 +46,14 @@ window.bearingsLanded = (() => {
       </form>`;
   }
 
-  function createController({ list, toggle, badge, invalid, onChange = () => {}, doc = document, storage = (() => { try { return window.sessionStorage; } catch { return null; } })(), fetchImpl = (...args) => globalThis.fetch(...args), timers = globalThis, uuid = () => globalThis.crypto.randomUUID(), pollMs = 15000 } = {}) {
+  function createController({ list, toggle, badge, invalid, historyToggle, onChange = () => {}, doc = document, storage = (() => { try { return window.sessionStorage; } catch { return null; } })(), fetchImpl = (...args) => globalThis.fetch(...args), timers = globalThis, uuid = () => globalThis.crypto.randomUUID(), pollMs = 15000 } = {}) {
     if (!list) return { update() {}, destroy() {}, count() { return 0; }, newCount() { return 0; } };
     const text = window.bearingsView?.createTextController?.({ list, keyAttribute: "data-landed-key" });
     const drafts = new Map();
     const histories = new Map();
     let model = { state: "loading", landed: [], omitted: [] };
     let acks = {};
-    let reviewing = false;
+    let reviewing = false, expanded = false, historyError = "";
     let pollTimer = null;
     let destroyed = false;
     // An attempted follow-up is saved before it is sent. Until Firstmate confirms it, a reload
@@ -73,9 +73,19 @@ window.bearingsLanded = (() => {
       if (!histories.has(key)) histories.set(key, { entries: [], open: false });
       return histories.get(key);
     };
-    const cards = () => Array.isArray(model.landed) ? model.landed : [];
+    const sourceCards = () => expanded && Array.isArray(model.landedHistory) ? model.landedHistory : Array.isArray(model.landed) ? model.landed : [];
+    function cards() {
+      // Enumerate the tab store independently of the bounded landing snapshot.
+      try { for (let i = 0; i < (storage?.length || 0); i++) {
+        const name = storage.key(i);
+        if (name?.startsWith(STATE_PREFIX)) draftOf(name.slice(STATE_PREFIX.length));
+      } } catch {}
+      const rows = sourceCards();
+      const absent = [...drafts].filter(([key, draft]) => draft.attempted && !rows.some(card => card.key === key));
+      return [...rows, ...absent.map(([key]) => ({ key, rev: "recovery", recovery: true, task: key.slice(7), what: "Unconfirmed follow-up · landing no longer in the current snapshot" }))];
+    }
     const acknowledged = (card) => (acks[card.key] ?? acks[`landed:${card.task}`]) === card.rev;
-    const newCount = () => cards().filter((card) => !acknowledged(card)).length;
+    const newCount = () => sourceCards().filter((card) => !acknowledged(card)).length;
     const nodeOf = (key) => [...list.querySelectorAll("[data-landed-key]")].find((node) => node.getAttribute("data-landed-key") === key) || null;
 
     function paintPhase(node, key) {
@@ -148,14 +158,15 @@ window.bearingsLanded = (() => {
     }
 
     function paintCard(node, card) {
-      const hidden = acknowledged(card) && !reviewing;
+      const hidden = !card.recovery && acknowledged(card) && !reviewing;
       node.hidden = hidden;
       const button = node.querySelector("[data-landed-ack]");
       const note = node.querySelector("[data-landed-ack-note]");
       const acked = acknowledged(card);
       if (button) {
         button.textContent = acked ? "Acknowledged" : "Acknowledge";
-        button.disabled = acked;
+        button.disabled = acked || Boolean(card.recovery);
+        button.hidden = Boolean(card.recovery);
       }
       if (note) note.hidden = !acked;
       paintPhase(node, card.key);
@@ -196,11 +207,19 @@ window.bearingsLanded = (() => {
         if (count === 0) reviewing = false;
         toggle.setAttribute("aria-pressed", String(reviewing));
       }
+      if (historyToggle) {
+        const available = (model.landedHistory || []).length;
+        const bounded = [...(model.workCoverage?.disclosures || []), ...(model.workCoverage?.underwayDisclosures || [])].some(text => /landed|Done capped/i.test(text));
+        historyToggle.hidden = !expanded && !bounded && available <= (model.landed || []).length;
+        historyToggle.textContent = expanded ? "Recent landings" : `Show landing history (${available} available)`;
+        historyToggle.setAttribute("aria-expanded", String(expanded));
+      }
+      const disclosures = [...(model.workCoverage?.disclosures || []), ...(model.workCoverage?.underwayDisclosures || [])].filter(text => /landed/i.test(text));
       const withheld = (model.omitted || []).find((entry) => entry.kind === "invalid-landed" && entry.count);
       const target = invalid || list.parentElement?.querySelector?.("[data-landed-invalid]");
       if (target) {
-        target.hidden = !withheld;
-        target.textContent = withheld ? `${withheld.count} invalid landings withheld` : "";
+        target.hidden = !withheld && !disclosures.length && !historyError;
+        target.textContent = [...disclosures, ...(historyError ? [historyError] : []), ...(withheld ? [`${withheld.count} invalid landings withheld`] : [])].join(" · ");
       }
       onChange();
     }
@@ -213,7 +232,7 @@ window.bearingsLanded = (() => {
       for (const node of [...list.querySelectorAll("[data-landed-key]")]) {
         if (!keys.has(node.getAttribute("data-landed-key"))) node.remove();
       }
-      for (const key of [...drafts.keys()]) if (!keys.has(key)) drafts.delete(key);
+      for (const key of [...drafts.keys()]) if (!keys.has(key) && !drafts.get(key).attempted) drafts.delete(key);
       for (const key of [...histories.keys()]) if (!keys.has(key)) histories.delete(key);
       text?.prune?.([...keys]);
       let position = list.querySelector("[data-landed-key]");
@@ -404,6 +423,18 @@ window.bearingsLanded = (() => {
       render();
       if (reviewing) for (const card of cards()) if (acknowledged(card)) void loadHistory(card.key);
     });
+    const toggleHistory = async () => {
+      expanded = !expanded; historyError = ""; render();
+      if (!expanded) return;
+      try {
+        // The same hub widens the next bounded read; its stream/poll publishes it.
+        const response = await fetchImpl("/api/bearings?landed=all", { cache: "no-store" });
+        if (!response.ok) throw Error("unavailable");
+        const next = await readJson(response);
+        if (!destroyed && Array.isArray(next.landedHistory)) { model = next; render(); }
+      } catch { historyError = "More landing history is unavailable; retained history remains visible."; paintChrome(); }
+    };
+    historyToggle?.addEventListener("click", toggleHistory);
     void loadAcks();
     pollTimer = timers.setInterval?.(() => {
       if (doc.visibilityState === "hidden") return;
@@ -422,6 +453,7 @@ window.bearingsLanded = (() => {
       destroy() {
         destroyed = true;
         text?.destroy?.();
+        historyToggle?.removeEventListener("click", toggleHistory);
         timers.clearInterval?.(pollTimer);
         list.removeEventListener("click", onClick);
         list.removeEventListener("submit", onSubmit);
