@@ -727,8 +727,8 @@ export function normalizeSnapshot(raw, enabled = ["call", "landed", "underway", 
     .map(row => ({ ...row, reason: publicText(row.reason, Infinity), title: publicText(row.title, Infinity) })) : [];
   return { ...content, holds, generatedAt: isoDate(raw.generated) };
 }
-// The revision covers only what the captain sees, never the snapshot clock, so an
-// unchanged Captain's Call is never pushed again. Empty landed rows stay out of the hash.
+// The snapshot clock is excluded, but canonical inventory retains observation clocks
+// so consumers can refresh freshness-dependent work state. Empty landings stay out.
 export const contentRevision = ({ cards, coverage, omitted, holds, landed, landedHistory, fleetWork, underway, charted, workCoverage }) => shortHash({ ...(landedHistory?.length ? { landedHistory } : {}), ...(fleetWork ? { fleetWork } : {}), cards, coverage, omitted, ...(workCoverage ? { workCoverage } : {}), ...(underway?.length ? { underway } : {}), ...(charted?.length ? { charted } : {}), ...(holds?.length ? { holds } : {}), ...(landed?.length ? { landed } : {}) });
 
 export function createSnapshotRunner(home, { spawnImpl = spawn, accessImpl = access, setPriority = os.setPriority, timeoutMs = 45000, maxStdout = 2 * 1024 * 1024, maxStderr = 4096 } = {}) {
