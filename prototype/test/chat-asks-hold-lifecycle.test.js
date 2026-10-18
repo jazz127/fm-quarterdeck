@@ -307,11 +307,59 @@ test('legacy bare markers require owner evidence through open holds, closure, co
     assert.deepEqual((await store.read()).tombstones, {});
   }
   const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Reply "local choice".');
-  await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+  await store.update(state => {
+    const ask = Object.values(state.asks)[0];
+    ask.linkedTasks = ['shared'];
+    ask.taskLinks = [{ task: 'shared', localTask: 'shared', owner: '(main)' }];
+    return { write: true };
+  });
   const scan = make(); await scan.scan();
   await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'local choice')));
   await scan.applySnapshot([], true, backlogHoldRecords(hold('shared', 'local choice', 'x')));
   assert.equal(scan.asks().length, 0);
+});
+
+// Item 3's ownership contract: shared reply text cannot prove the owner of a
+// legacy bare link. Reject local adoption, hidden chat cards and local closure.
+test('legacy bare links cannot adopt local ownership through shared replies', async t => {
+  for (const arrival of ['unavailable', 'remote-first', 'local-first', 'together-local-first', 'together-remote-first']) {
+    for (const localTask of ['shared', 'unrelated']) for (const field of ['summary', 'title', 'reason', 'backlogTitle', 'backlogReason']) for (const exact of [true, false]) {
+      await t.test(`${arrival}: ${localTask}, ${field}, ${exact ? 'exact' : 'quoted'}`, async t => {
+        const { store, make } = await scanner(t, 'DECISION NEEDED: [task:shared] Choose mate/shared. Reply "remote choice".');
+        await store.update(state => { Object.values(state.asks)[0].linkedTasks = ['shared']; return { write: true }; });
+        let scan = make(); await scan.scan();
+        const key = scan.asks()[0].key;
+        const remote = decisionModel([{ id: 'mate/shared', owner: 'mate', summary: 'Reply "remote choice".' }]);
+        const local = decisionModel([{ id: localTask, owner: '(main)', summary: 'Local pending', [field]: exact ? 'remote choice' : 'Reply "remote choice".' }]);
+        const open = backlogHoldRecords(hold(localTask, 'Reply "remote choice".'));
+        const closed = backlogHoldRecords(hold(localTask, 'Reply "remote choice".', 'x'));
+        if (arrival === 'remote-first') await scan.applySnapshot(remote.cards, true);
+        const cards = arrival === 'together-local-first' ? [...local.cards, ...remote.cards]
+          : arrival === 'together-remote-first' ? [...remote.cards, ...local.cards] : local.cards;
+        const assertIndependent = () => {
+          assert.equal(scan.asks()[0]?.key, key, 'local closure must leave the remote ask open');
+          assert.equal(scan.asks()[0].taskLinks?.some(link => link.owner === '(main)') || false, false);
+          const model = composeCallModel({ ...local, cards }, scan.asks(), scan.view());
+          assert.equal(model.chat.linked, 0, 'shared replies must not hide the standalone ask');
+          assert.ok(model.cards.find(card => card.key === key)?.answer);
+        };
+        assertIndependent();
+        await scan.applySnapshot(cards, true, open);
+        assertIndependent();
+        if (arrival === 'local-first') await scan.applySnapshot(remote.cards, true);
+        await scan.applySnapshot([], true, closed);
+        assertIndependent();
+        if (arrival !== 'unavailable') {
+          await scan.applySnapshot(remote.cards, true, closed);
+          assert.deepEqual(scan.asks()[0].taskLinks, [{ task: 'mate/shared', localTask: 'shared', owner: 'mate' }]);
+        }
+        scan = make(); await scan.scan();
+        await scan.applySnapshot(local.cards, true, closed);
+        assertIndependent();
+        assert.deepEqual((await store.read()).tombstones, {});
+      });
+    }
+  }
 });
 
 test('owner-qualified legacy links retain ownership even when the remote card text changes', async t => {

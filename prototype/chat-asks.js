@@ -38,6 +38,9 @@ function matchesHold(ask, card) {
   if (owned) return true;
   if (!ask.linkedTasks?.includes(localTask) && (ask.taskMarkers?.includes(card.task) || mentionsTask(ask.text, card.task))) return true;
   if (card.type !== "decision") return false;
+  // Shared reply text cannot establish an ambiguous legacy link's local ownership.
+  if (owner === "(main)" && ask.linkedTasks?.some(task => !task.includes("/")
+    && !ask.taskLinks?.some(link => link.task === task))) return false;
   const replies = new Set(ask.replies.map(normalizeReply).filter(Boolean));
   return [card.summary, card.title, card.reason, card.backlogTitle, card.backlogReason].some(text => typeof text === "string" &&
     (replies.has(normalizeReply(text)) || [...text.matchAll(HOLD_QUOTE)].some(match => replies.has(normalizeReply(match.slice(1).find(value => value !== undefined))))));
