@@ -808,6 +808,40 @@ test("streams are capped, recycled, refused through preview paths, and ended by 
   assert.equal(c.events.at(-1).event, "bye");
 });
 
+for (const shutdown of [false, true]) {
+  test(`a stream disconnected during revision validation cannot subscribe${shutdown ? " after server shutdown" : " while the server stays open"}`, { timeout: 3000 }, async (context) => {
+    // Oracle: the HTTP response's close event ends its resource lifetime.
+    // Resuming validation must not create a subscription whose close event
+    // has already happened, or a browser pass can hang after its final PASS.
+    const revision = "a".repeat(40);
+    let releaseRevision, enteredRevision;
+    const pendingRevision = new Promise((resolve) => { releaseRevision = resolve; });
+    const entered = new Promise((resolve) => { enteredRevision = resolve; });
+    const server = createServer({}, { revisionResolver: {
+      initial: revision, snapshot: () => { enteredRevision(); return pendingRevision; },
+    } });
+    context.after(async () => {
+      releaseRevision(revision);
+      await flush();
+      server.bearings.close();
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const disconnected = new Promise((resolve) => server.once("request", (_request, response) => response.once("close", resolve)));
+    const request = http.get(`http://127.0.0.1:${server.address().port}/api/bearings/stream`);
+    request.on("error", () => {});
+    context.after(() => request.destroy());
+    await entered;
+    request.destroy();
+    await disconnected;
+    if (shutdown) await new Promise((resolve) => server.close(resolve));
+    releaseRevision(revision);
+    await flush();
+    assert.equal(server.bearings.stats().subscribers, 0, "a closed response cannot acquire a stream subscription");
+    assert.equal(server.bearings.stats().active, false, "disconnected streams cannot start the scheduler");
+  });
+}
+
 test("dashboard snapshots skip staged remote jobs and bound collection independently", async (context) => {
   const raw = await fixture("clear");
   const home = await syntheticHome(context, `printf '%s|%s' "$FM_SSH_BIN" "$FM_SNAPSHOT_BUDGET" > "$FM_HOME/policy"\ncat "$FM_HOME/fixture.json"`);

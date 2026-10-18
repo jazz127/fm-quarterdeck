@@ -1736,6 +1736,9 @@ export function createServer(env = process.env, { publicDir = PUBLIC_DIR, quotaR
   });
   // SSE framing is written by hand: sendJson gzips, which would buffer events.
   function openBearingsStream(request, response) {
+    // Revision validation can finish after the client has disconnected.
+    // Its close event has already fired, so no stream resources can be acquired.
+    if (response.destroyed) return;
     response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
     const send = async (event, data, id) => {
       if (event === "model" || event === "observed") data = { ...data, firstmateActivity: await readFirstmateActivity(env.FM_HOME, { claudeConfigDir: claudeConfigDir(env) }) };
