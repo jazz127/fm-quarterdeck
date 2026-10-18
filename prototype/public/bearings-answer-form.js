@@ -24,7 +24,7 @@ window.bearingsAnswerForm = (() => {
       try { const raw = storage?.getItem(STATE_PREFIX + key); const parsed = raw ? JSON.parse(raw) : null; if (parsed && typeof parsed.phase === "string") {
         // Reload interrupted the response, not necessarily delivery. Keep its identity;
         // only an explicit Retry click may reconcile it through the idempotent inbox.
-        value = ["sending", "failed"].includes(parsed.phase) ? { ...parsed, attempted: true, phase: "failed", error: parsed.error || "The send was interrupted and may already have reached Firstmate. Retry sends the same answer once." } : parsed;
+        value = (["sending", "failed"].includes(parsed.phase) || (parsed.attempted && parsed.phase !== "sent")) ? { ...parsed, attempted: true, phase: "failed", error: parsed.error || "The send was interrupted and may already have reached Firstmate. Retry sends the same answer once." } : parsed;
       } } catch {}
       memory.set(key, value);
       return value;
@@ -195,8 +195,8 @@ window.bearingsAnswerForm = (() => {
       if (bar) bar.hidden = sentLock;
       const confirmNote = part(form, "confirm-note");
       if (confirmNote) {
-        const text = state?.path === "thread"
-          ? "Send submits this note with a short batching delay; Send in the message composer bypasses it and submits every queued note. Edit takes it out of the queue."
+        const text = state?.attempted ? "Retry sends the original submission. Resolve it before editing or queueing another."
+          : state?.path === "thread" ? "Send submits this note with a short batching delay; Send in the message composer bypasses it and submits every queued note. Edit takes it out of the queue."
           : "Send submits this answer with a short batching delay; Send in the message composer bypasses it and submits every queued answer. Edit takes it out of the queue.";
         if (confirmNote.textContent !== text) confirmNote.textContent = text;
       }
@@ -215,7 +215,7 @@ window.bearingsAnswerForm = (() => {
         send.textContent = phase === "sending" ? "Pending…" : phase === "failed" ? "Retry send" : "Send";
       }
       const edit = part(form, "edit");
-      if (edit) { edit.hidden = !queuedLock; edit.setAttribute("aria-disabled", String(phase === "sending")); }
+      if (edit) { edit.hidden = !queuedLock; edit.setAttribute("aria-disabled", String(Boolean(state?.attempted) || phase === "sending")); }
       const error = part(form, "error");
       if (error) {
         const text = ["refused", "failed"].includes(phase) ? state.error || "" : "";
@@ -244,6 +244,7 @@ window.bearingsAnswerForm = (() => {
 
     function review(form, key) {
       const previous = states.get(key) || {};
+      if (previous.attempted) return;
       const answer = read(form);
       if (!answer.path) { update(key, { ...previous, phase: "refused", error: "Choose an option or write an answer first." }, "text"); return; }
       const thread = answer.path === "thread";
@@ -252,7 +253,7 @@ window.bearingsAnswerForm = (() => {
       if (bytes(measured) > cap) { update(key, { ...previous, phase: "refused", error: `The ${thread ? "note" : "answer"} is longer than ${cap} bytes; shorten it.` }, "text"); return; }
       const holdVersion = holdVersions.get(key) || null;
       const sameCycle = (previous.holdVersion || null) === holdVersion;
-      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: (sameCycle && previous.requestId) || uuid(), attempted: sameCycle && previous.attempted === true }, "send");
+      update(key, { phase: "confirm", ...answer, label: form.getAttribute("data-call-answer-label") || key, holdVersion, cardRev: cardNode(key)?.getAttribute("data-call-rev") || null, requestId: (sameCycle && previous.requestId) || uuid(), attempted: false }, "send");
     }
 
     function clearDraft(key) {
@@ -300,12 +301,12 @@ window.bearingsAnswerForm = (() => {
       }
       const noun = thread ? "note" : "answer";
       // Unconfirmed (network, 5xx): the same request id may be retried by an explicit click.
-      if (!response || response.status >= 500 || (state.attempted && !cardNode(key))) {
+      if (!response || response.status >= 500 || state.attempted) {
         update(key, { ...state, path, attempted: true, phase: "failed", error: `${body?.error || `Firstmate did not confirm the ${noun}.`} The earlier send may already have reached Firstmate. Retry uses the same request id; editing cannot replace an already recorded ${noun}.` }, focus ? "send" : null);
         return false;
       }
       // Refused (stale call, invalid answer, wrong origin, preview host): edit and queue again.
-      update(key, { ...state, path, attempted: true, phase: "refused", error: body?.error || `The ${noun} was not accepted.` }, focus ? "text" : null);
+      update(key, { ...state, path, attempted: false, phase: "refused", error: body?.error || `The ${noun} was not accepted.` }, focus ? "text" : null);
       return false;
     }
     // Queued cards, for the review queue's list and its Send. Each item keeps its own
@@ -319,10 +320,10 @@ window.bearingsAnswerForm = (() => {
     async function sendQueued({ immediate = false } = {}) {
       return (await Promise.all(queued().filter((entry) => entry.phase !== "sending").map((entry) => send(entry.key, { focus: false, immediate })))).every(Boolean);
     }
-    function unqueue(key) {
+    function unqueue(key, focus = null) {
       const state = states.get(key);
-      if (!state || !["confirm", "failed"].includes(state.phase) || (state.attempted && !cardNode(key))) return;
-      update(key, state.attempted || state.phase === "failed" ? { ...state, phase: "compose", attempted: true } : null);
+      if (state?.phase !== "confirm" || state.attempted) return;
+      update(key, null, focus);
     }
 
     async function poll() {
@@ -366,11 +367,8 @@ window.bearingsAnswerForm = (() => {
       const key = keyOf(target?.closest?.("[data-call-key]"));
       if (!key) return;
       if (target.closest("[data-call-answer-send]")) { event.preventDefault?.(); void send(key); }
-      else if (target.closest("[data-call-answer-edit]")) { event.preventDefault?.(); if (states.get(key)?.phase !== "sending") {
-        const state = states.get(key);
-        update(key, state?.attempted || state?.phase === "failed" ? { ...state, phase: "compose", attempted: true } : null, "text");
-      } }
-      else if (target.closest("[data-call-answer-again]")) { event.preventDefault?.(); update(key, null, "text"); }
+      else if (target.closest("[data-call-answer-edit]")) { event.preventDefault?.(); unqueue(key, "text"); }
+      else if (target.closest("[data-call-answer-again]")) { event.preventDefault?.(); if (states.get(key)?.phase === "sent") update(key, null, "text"); }
     };
     const onInput = (event) => { const field = event.target?.closest?.("[data-call-answer-text]"); if (field) grow(field); };
     list.addEventListener("submit", onSubmit);
@@ -387,8 +385,7 @@ window.bearingsAnswerForm = (() => {
         for (const key of states.keys()) {
           if (open.has(key)) continue;
           const state = states.get(key);
-          if (state?.attempted && ["compose", "refused"].includes(state.phase)) states.set(key, { ...state, phase: "failed" });
-          else if (!state?.attempted && state?.phase !== "sending") states.set(key, null);
+          if (!state?.attempted && state?.phase !== "sending") states.set(key, null);
         }
       },
       state: (key) => states.get(key),

@@ -457,7 +457,7 @@ test('client-only uncertain sends survive absent cards and reload with exact ret
   }
 });
 
-test('attempted answers and thread notes remain recoverable after editing, unqueueing or refusal and disappearance', async () => {
+test('attempted answers and thread notes remain recoverable after blocked edits and refused retries', async () => {
   for (const path of ['answer', 'thread']) for (const action of ['edit', 'unqueue', 'refused']) {
     const tab = storage(), attempts = [];
     const fetchImpl = async (_url, init) => {
@@ -478,7 +478,7 @@ test('attempted answers and thread notes remain recoverable after editing, unque
     if (action === 'edit') press(first.part('edit'));
     else if (action === 'unqueue') first.answers.unqueue(card.key);
     else { press(first.part('send')); await flush(); }
-    assert.equal(first.answers.state(card.key).phase, action === 'refused' ? 'refused' : 'compose');
+    assert.equal(first.answers.state(card.key).phase, 'failed');
     first.node.remove(); first.answers.prune([]);
     assert.equal(first.answers.queued().length, 1);
     assert.equal(first.answers.state(card.key).phase, 'failed');
@@ -516,4 +516,28 @@ test('unrelated batch positions cannot promote a replied note over an unordered 
   assert.equal(classifyAnsweredCalls([card], receipts)[0].sentReceiptIdentity.requestId, last.request_id);
   const thread = await createThreadRelay({ home: '/synthetic/home', receipts: async () => receipts, transcript: async () => ({ turns: [] }) }).history(card.key, model);
   assert.equal(thread.entries.at(-1).requestId, last.request_id);
+});
+
+test('legacy unresolved compose and refused states restore as frozen retries with or without their card', async () => {
+  for (const phase of ['compose', 'refused', 'confirm']) for (const present of [true, false]) for (const path of ['answer', 'thread']) {
+    const tab = storage(), attempts = [];
+    const saved = { phase, attempted: true, path, requestId: uuid(7), cardRev: card.rev, selection: '', note: 'Original uncertain words' };
+    tab.setItem('fm-quarterdeck-call-answer.v1:' + card.key, JSON.stringify(saved));
+    const t = mount(async (_url, init) => {
+      if (init?.method === 'POST') attempts.push(JSON.parse(init.body));
+      return response({ state: 'accepted', noteId: 'original' }, init?.method === 'POST' ? 202 : 200);
+    }, { tab, present });
+    if (!present) t.answers.prune([]);
+    else {
+      press(t.part('edit')); t.answers.unqueue(card.key); t.queue(); press(t.part('again'));
+    }
+    assert.equal(t.answers.state(card.key).phase, 'failed');
+    assert.equal(t.answers.queued().length, 1);
+    assert.equal(attempts.length, 0);
+    await t.answers.sendQueued();
+    assert.deepEqual(attempts, [path === 'thread'
+      ? { requestId: uuid(7), key: card.key, text: 'Original uncertain words' }
+      : { requestId: uuid(7), key: card.key, cardRev: card.rev, selection: '', note: 'Original uncertain words' }]);
+    t.destroy();
+  }
 });

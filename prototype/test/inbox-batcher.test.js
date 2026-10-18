@@ -217,3 +217,29 @@ test("a sibling arriving after the initial flush check joins the unsealed answer
   assert.equal(answerReceipt.id, threadReceipt.id);
   assert.deepEqual(taggedEnvelope(f.deliveries[0].text, "fm-quarterdeck-batch").items.map((item) => item.requestId), [answerId, threadId]);
 });
+
+test('persisted same-ID answers and thread notes replay their original cycle without a new cycle field', async t => {
+  const f = await fixture(t);
+  const firstCard = { ...card, holdVersion: '1'.repeat(16) }, secondCard = { ...card, holdVersion: '2'.repeat(16) };
+  const originalModel = { ...model, cards: [firstCard] }, reheld = { ...model, cards: [secondCard] };
+  const answerBody = { ...answer, holdVersion: firstCard.holdVersion };
+  const threadBody = { requestId: uuid(2), key: card.key, text: 'Question about cycle A', holdVersion: firstCard.holdVersion };
+  const answers = createAnswerRelay({ home: f.setup.home, note: f.batcher.note });
+  const threads = createThreadRelay({ home: f.setup.home, note: f.batcher.note });
+  const original = await Promise.all([answers.submit(answerBody, originalModel), threads.submit(threadBody, originalModel)]);
+  assert.equal(f.deliveries.length, 1);
+  const sealed = f.deliveries[0].text;
+  f.batcher.close();
+  const restored = createInboxBatcher(f.setup);
+  t.after(() => restored.close());
+  const restartedAnswers = createAnswerRelay({ home: f.setup.home, note: restored.note });
+  const restartedThreads = createThreadRelay({ home: f.setup.home, note: restored.note });
+  const answerRetry = await restartedAnswers.submit(answer, reheld);
+  const threadRetry = await restartedThreads.submit({ requestId: uuid(2), key: card.key, text: threadBody.text }, reheld);
+  assert.equal(answerRetry.envelope.holdVersion, firstCard.holdVersion);
+  assert.equal(threadRetry.holdVersion, firstCard.holdVersion);
+  assert.equal(answerRetry.noteId, original[0].noteId);
+  assert.equal(threadRetry.noteId, original[1].noteId);
+  assert.equal(f.deliveries.length, 1);
+  assert.equal(f.deliveries[0].text, sealed);
+});

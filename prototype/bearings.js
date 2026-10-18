@@ -876,7 +876,10 @@ export function createBearingsHub({ home, timeoutMs, runner = createSnapshotRunn
     lastAttemptAt = lastStartAt;
     try {
       const content = normalizeSnapshot(JSON.parse(await runner({ allLanded: false })));
-      if (allLanded) content.landedHistory = normalizeSnapshot(JSON.parse(await runner({ allLanded: true }))).landedHistory;
+      if (allLanded) {
+        try { content.landedHistory = normalizeSnapshot(JSON.parse(await runner({ allLanded: true }))).landedHistory; }
+        catch { content.workCoverage.disclosures.push("Expanded landed history unavailable"); }
+      }
       const at = new Date(now()).toISOString();
       lastGood = { schema: MODEL_SCHEMA, rev: contentRevision(content), state: "ready", observedAt: at, checkedAt: at, generatedAt: content.generatedAt, stale: false, error: null, cards: content.cards, coverage: content.coverage, omitted: content.omitted, holds: content.holds, landed: content.landed || [], underway: content.underway || [], charted: content.charted || [], workCoverage: content.workCoverage, fleetWork: content.fleetWork, landedHistory: content.landedHistory };
       publish(lastGood);

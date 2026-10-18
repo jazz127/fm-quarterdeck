@@ -182,8 +182,8 @@ test("a decision with lettered lines offers those letters, and a card without th
   assert.equal(answer.recommend, null);
   const model = { schema: "fm-quarterdeck-call.v1", rev: "model", state: "ready", ...normalizeSnapshot(raw) };
   const card = model.cards[0];
-  assert.equal(validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "a", note: "" }, model).selection, "a");
-  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, selection: "z", note: "" }, model), /not offered/);
+  assert.equal(validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "a", note: "" }, model).selection, "a");
+  assert.throws(() => validateAnswer({ requestId: "00000000-0000-4000-8000-000000000010", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "z", note: "" }, model), /not offered/);
   raw.decisions_open[0].summary = "Provide the gamma sandbox credential";
   raw.decisions_open[0].reason = "No lettered choice is recorded.";
   assert.deepEqual(normalizeSnapshot(raw).cards[0].answer.options, []);
@@ -955,5 +955,35 @@ test('expanded history preserves changing producer recent membership for all wat
   hub.request(); await clock.advance(30000);
   assert.deepEqual(hub.current().landed.map(row => row.task), ['land-8']);
   assert.equal(hub.current().landedHistory.length, 10);
+  hub.close();
+});
+
+test('optional expanded history failures preserve current calls, recent membership and answerability', async () => {
+  const clock = fakeClock(), base = await fixture('two-calls');
+  let failure = 'bound', summary = 'Current first question';
+  const observed = [];
+  const hub = createBearingsHub({ now: clock.now, timers: clock.timers, fingerprint: null, watchRecords: null,
+    runner: async ({ allLanded }) => {
+      if (allLanded && failure === 'bound') throw new BearingsUnavailable('Bearings snapshot output too large');
+      if (allLanded && failure === 'invalid') return '{';
+      return JSON.stringify({ ...base, decisions_open: [{ ...base.decisions_open[0], summary }], landed: [{ id: 'current', owner: '(main)', what: summary }, ...(allLanded ? [{ id: 'older', owner: '(main)', what: 'Earlier work' }] : [])] });
+    } });
+  hub.subscribe(event => { if (event.type === 'model') observed.push(event.model); });
+  await clock.advance(0);
+  hub.expandLandings();
+  for (const next of ['bound', 'invalid', null]) {
+    failure = next; summary = `Fresh question ${next || 'recovered'}`;
+    hub.request(); await clock.advance(30000);
+    const current = hub.current(), card = current.cards.find(card => card.task === 'alpha-call');
+    assert.equal(current.state, 'ready');
+    assert.equal(current.stale, false);
+    assert.equal(current.error, null);
+    assert.equal(card.summary, summary);
+    assert.deepEqual(current.landed.map(row => row.task), ['current']);
+    assert.equal(current.landedHistory.length, next ? 1 : 2);
+    assert.equal(current.workCoverage.disclosures.includes('Expanded landed history unavailable'), Boolean(next));
+    assert.equal(validateAnswer({ requestId: '00000000-0000-4000-8000-000000000011', key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), holdVersion: card.holdVersion, selection: '', note: 'Use this current question' }, current).card.key, card.key);
+    assert.equal(observed.at(-1), current);
+  }
   hub.close();
 });

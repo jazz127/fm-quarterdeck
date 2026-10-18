@@ -288,12 +288,12 @@ test('clock ticks only change clock text and leave focused answer nodes intact',
   assert.equal(field.value, 'Tuesday');
 });
 
-test('same-cycle Edit and refusal retain request identity, including reload', async () => {
+test('unresolved payload survives blocked editing, a refused retry and reload', async () => {
   const storage = tabStorage();
   const t = setup({ storage, responses: [new Error('offline'), { status: 409, body: { error: 'This call changed; review again.' } }] });
   const key = 'decision:alpha-call'; t.patcher.update(model([decision()]));
   t.part(key, 'text').type('Tuesday'); t.submit(key); t.part(key, 'send').click(); await flush();
-  const requestId = t.answers.state(key).requestId;
+  const originalBody = t.fetches[0].body;
   assert.match(t.part(key, 'error').textContent, /may already have reached/);
   let writes = 0;
   const error = t.part(key, 'error'), text = error.textContent;
@@ -301,18 +301,15 @@ test('same-cycle Edit and refusal retain request identity, including reload', as
   t.answers.render(t.node(key)); t.answers.render(t.node(key));
   assert.equal(writes, 0, 'unchanged alerts are not rewritten');
   t.part(key, 'edit').click(); t.part(key, 'text').type('Wednesday'); t.submit(key);
-  assert.equal(t.answers.state(key).requestId, requestId);
-  assert.equal(t.answers.state(key).attempted, true);
-  t.leave(); t.patcher.update(model([decision('a2')]));
-  assert.equal(t.answers.state(key).phase, 'confirm', 'unfocused unsent text waits for acknowledgement');
-  t.node(key).querySelector('[data-call-update-now]').click();
+  assert.equal(t.answers.state(key).phase, 'failed');
   t.part(key, 'send').click(); await flush();
-  assert.equal(t.answers.state(key).phase, 'refused');
-  assert.equal(t.answers.state(key).requestId, requestId);
+  assert.deepEqual(t.fetches[1].body, originalBody);
+  assert.equal(t.answers.state(key).phase, 'failed');
   const reload = setup({ storage }); reload.patcher.update(model([decision('a2')]));
   reload.part(key, 'text').type('Thursday'); reload.submit(key);
-  assert.equal(reload.answers.state(key).requestId, requestId);
-  assert.equal(reload.answers.state(key).attempted, true);
+  assert.equal(reload.answers.state(key).phase, 'failed');
+  await reload.answers.sendQueued();
+  assert.deepEqual(reload.fetches[0].body, originalBody);
 });
 
 function tabStorage() {
@@ -597,7 +594,7 @@ test("a call that changes while the answer is under review is never sent as revi
   assert.equal(t.fetches.length, 0);
 });
 
-test("unconfirmed sends retry only by click with the same request id; refusals return to editing with the server's reason", async () => {
+test("unconfirmed sends retain their payload through a refused retry", async () => {
   const t = setup({ responses: [new Error("offline"), { status: 502, body: { error: "Firstmate did not confirm" } }, { status: 409, body: { error: "This call is no longer open" } }] });
   t.patcher.update(model([merge()]));
   const key = "merge:beta-merge";
@@ -620,10 +617,10 @@ test("unconfirmed sends retry only by click with the same request id; refusals r
   assert.match(t.part(key, "error").textContent, /^Firstmate did not confirm.*may already have reached/);
   t.part(key, "send").click();
   await flush();
-  assert.equal(t.answers.state(key).phase, "refused");
-  assert.equal(t.part(key, "error").textContent, "This call is no longer open");
-  assert.equal(t.part(key, "compose").hidden, false);
-  assert.equal(t.part(key, "text").readOnly, false);
+  assert.equal(t.answers.state(key).phase, "failed");
+  assert.match(t.part(key, "error").textContent, /^This call is no longer open/);
+  assert.equal(t.part(key, "compose").hidden, true);
+  assert.equal(t.part(key, "text").readOnly, true);
   t.submit(key);
   assert.equal(t.answers.state(key).requestId, t.fetches[0].body.requestId);
 });
@@ -820,9 +817,9 @@ test("queued answers list for the review queue, send together with their own ids
   assert.equal(t.part(first, "summary").hidden, true, "a thread note does not show Your answer");
   assert.deepEqual(plain(t.answers.queued()).map((entry) => [entry.key, entry.phase]), [[second, "failed"]]);
   t.answers.unqueue(second);
-  assert.equal(t.answers.state(second).phase, "compose");
+  assert.equal(t.answers.state(second).phase, "failed");
   assert.equal(t.answers.state(second).requestId, uuid(2), "an attempted answer keeps its identity after Remove");
-  assert.deepEqual(plain(t.answers.queued()), []);
+  assert.deepEqual(plain(t.answers.queued()).map(entry => [entry.key, entry.phase]), [[second, "failed"]]);
 });
 
 test("Send batch relays every queued card on its own route and those cards become Sent", async () => {
@@ -999,7 +996,7 @@ for (const path of ['thread', 'answer']) {
 
   for (const action of ['edit', 'unqueue']) {
     for (const recovery of ['failed', 'interrupted']) {
-      test(`${path}: same-cycle ${action} reconciles the ${recovery} send with its existing request ID`, async () => {
+      test(`${path}: same-cycle ${action} cannot replace the ${recovery} send before its explicit retry`, async () => {
         const { t: original, options, notes, key, a } = uncertainCycleSend(path, recovery);
         await flush();
         assert.equal(notes.size, 1, 'the inbox recorded A before its acknowledgement was lost');
@@ -1030,21 +1027,46 @@ for (const path of ['thread', 'answer']) {
       });
     }
 
-    test(`${path}: ${action} starts a fresh review on B without reusing A's attempted request`, async () => {
-      const { t, notes, key, b, rehold } = uncertainCycleSend(path);
+    test(`${path}: ${action} cannot abandon A for B before reconciliation or after disappearance`, async () => {
+      const { t, options, notes, key, a, b, rehold } = uncertainCycleSend(path);
       await flush(); rehold(); applyCycle(t, b);
-      const originalId = t.fetches[0].body.requestId;
+      const originalBody = t.fetches[0].body;
       if (action === 'edit') t.part(key, 'edit').click();
       else t.answers.unqueue(key);
+      t.part(key, 'text').type('Different words for B');
+      if (path === 'answer') {
+        const radio = t.node(key).querySelector('input[value="second"]');
+        radio.checked = true; radio.dispatchEvent({ type: 'change' });
+      }
       t.submit(key);
-      assert.notEqual(t.answers.state(key).requestId, originalId);
-      assert.equal(t.answers.state(key).holdVersion, b.holdVersion);
-      assert.equal(t.answers.state(key).attempted, false);
-      await t.answers.sendQueued();
-      assert.equal(notes.size, 2, 'fresh Queue and Send deliver B instead of replaying A');
-      assert.equal(t.patcher.drafts.text(key), '');
-      const current = [...notes.values()][1].record;
-      assert.equal(current.envelope?.holdVersion || current.holdVersion, b.holdVersion);
+      t.part(key, 'again').click();
+      assert.equal(t.answers.state(key).phase, 'failed');
+      assert.equal(t.answers.state(key).requestId, originalBody.requestId);
+      assert.equal(t.answers.state(key).holdVersion, a.holdVersion);
+      assert.equal(t.answers.state(key).attempted, true);
+      assert.equal(notes.size, 1);
+      t.node(key).remove(); t.answers.prune([]); t.answers.destroy();
+      const restored = setup(options); restored.patcher.update(model([]));
+      assert.equal(restored.answers.queued().length, 1);
+      await restored.answers.sendQueued();
+      assert.deepEqual(restored.fetches[0].body, originalBody);
+      assert.equal(notes.size, 1, 'only the persisted A submission is reconciled');
     });
   }
 }
+
+test('a first-attempt refusal permits a new review without an unresolved payload', async () => {
+  const t = setup({ responses: [{ status: 409, body: { error: 'Review changed' } }] });
+  const key = decision().key;
+  t.patcher.update(model([decision()]));
+  t.part(key, 'text').type('Initial words'); t.submit(key); t.part(key, 'send').click(); await flush();
+  assert.equal(t.answers.state(key).phase, 'refused');
+  assert.equal(t.answers.state(key).attempted, false);
+  assert.equal(t.part(key, 'text').readOnly, false);
+  t.part(key, 'text').type('Reviewed correction'); t.submit(key);
+  assert.equal(t.answers.state(key).phase, 'confirm');
+  t.part(key, 'edit').click();
+  assert.equal(t.answers.state(key), null);
+  assert.equal(t.document.activeElement, t.part(key, 'text'));
+  assert.equal(t.part(key, 'text').value, 'Reviewed correction');
+});

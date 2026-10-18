@@ -167,3 +167,19 @@ test("landing history expands supplied records and retains source-bound disclosu
   assert.equal(t.list.querySelectorAll("[data-landed-key]").length, 1);
   t.board.destroy();
 });
+
+test('history-unavailable disclosure remains visible when viewing recent landings', async () => {
+  const t = setup(); await flush();
+  const current = landing();
+  t.board.update({ state: 'ready', stale: false, landed: [current], landedHistory: [current], omitted: [], workCoverage: { disclosures: ['Expanded landed history unavailable'] } });
+  assert.equal(t.invalid.hidden, false);
+  assert.match(t.invalid.textContent, /history unavailable/);
+  assert.equal(t.node().querySelector('[data-landed-text]').disabled, false);
+  assert.equal(t.historyToggle.hidden, false);
+  t.historyToggle.click(); await flush();
+  t.historyToggle.click();
+  assert.equal(t.historyToggle.getAttribute('aria-expanded'), 'false');
+  assert.match(t.invalid.textContent, /history unavailable/);
+  assert.equal(t.list.querySelectorAll('[data-landed-key]').length, 1);
+  t.board.destroy();
+});

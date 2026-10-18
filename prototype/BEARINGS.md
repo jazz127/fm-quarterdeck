@@ -205,11 +205,9 @@ Quarterdeck relays the captain's explicit answer; it adds no authority. The answ
      A reply leaves *sent* for *compose*, unlocks the controls, and the card returns to Active with that reply at the top.
    - unconfirmed (network error or `5xx`) → *failed*: **Retry send** is another explicit click and reuses the same request id, so Firstmate records one note.
      Reloading during *sending* also restores this uncertain retry state; it never resends automatically.
-   - refused (`4xx`) → *refused*: the server's reason is shown and the fields unlock.
-     Once a send was attempted, editing and re-queueing preserve its request id, even after a changed-card refusal or reload.
-     A different payload under a recorded id is refused rather than creating a second note.
-4. **Edit** returns from *confirm*/*failed* to *compose* (and takes the item out of the queue).
-   An unconfirmed send warns that it may already have reached Firstmate; retry uses the original identity, and editing cannot replace a recorded note.
+   - refused (`4xx`) on the first attempt → *refused*: the server's reason is shown and the fields unlock. A refused retry of an uncertain attempt remains *failed*, with its original payload and request ID.
+4. **Edit** returns an unattempted *confirm* item to *compose* (and takes it out of the queue).
+   Until an uncertain attempt is reconciled, Edit, Remove and Queue cannot replace it, including after a new hold cycle, disappearance or reload. Retry uses the original payload and identity.
    **Answer again** leaves *sent* for a correction (Firstmate's intake rejects a drifted answer to a closed call).
 
 Queue, Send and Edit sit beside the one text box on desktop and on a phone, in the same row as that box.
@@ -247,7 +245,7 @@ Firstmate's lavish adapter rule maps it to one keyed line: `<question>\t<selecti
 
 **Firstmate follow-up (separate repository, not done here):** the bearings skill must route an inbox note carrying a `json fm-bearings-answer` block with `channel:"quarterdeck"` exactly like a board answer — feed `<question>\t<answer>\t<label>[\t<close>]` to `fm-captain-hold.sh answers`, handle `merge.<task>` through the merge-click ruling, and record "later" as `hold --until`. Until then Firstmate reads the note as an ordinary captain note.
 
-Both answer and thread requests include the optional reviewed `holdVersion` when the card supplies one. A new submission with a mismatching cycle is refused before delivery; a persisted same-ID retry reuses its original record before checking current membership or cycle. Cycle-only changes patch the form independently of presentation revision. Unattempted queued drafts require review again; uncertain attempts retain their frozen retry. A newly reviewed cycle uses a new request ID, and accepting an old retry cannot clear a newer draft. Legacy requests without the field remain accepted for compatibility.
+Both answer and thread requests must include the reviewed `holdVersion` when the card supplies one. A new submission with a missing or mismatching cycle is refused before delivery; a persisted same-ID retry reuses its original record before checking current membership or cycle. Cycle-only changes patch the form independently of presentation revision. Unattempted queued drafts require review again; uncertain attempts retain their frozen retry. A newly reviewed cycle uses a new request ID, and accepting an old retry cannot clear a newer draft. Cards without cycle evidence accept requests without the field. Persisted same-ID retries can omit it because they replay the original record.
 
 ## Lifecycle
 
@@ -407,7 +405,7 @@ The note says nothing was decided.
 There is no Procrastinate control on these cards.
 The model rev includes landed cards when any are present.
 
-The landing-history control reveals retained history and requests `--all-landed` through the existing hub, with the same cadence, timeout, output bounds and disabled remote transport. After expansion, each hub refresh reads both the default recent snapshot and `--all-landed` history so current recent membership remains producer-owned. Expanded history uses Firstmate's landed membership rules and structured registered-home landings; a checked ledger row alone does not create a landing. Canonical remote completion dates supplement shorter bearings rows by exact owner and local task ID. Source bounds such as “landed showing 6 of 47” remain visible. Remote cached history cannot exceed the producer's available cache; expansion never invents omitted records. Acknowledgement and follow-up use the same exact owner-scoped landing identity throughout history.
+The landing-history control reveals retained history and requests `--all-landed` through the existing hub, with the same cadence, timeout, output bounds and disabled remote transport. After expansion, each hub refresh reads both the default recent snapshot and `--all-landed` history so current recent membership remains producer-owned. If the optional expanded read fails, the successful recent reading remains current with an explicit history-unavailable disclosure. Expanded history uses Firstmate's landed membership rules and structured registered-home landings; a checked ledger row alone does not create a landing. Canonical remote completion dates supplement shorter bearings rows by exact owner and local task ID. Source bounds such as “landed showing 6 of 47” remain visible. Remote cached history cannot exceed the producer's available cache; expansion never invents omitted records. Acknowledgement and follow-up use the same exact owner-scoped landing identity throughout history.
 
 Client-only uncertain attempts remain recoverable when a card leaves the snapshot: answers/notes remain in the global review queue, and landed follow-ups have explicit recovery rows loaded from tab storage. Reload never sends automatically. Retry retains the original request ID, text, revision and reviewed cycle; a missing server record may still refuse the retry, leaving the saved words visible.
 

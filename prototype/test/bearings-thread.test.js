@@ -150,9 +150,9 @@ async function threadServer(context, { relay, revision = "a".repeat(40) } = {}) 
 test("thread routes are same-origin JSON on the host only and revision-guarded", async (context) => {
   const calls = [];
   const relay = createThreadRelay({ home: "/synthetic/home", transcript: noTranscript, receipts: empty, note: async (_home, id, text) => { calls.push({ id, text }); return { id: "note-3", outcome: "created" }; } });
-  const { base, moveHead } = await threadServer(context, { relay });
+  const { base, hub, moveHead } = await threadServer(context, { relay });
   const post = (body, headers = {}, route = "/api/bearings/thread") => fetch(`${base}${route}`, { method: "POST", headers: { "content-type": "application/json", origin: base, ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
-  const body = { requestId: uuid(), key: "decision:alpha-call", text: "What is alpha about?" };
+  const body = { requestId: uuid(), key: "decision:alpha-call", holdVersion: hub.current().cards.find(card => card.key === "decision:alpha-call").holdVersion, text: "What is alpha about?" };
 
   assert.equal((await post(body, { origin: "https://elsewhere.invalid" })).status, 403);
   assert.equal((await post(body, { "content-type": "text/plain" })).status, 415);
@@ -230,8 +230,11 @@ test("a thread note is bound to the hold cycle the captain reviewed; a same-id r
   const retry = await relay.submit(body, b);
   assert.equal(calls[1].text, calls[0].text, "a same-id retry after the re-hold resends the identical note");
   assert.equal(retry.holdVersion, cardA.holdVersion);
-  // A body without the optional field keeps the existing behaviour: the current cycle.
-  const legacy = await relay.submit({ requestId: uuid(2), key: cardB.key, text: "Which report?" }, b);
+  const legacy = { requestId: uuid(2), key: cardB.key, text: "Which report?" };
+  await assert.rejects(relay.submit(legacy, a), refusal("changed"));
+  await assert.rejects(relay.submit(legacy, b), refusal("changed"));
+  assert.equal(calls.length, 2);
+  const current = await relay.submit({ ...legacy, holdVersion: cardB.holdVersion }, b);
   assert.equal(taggedEnvelope(calls[2].text, "fm-quarterdeck-thread").holdVersion, cardB.holdVersion);
-  assert.equal(legacy.holdVersion, cardB.holdVersion);
+  assert.equal(current.holdVersion, cardB.holdVersion);
 });

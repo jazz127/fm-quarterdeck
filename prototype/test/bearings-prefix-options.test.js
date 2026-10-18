@@ -22,7 +22,7 @@ test("complete selected-home canonical Yes/No prefix supplies existing options w
   assert.equal(card.answer.recommend, null);
   assert.equal(card.answer.close, null);
   for (const selection of ["yes", "no"]) {
-    const body = { requestId: "00000000-0000-4000-8000-000000000001", key: card.key, cardRev: card.rev, selection, note: "" };
+    const body = { requestId: "00000000-0000-4000-8000-000000000001", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection, note: "" };
     const accepted = validateAnswer(body, model);
     const envelope = answerEnvelope(accepted, model.rev);
     assert.equal(envelope.selection, selection);
@@ -54,7 +54,7 @@ test("canonical binary held questions offer both choices even with only a No con
     assert.equal(card.answer.recommend, null);
     assert.equal(card.answer.close, null);
     for (const selection of ["yes", "no"]) {
-      const body = { requestId: "00000000-0000-4000-8000-000000000001", key: card.key, cardRev: card.rev, selection, note: "" };
+      const body = { requestId: "00000000-0000-4000-8000-000000000001", key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection, note: "" };
       const envelope = answerEnvelope(validateAnswer(body, model), model.rev);
       assert.equal(envelope.selection, selection);
       assert.equal(envelope.task, card.task);

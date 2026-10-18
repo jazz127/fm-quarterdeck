@@ -129,7 +129,7 @@ test('a real current-cycle thread submission isolates the held-card count withou
     } });
   const question = 'Clarify the current rollout question before proceeding';
   const requestId = uuid.replace(/1$/, '2');
-  const submitted = await relay.submit({ key: current.key, requestId, text: question }, { cards: [current] });
+  const submitted = await relay.submit({ key: current.key, holdVersion: current.holdVersion, requestId, text: question }, { cards: [current] });
   assert.equal(submitted.state, 'accepted');
   assert.equal(submitted.replay, false);
   assert.doesNotMatch(receipts.pending[1].body, /fm-bearings-answer/, 'this path records a real question, not an invented answer');

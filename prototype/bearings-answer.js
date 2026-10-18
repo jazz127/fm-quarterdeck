@@ -61,7 +61,7 @@ export function validateAnswer(body, model) {
   const card = (model.cards || []).find((entry) => entry.key === parsed.key);
   if (!card) refuse(409, "gone", "This call is no longer open");
   // rev omits the hold cycle, so a re-hold can keep the revision shown.
-  if (card.rev !== parsed.cardRev || ("holdVersion" in parsed && parsed.holdVersion !== card.holdVersion)) refuse(409, "changed", "This call changed; review it before answering");
+  if (card.rev !== parsed.cardRev || (parsed.holdVersion || null) !== (card.holdVersion || null)) refuse(409, "changed", "This call changed; review it before answering");
   if (card.readOnly || !card.answer) refuse(409, "not-answerable", "This call cannot be answered from Quarterdeck; answer in chat");
   if (parsed.selection && !card.answer.options.some((option) => option.value === parsed.selection)) refuse(422, "bad-option", "That option is not offered for this call");
   return { ...parsed, card };

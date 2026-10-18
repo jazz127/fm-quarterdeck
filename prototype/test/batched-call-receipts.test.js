@@ -68,7 +68,7 @@ for (const combined of [false, true]) test(`${combined ? "combined" : "individua
   const before = await f.get("/api/bearings");
   const calls = before.cards.filter((card) => card.type === "decision").slice(0, combined ? 2 : 1);
   assert.equal(calls.length, combined ? 2 : 1);
-  const submissions = calls.map((card, index) => ({ requestId: uuid(index + 1), key: card.key, cardRev: card.rev, selection: "", note: `Answer ${index + 1}\nKeep the example-app context.` }));
+  const submissions = calls.map((card, index) => ({ requestId: uuid(index + 1), key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "", note: `Answer ${index + 1}\nKeep the example-app context.` }));
   const sends = submissions.map((body) => f.post("/api/bearings/answer", body));
   let pending;
   for (let n = 0; n < 100; n++) {
@@ -123,7 +123,7 @@ for (const combined of [false, true]) test(`${combined ? "combined" : "individua
   await f.saveReceipts({ ...receipts, pending: [], handled: [outer], replies: [{ id: outer.id, body: "Both answers recorded." }] });
   await check("replied");
   if (combined) {
-    const thread = f.post("/api/bearings/thread", { requestId: uuid(3), key: calls[0].key, text: "Please check only this call." });
+    const thread = f.post("/api/bearings/thread", { requestId: uuid(3), key: calls[0].key, holdVersion: calls[0].holdVersion, text: "Please check only this call." });
     for (let n = 0; n < 100; n++) {
       if ((await f.get("/api/inbox/pending")).items.length === 1) break;
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -160,7 +160,7 @@ for (const directFlush of [false, true]) for (const refused of [false, true]) te
   assert.equal(calls.length, 2);
   const headers = { origin: f.base(), "content-type": "application/json", "x-quarterdeck-send-now": "1" };
   // The thread note's request has reached the server; its body is still in transit.
-  const threadBody = JSON.stringify({ requestId: uuid(2), key: refused ? "decision:no-such-call" : calls[1].key, text: "Which window is safer?" });
+  const threadBody = JSON.stringify({ requestId: uuid(2), key: refused ? "decision:no-such-call" : calls[1].key, holdVersion: calls[1].holdVersion, text: "Which window is safer?" });
   const started = new Promise((resolve) => f.server().once("request", resolve));
   const slow = http.request(f.base() + "/api/bearings/thread", { method: "POST", headers: { ...headers, "content-length": Buffer.byteLength(threadBody) } });
   const slowResponse = new Promise((resolve, reject) => {
@@ -170,7 +170,7 @@ for (const directFlush of [false, true]) for (const refused of [false, true]) te
   pauseRevision = directFlush;
   slow.flushHeaders();
   await started;
-  const answer = fetch(f.base() + "/api/bearings/answer", { method: "POST", headers, body: JSON.stringify({ requestId: uuid(1), key: calls[0].key, cardRev: calls[0].rev, selection: "", note: "Tuesday" }) })
+  const answer = fetch(f.base() + "/api/bearings/answer", { method: "POST", headers, body: JSON.stringify({ requestId: uuid(1), key: calls[0].key, cardRev: calls[0].rev, holdVersion: calls[0].holdVersion, selection: "", note: "Tuesday" }) })
     .then(async (response) => ({ status: response.status, body: await response.json() }));
   for (let n = 0; n < 200; n++) {
     if ((await f.get("/api/inbox/pending")).items.length || (await f.receipts()).pending.length) break;

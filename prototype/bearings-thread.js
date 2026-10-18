@@ -190,8 +190,7 @@ export function createThreadRelay({ home, note = noteWithRequestId, receipts = i
         const card = cardByKey(model, parsed.key);
         if (!card) refuse(409, "gone", "This call is no longer open; ask in chat");
         if (card.readOnly) refuse(409, "read-only", "This call is answered in its own home");
-        // A supplied reviewed cycle must match before stamping a new note.
-        if ("holdVersion" in parsed && parsed.holdVersion !== card.holdVersion) refuse(409, "changed", "This call changed while you were reviewing; check it and review your note again");
+        if ((parsed.holdVersion || null) !== (card.holdVersion || null)) refuse(409, "changed", "This call changed while you were reviewing; check it and review your note again");
         return { digest, key: parsed.key, display: parsed.text, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), text: formatThreadNote({ key: parsed.key, card, text: parsed.text, requestId: parsed.requestId }), at: new Date(now()).toISOString() };
       })();
       remember(parsed.requestId, record);

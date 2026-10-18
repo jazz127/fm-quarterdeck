@@ -147,7 +147,7 @@ test("a fresh board decision supplies its options and recommendation, and the an
   assert.equal(JSON.stringify(raw).includes("synthetic-home"), false);
   const model = { schema: "fm-quarterdeck-call.v1", rev: "model-rev-1", state: "ready", ...normalizeSnapshot(raw) };
   const card = model.cards.find((entry) => entry.key === "decision:alpha-call");
-  assert.equal(validateAnswer({ requestId: uuid, key: card.key, cardRev: card.rev, selection: "staged", note: "Tuesday" }, model).selection, "staged");
+  assert.equal(validateAnswer({ requestId: uuid, key: card.key, cardRev: card.rev, ...(card.holdVersion ? { holdVersion: card.holdVersion } : {}), selection: "staged", note: "Tuesday" }, model).selection, "staged");
   assert.equal(answerEnvelope({ card, selection: "staged", note: "Tuesday" }, model.rev).selection, "staged");
   assert.deepEqual(answerFor(raw, "merge:beta-merge").options.map((option) => option.value), ["merge"]);
 });
