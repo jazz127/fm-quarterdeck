@@ -2192,13 +2192,18 @@ async function refreshPreferences() {
   catch (error) { renderPreferences({ error: error.message }); }
   finally { preferencesRefreshing = false; }
 }
-function loadDashboard() {
+function loadDashboard(manual = false) {
   // Manual and timer refreshes may coincide; the endpoint guards prevent overlap.
   const active = activeFreshnessKey();
   void refreshEndpoint("dashboard");
   void refreshEndpoint("quota");
   if ($(".workspace").dataset.view === "expenses") void refreshCosts();
-  if (active === "lanes") void refreshEndpoint("lanes");
+  if (active === "lanes") {
+    // A manual refresh can follow a write newer than the in-flight history read.
+    // Queue one follow-up rather than dropping that explicit request.
+    if (manual) requestLanes();
+    else void refreshEndpoint("lanes");
+  }
   if ($(".workspace").dataset.view === "preferences") void refreshPreferences();
 }
 // A confirmed Quarterdeck send (review batch, Captain's Call answer or thread note) is a
@@ -2814,7 +2819,7 @@ document.querySelector(".primary-nav").addEventListener("click", (event) => {
   showView(tab.dataset.view);
   if (tab.dataset.view === "conversations") renderFeed();
 });
-$("#refresh").addEventListener("click", () => { loadDashboard(); void callLive?.refresh(); });
+$("#refresh").addEventListener("click", () => { loadDashboard(true); void callLive?.refresh(); });
 $("#quota-providers").addEventListener("toggle", (event) => {
   if (event.target.dataset?.provider && event.target.tagName === "DETAILS") {
     quotaOpen.set(event.target.dataset.provider, event.target.open);

@@ -1054,6 +1054,28 @@ test("older session request supersedes an in-flight refresh without erasing sele
   assert.equal(app.run('lanes[0].messages[0].text'), "fresh");
 });
 
+test("manual refresh during a lane read fetches newer notes after that read completes", async () => {
+  const calls = [];
+  const app = ui({ fetchImpl(url) {
+    if (!url.startsWith("/api/lanes")) return new Promise(() => {});
+    return new Promise(resolve => calls.push(data => resolve({ ok: true, json: async () => data })));
+  } });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  app.node(".workspace").dataset.view = "conversations";
+  assert.equal(calls.length, 1);
+  app.node("#refresh").dispatchEvent({ type: "click" });
+  app.node("#refresh").dispatchEvent({ type: "click" });
+  assert.equal(calls.length, 1, "manual refreshes do not overlap the existing read");
+  const data = text => ({ lanes: [lane("general", [record({ text })])], source: "synthetic", transcript: { sessions: [], warnings: [] } });
+  calls[0](data("Earlier annotation"));
+  await flush();
+  assert.equal(calls.length, 2, "coalesce manual refreshes into one read after the earlier response");
+  calls[1](data("New refresh marker"));
+  await flush();
+  assert.match(app.node("#messages").innerHTML, /New refresh marker/);
+  assert.equal(calls.length, 2);
+});
+
 test("slow large lane response cannot block Overview or Quota, and refreshes do not overlap", async () => {
   const calls = { dashboard: [], lanes: [], quota: [], preferences: [] };
   const app = ui({ fetchImpl(url) {
